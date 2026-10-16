@@ -212,6 +212,7 @@ enum Focus {
 }
 
 mod analysis;
+mod explain;
 mod file_bar;
 mod file_picker;
 mod marks;
@@ -276,6 +277,7 @@ pub struct Session {
     pull_request: Option<PullRequest>,
     quit: bool,
     analysis: analysis::Analysis,
+    explain: explain::Explain,
 }
 
 impl Session {
@@ -435,6 +437,7 @@ impl Session {
             pull_request: None,
             quit: false,
             analysis: Default::default(),
+            explain: Default::default(),
         };
         session.load_selected();
         session.sync_view();
@@ -786,7 +789,7 @@ impl Session {
         }
 
         self.message = None;
-        if self.analysis_key(key) {
+        if self.explain_key(key) || self.analysis_key(key) {
             return;
         }
         if let Some(cursor) = self.file_picker {
@@ -1066,6 +1069,7 @@ impl Session {
             self.render_picker(buf);
         }
         self.render_summary(buf);
+        self.render_explain(buf);
         if let Some(cursor) = self.file_picker {
             self.render_file_picker(buf, cursor);
         }
@@ -1494,6 +1498,7 @@ impl Session {
             ),
         };
         let text = self.analysis_status(&text);
+        let text = self.explain_status(&text);
         let text = match &self.warning {
             Some(w) => format!("{text}  {w}"),
             None => text,
