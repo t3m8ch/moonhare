@@ -211,6 +211,7 @@ enum Focus {
     Commits,
 }
 
+mod comments;
 mod file_bar;
 mod file_picker;
 mod marks;
@@ -243,6 +244,10 @@ pub struct Session {
     /// The File changes each commit makes, by commit index.
     commit_changes: Vec<Vec<FileChange>>,
     review: Review,
+    comments: crate::comments::Comments,
+    editor: Option<comments::Editor>,
+    /// VISUAL mode in the diff: the view item the selection started on.
+    visual: Option<usize>,
     selected: usize,
     loaded: Option<Result<Loaded, String>>,
     vp: Viewport,
@@ -397,6 +402,9 @@ impl Session {
             range_files: files.clone(),
             commit_changes,
             review,
+            comments: Default::default(),
+            editor: None,
+            visual: None,
             file_picker: None,
             files,
             selected: 0,
@@ -742,6 +750,7 @@ impl Session {
             _ => {}
         }
         self.sync_view();
+        self.reveal_with_comments();
     }
 
     fn on_key(&mut self, key: KeyEvent) {
@@ -765,6 +774,10 @@ impl Session {
         }
 
         self.message = None;
+        if self.editor.is_some() {
+            self.editor_key(key);
+            return;
+        }
         if let Some(cursor) = self.file_picker {
             self.file_picker_key(key, cursor);
             return;
@@ -823,6 +836,8 @@ impl Session {
             KeyCode::Char('a') if !ctrl => self.show_whole_range(),
             KeyCode::Char('m') if !ctrl => self.toggle_mark(),
             KeyCode::Char('M') if !ctrl => self.mark_and_advance(),
+            KeyCode::Char(c @ ('c' | 'v')) if !ctrl => self.comment_key(c),
+            KeyCode::Esc if self.visual.is_some() => self.visual = None,
             KeyCode::Tab => {
                 self.focus = match self.focus {
                     Focus::Diff => Focus::Commits,
@@ -1253,6 +1268,7 @@ impl Session {
             DiffLayout::SideBySide => self.render_side_by_side(buf, loaded, area, top, height),
             DiffLayout::Inline => self.render_inline(buf, loaded, area, top, height),
         }
+        self.render_selection(buf, area, top, height);
     }
 
     fn render_side_by_side(
@@ -1267,6 +1283,8 @@ impl Session {
         let half = (area.width as usize).saturating_sub(1) / 2;
         let right_x = area.x + half as u16 + 1;
         let right_w = area.width as usize - half - 1;
+        let layout = self.comment_layout();
+        let bottom = top + height as u16;
         for (screen_row, item) in self
             .view
             .items
@@ -1275,7 +1293,10 @@ impl Session {
             .take(height)
             .enumerate()
         {
-            let y = top + screen_row as u16;
+            let y = layout.y(top, self.vp.top, self.vp.top + screen_row);
+            if y >= bottom {
+                break;
+            }
             let is_cursor = self.vp.top + screen_row == self.vp.cursor;
             let row = match *item {
                 Item::Line(e) => l.diff.rows[e],
@@ -1303,6 +1324,7 @@ impl Session {
                 buf.set_style(Rect::new(area.x, y, gutter, 1), marker);
                 buf.set_style(Rect::new(right_x, y, gutter, 1), marker);
             }
+            layout.draw(buf, area.x, y + 1, bottom, self.vp.top + screen_row);
         }
     }
 
@@ -1355,6 +1377,8 @@ impl Session {
     fn render_inline(&self, buf: &mut Buffer, l: &Loaded, area: Rect, top: u16, height: usize) {
         let digits = digits(l.diff.old_lines.len().max(l.diff.new_lines.len()));
         let width = area.width as usize;
+        let layout = self.comment_layout();
+        let bottom = top + height as u16;
         for (screen_row, item) in self
             .view
             .items
@@ -1363,7 +1387,10 @@ impl Session {
             .take(height)
             .enumerate()
         {
-            let y = top + screen_row as u16;
+            let y = layout.y(top, self.vp.top, self.vp.top + screen_row);
+            if y >= bottom {
+                break;
+            }
             let is_cursor = self.vp.top + screen_row == self.vp.cursor;
             let line = match *item {
                 Item::Line(e) => &self.inline[e],
@@ -1416,6 +1443,7 @@ impl Session {
                 let marker = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
                 buf.set_style(Rect::new(area.x, y, gw as u16, 1), marker);
             }
+            layout.draw(buf, area.x, y + 1, bottom, self.vp.top + screen_row);
         }
     }
 
@@ -1437,7 +1465,7 @@ impl Session {
             .fg(Color::Indexed(16))
             .bg(ACCENT)
             .add_modifier(Modifier::BOLD);
-        buf.set_string(0, y, " NORMAL ", badge);
+        buf.set_string(0, y, self.mode_badge(), badge);
 
         let layout = match self.layout() {
             DiffLayout::SideBySide => "side-by-side",
