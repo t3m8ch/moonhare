@@ -47,8 +47,8 @@ fn files_switch_with_bracket_f_and_by_clicking_the_list() {
     h.keys("[f");
     assert!(h.screen().contains("file 2/3"));
 
-    // Row 0 is the sidebar border, rows 1.. are files.
-    h.click(5, 3);
+    // The commit list takes rows 0..6; row 6 is the file list border, rows 7.. are files.
+    h.click(5, 9);
     assert!(h.screen().contains("file 3/3"), "click selects src/b.rs");
 }
 

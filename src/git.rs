@@ -55,6 +55,13 @@ pub struct Range {
     pub head: String,
 }
 
+/// One commit of the Range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Commit {
+    pub sha: String,
+    pub subject: String,
+}
+
 pub struct Repo {
     root: PathBuf,
 }
@@ -138,6 +145,29 @@ impl Repo {
             base: base.trim().to_string(),
             head,
         })
+    }
+
+    /// Commits of the Range, oldest first. A merge commit counts as one commit
+    /// relative to its first parent.
+    pub fn commits(&self, base: &str, head: &str) -> Result<Vec<Commit>, GitError> {
+        let out = self.run(&[
+            "rev-list",
+            "--reverse",
+            "--first-parent",
+            "--format=%s",
+            &format!("{base}..{head}"),
+        ])?;
+        let mut commits = Vec::new();
+        let mut lines = out.lines();
+        while let (Some(header), Some(subject)) = (lines.next(), lines.next()) {
+            if let Some(sha) = header.strip_prefix("commit ") {
+                commits.push(Commit {
+                    sha: sha.to_string(),
+                    subject: subject.to_string(),
+                });
+            }
+        }
+        Ok(commits)
     }
 
     /// Files whose content differs between `base` and `head`.
