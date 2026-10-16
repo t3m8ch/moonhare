@@ -1,5 +1,6 @@
 use std::io;
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
 use moonhare::git::Target;
 use moonhare::session::Session;
@@ -47,7 +48,12 @@ fn main() -> ExitCode {
 fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Result<()> {
     while !session.should_quit() {
         terminal.draw(|f| session.render(f.buffer_mut()))?;
-        session.handle(event::read()?);
+        let waited = Instant::now();
+        if event::poll(Duration::from_millis(50))? {
+            session.handle(event::read()?);
+        } else {
+            session.tick(waited.elapsed());
+        }
     }
     Ok(())
 }

@@ -250,6 +250,8 @@ pub struct Session {
     pending: Option<char>,
     /// How long `pending` has been waiting.
     pending_for: std::time::Duration,
+    /// The `?` help is open, scrolled to this line.
+    help: Option<usize>,
     dirty: bool,
     message: Option<String>,
     /// A standing caveat about the Range, shown until the Review closes.
@@ -307,6 +309,7 @@ impl Session {
             mode: Mode::Normal,
             pending: None,
             pending_for: std::time::Duration::ZERO,
+            help: None,
             dirty: true,
             message: None,
             warning,
@@ -359,7 +362,12 @@ impl Session {
     /// The diff pane including its header line.
     fn diff_area(&self) -> Rect {
         let x = SIDEBAR_WIDTH.min(self.size.0);
-        Rect::new(x, 0, self.size.0 - x, self.size.1.saturating_sub(BOTTOM_ROWS))
+        Rect::new(
+            x,
+            0,
+            self.size.0 - x,
+            self.size.1.saturating_sub(BOTTOM_ROWS),
+        )
     }
 
     /// Rows available to diff lines (the pane minus its header).
@@ -648,6 +656,14 @@ impl Session {
         }
 
         self.message = None;
+        if self.help.is_some() {
+            self.help_key(key.code);
+            return;
+        }
+        if key.code == KeyCode::Char('?') && self.pending.is_none() && !self.picker {
+            self.help = Some(0);
+            return;
+        }
         if self.picker {
             self.picker_key(key);
             return;
@@ -886,6 +902,9 @@ impl Session {
         self.render_hints(buf);
         if self.picker {
             self.render_picker(buf);
+        }
+        if let Some(offset) = self.help {
+            self.render_help(buf, offset);
         }
         if let Some(prefix) = self.which_key_prefix() {
             self.render_which_key(buf, prefix);

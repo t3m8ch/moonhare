@@ -115,7 +115,10 @@ fn hint_line_follows_the_window_and_mode() {
 
     h.keys("<Esc><Tab>:");
     let row = hint_row(&mut h);
-    assert!(row.starts_with(":"), "command line owns the bottom row: {row}");
+    assert!(
+        row.starts_with(":"),
+        "command line owns the bottom row: {row}"
+    );
 }
 
 #[test]
@@ -125,6 +128,40 @@ fn hint_line_labels_a_pending_chain() {
     h.keys("]");
     let row = hint_row(&mut h);
     assert!(row.contains("] + h: следующий хунк"), "{row}");
+}
+
+#[test]
+fn question_mark_shows_help_with_all_keys_and_zellij_caveat() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 60);
+    h.keys("?");
+    let screen = h.screen();
+    for expected in [
+        "Справка",
+        "Space c",
+        "Ctrl-w h",
+        "]h",
+        "Tab",
+        "Ctrl-h/j/k/l",
+        "zellij",
+    ] {
+        assert!(screen.contains(expected), "{expected} missing:\n{screen}");
+    }
+    h.keys("<Esc>");
+    assert!(!h.screen().contains("Справка"));
+    h.keys("?q");
+    assert!(!h.screen().contains("Справка"), "q closes help too");
+    assert!(!h.quit_requested());
+}
+
+#[test]
+fn help_scrolls_on_a_short_terminal() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 20);
+    h.keys("?");
+    assert!(!h.screen().contains("Ctrl-w w"));
+    h.keys("jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj");
+    assert!(h.screen().contains("Ctrl-w w"));
 }
 
 #[test]

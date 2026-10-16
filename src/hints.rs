@@ -39,6 +39,57 @@ pub const BINDINGS: &[Binding] = &[
     b(Some(CTRL_W), "w", "следующее окно"),
 ];
 
+/// Keys without a prefix, listed in the help only.
+const PLAIN: &[(&str, &str)] = &[
+    ("j/k", "курсор вниз/вверх (с числом: N строк)"),
+    (
+        "h/l",
+        "дифф: сдвиг по горизонтали; в списках: свернуть группу / открыть файл",
+    ),
+    ("Ctrl-d/u", "полстраницы вниз/вверх"),
+    ("Ctrl-f/b", "страница вниз/вверх"),
+    ("Ctrl-e/y", "прокрутка без курсора"),
+    ("G", "в конец файла (NG: к строке N)"),
+    ("0", "горизонтальная прокрутка в начало"),
+    ("s", "переключить side-by-side / inline"),
+    ("a", "срез: весь диапазон"),
+    ("v", "список коммитов: выделить срез"),
+    ("Enter", "список коммитов: применить срез"),
+    ("Tab", "следующее окно"),
+    (
+        "Ctrl-h/j/k/l",
+        "окно слева/ниже/выше/справа (алиасы Ctrl-w)",
+    ),
+    (":", "командная строка (:scope, :q)"),
+    ("?", "эта справка"),
+];
+
+/// Notes shown at the top of the help.
+const NOTES: &[&str] = &[
+    "hjkl везде обычные движения и окон не переключают;",
+    "окна переключаются через Ctrl-w и Tab.",
+    "zellij перехватывает Ctrl-h/j/k/l (и Ctrl-w в некоторых раскладках):",
+    "если алиасы не доходят, используйте Ctrl-w + h/j/k/l и Tab.",
+];
+
+/// The `?` help: notes, then every key from [`PLAIN`] and [`BINDINGS`].
+pub fn help_lines() -> Vec<String> {
+    let mut lines: Vec<String> = NOTES.iter().map(|n| n.to_string()).collect();
+    lines.push(String::new());
+    for (key, label) in PLAIN {
+        lines.push(format!("{key:<14} {label}"));
+    }
+    for x in BINDINGS {
+        let chain = match x.prefix {
+            Some(p @ (' ' | CTRL_W)) => format!("{} {}", prefix_name(p), x.key),
+            Some(p) => format!("{p}{}", x.key),
+            None => x.key.to_string(),
+        };
+        lines.push(format!("{chain:<14} {}", x.label));
+    }
+    lines
+}
+
 /// The title and rows of the which-key window for `prefix`.
 pub fn which_key(prefix: char) -> (String, Vec<(&'static str, &'static str)>) {
     let rows = BINDINGS
@@ -63,16 +114,20 @@ pub enum Context {
 /// The bottom hint line: keys that make sense right now, chains spelled out.
 pub fn hint_line(context: Context) -> String {
     match context {
-        Context::Diff => "j/k: строки  ]h/[h: хунки  Space: команды  Ctrl-w + h/j/k/l: окна  ?: справка  \
+        Context::Diff => {
+            "j/k: строки  ]h/[h: хунки  Space: команды  Ctrl-w + h/j/k/l: окна  ?: справка  \
                           Ctrl-d/u: прокрутка  gg/G: начало/конец  ]f/[f: файлы"
-            .into(),
+                .into()
+        }
         Context::Commits => "j/k: коммиты  Enter: срез  v: выделение  a: весь диапазон  \
                              Tab: окно  Space: команды  Ctrl-w + h/j/k/l: окна  ?: справка"
             .into(),
         Context::CommitsVisual => {
             "-- VISUAL --  j/k: расширить  Enter: срез  v: снять  Esc: отмена".into()
         }
-        Context::Pending(CTRL_W) => "Ctrl-w + h/j/k/l: окна  Ctrl-w + w: следующее окно  Esc: отмена".into(),
+        Context::Pending(CTRL_W) => {
+            "Ctrl-w + h/j/k/l: окна  Ctrl-w + w: следующее окно  Esc: отмена".into()
+        }
         Context::Pending(prefix) => {
             let name = prefix_name(prefix);
             let mut parts: Vec<String> = BINDINGS
