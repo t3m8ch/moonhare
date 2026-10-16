@@ -172,7 +172,7 @@ impl Repo {
         ))
     }
 
-    fn commit_id(&self, rev: &str) -> Result<String, GitError> {
+    pub fn commit_id(&self, rev: &str) -> Result<String, GitError> {
         if !self.resolves(rev) {
             return Err(GitError(format!("unknown revision: {rev}")));
         }

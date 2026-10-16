@@ -204,6 +204,11 @@ impl Harness {
         self.frame().text()
     }
 
+    /// The session under test, for calls that are not terminal events.
+    pub fn session(&mut self) -> &mut Session {
+        &mut self.session
+    }
+
     pub fn quit_requested(&self) -> bool {
         self.session.should_quit()
     }

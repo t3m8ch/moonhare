@@ -208,6 +208,7 @@ enum Focus {
     Commits,
 }
 
+mod analysis;
 mod nav;
 
 enum Mode {
@@ -252,6 +253,7 @@ pub struct Session {
     /// The pull request behind the Range, when the Forge knows one.
     pull_request: Option<PullRequest>,
     quit: bool,
+    analysis: analysis::Analysis,
 }
 
 impl Session {
@@ -269,7 +271,13 @@ impl Session {
     ) -> Result<Session, Error> {
         let repo = Repo::open(repo_path)?;
         let range = repo.range_for(target)?;
-        Self::open_range(repo, range, *target != Target::Current, width, height)
+        let mut session = Self::open_range(repo, range, *target != Target::Current, width, height)?;
+        session.analysis.head_rev = match target {
+            Target::Current => "HEAD".to_string(),
+            Target::Branch(name) => format!("refs/heads/{name}"),
+            Target::Range { head, .. } => head.clone(),
+        };
+        Ok(session)
     }
 
     /// Like [`Session::open_target`], and ask `forge` for the pull request of
@@ -326,6 +334,7 @@ impl Session {
             repo.range_for_head(&format!("#{number}"), &reference, Some(&pr.base_branch))?;
         let mut session = Self::open_range(repo, range, true, width, height)?;
         session.pull_request = Some(pr);
+        session.analysis.head_rev = reference;
         Ok(session)
     }
 
@@ -375,6 +384,7 @@ impl Session {
             warning,
             pull_request: None,
             quit: false,
+            analysis: Default::default(),
         };
         session.load_selected();
         session.sync_view();
@@ -705,6 +715,9 @@ impl Session {
         }
 
         self.message = None;
+        if self.analysis_key(key) {
+            return;
+        }
         if self.picker {
             self.picker_key(key);
             return;
@@ -875,6 +888,7 @@ impl Session {
         match command {
             "q" | "q!" | "quit" => self.quit = true,
             "" => {}
+            other if self.analysis_command(other) => {}
             other if other.split_whitespace().next() == Some("scope") => {
                 let arg = other["scope".len()..].trim();
                 if let Err(e) = self.scope_command(arg) {
@@ -946,6 +960,7 @@ impl Session {
         if self.picker {
             self.render_picker(buf);
         }
+        self.render_summary(buf);
     }
 
     fn render_sidebar(&self, buf: &mut Buffer) {
@@ -1366,6 +1381,7 @@ impl Session {
                 self.files.len(),
             ),
         };
+        let text = self.analysis_status(&text);
         let text = match &self.warning {
             Some(w) => format!("{text}  {w}"),
             None => text,
