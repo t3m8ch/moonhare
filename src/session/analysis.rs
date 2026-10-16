@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
+use super::diagram::clear_area;
 use super::*;
 use crate::analyst::{Analyst, AnalystError, Summary, SummaryRequest};
 
@@ -152,6 +153,7 @@ impl Session {
 
     /// Collect the answers that arrived. Called by the event loop.
     pub fn tick(&mut self) {
+        self.diagram_tick();
         while let Ok(answer) = self.analysis.receiver.try_recv() {
             self.take_answer(answer);
         }
@@ -159,6 +161,7 @@ impl Session {
 
     /// Block until every request to the Analyst has been answered.
     pub fn wait_for_analyst(&mut self) {
+        self.diagram_wait();
         while !self.analysis.pending.is_empty() {
             match self.analysis.receiver.recv() {
                 Ok(answer) => self.take_answer(answer),
@@ -202,6 +205,26 @@ impl Session {
         Some((&self.analysis.cache[stale], Some(stale.0.as_str())))
     }
 
+    pub(super) fn analyst_handle(&self) -> Option<Arc<dyn Analyst>> {
+        self.analysis.analyst.clone()
+    }
+
+    pub(super) fn language_code(&self) -> String {
+        self.analysis.language.clone()
+    }
+
+    /// Where the overlays are drawn: centred, leaving a margin.
+    pub(super) fn overlay_area(&self) -> Rect {
+        let width = self.size.0.saturating_sub(4).min(100);
+        let height = self.size.1.saturating_sub(4);
+        Rect::new(
+            (self.size.0 - width) / 2,
+            (self.size.1 - height) / 2,
+            width,
+            height,
+        )
+    }
+
     fn current_key(&self) -> Key {
         (self.analysis.head.clone(), self.analysis.language.clone())
     }
@@ -210,17 +233,9 @@ impl Session {
         if !self.analysis.overlay {
             return;
         }
-        let width = self.size.0.saturating_sub(4).min(100);
-        let height = self.size.1.saturating_sub(4);
-        let area = Rect::new(
-            (self.size.0 - width) / 2,
-            (self.size.1 - height) / 2,
-            width,
-            height,
-        );
-        for y in area.y..area.y + area.height {
-            buf.set_string(area.x, y, " ".repeat(width as usize), Style::new().fg(FG));
-        }
+        let area = self.overlay_area();
+        let (width, height) = (area.width, area.height);
+        clear_area(buf, area);
         let language = &self.analysis.language;
         let shown = self.current_summary();
         let title = match shown {

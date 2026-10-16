@@ -212,6 +212,7 @@ enum Focus {
 }
 
 mod analysis;
+mod diagram;
 mod file_bar;
 mod file_picker;
 mod marks;
@@ -276,6 +277,7 @@ pub struct Session {
     pull_request: Option<PullRequest>,
     quit: bool,
     analysis: analysis::Analysis,
+    diagrams: diagram::Diagrams,
 }
 
 impl Session {
@@ -435,6 +437,7 @@ impl Session {
             pull_request: None,
             quit: false,
             analysis: Default::default(),
+            diagrams: Default::default(),
         };
         session.load_selected();
         session.sync_view();
@@ -786,7 +789,7 @@ impl Session {
         }
 
         self.message = None;
-        if self.analysis_key(key) {
+        if self.diagram_key(key) || self.analysis_key(key) {
             return;
         }
         if let Some(cursor) = self.file_picker {
@@ -984,7 +987,7 @@ impl Session {
             "q" | "q!" | "quit" => self.quit = true,
             "" => {}
             "reset" => self.reset_review(),
-            other if self.analysis_command(other) => {}
+            other if self.analysis_command(other) || self.diagram_command(other) => {}
             other if other.split_whitespace().next() == Some("scope") => {
                 let arg = other["scope".len()..].trim();
                 if let Err(e) = self.scope_command(arg) {
@@ -1066,6 +1069,7 @@ impl Session {
             self.render_picker(buf);
         }
         self.render_summary(buf);
+        self.render_diagram_overlay(buf);
         if let Some(cursor) = self.file_picker {
             self.render_file_picker(buf, cursor);
         }

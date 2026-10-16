@@ -22,9 +22,38 @@ pub struct SummaryRequest {
 }
 
 /// The Analyst's account of what a Range changes and why.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Summary {
     pub text: String,
+    /// Mermaid text of a diagram, when the Analyst judged that the interaction
+    /// of components changed.
+    pub diagram: Option<String>,
+}
+
+/// What a diagram is drawn for.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DiagramSubject {
+    /// A changed file.
+    File { path: String },
+    /// The fragment of a changed file around a line of its new version
+    /// (1-based).
+    Fragment { path: String, line: usize },
+}
+
+/// What the Analyst is asked to draw.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiagramRequest {
+    pub repo: PathBuf,
+    pub base: String,
+    pub head: String,
+    pub language: String,
+    pub subject: DiagramSubject,
+}
+
+/// A sequence or flowchart diagram as Mermaid text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagram {
+    pub mermaid: String,
 }
 
 /// Why the Analyst could not answer. The tool carries on without it.
@@ -53,4 +82,11 @@ impl std::error::Error for AnalystError {}
 pub trait Analyst: Send + Sync {
     /// Summarize the Range. May take minutes; callers run it in the background.
     fn summarize(&self, request: &SummaryRequest) -> Result<Summary, AnalystError>;
+
+    /// Draw the subject. An Analyst that cannot draw keeps this default.
+    fn diagram(&self, _request: &DiagramRequest) -> Result<Diagram, AnalystError> {
+        Err(AnalystError::Failed(
+            "this Analyst does not draw diagrams".into(),
+        ))
+    }
 }

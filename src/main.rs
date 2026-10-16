@@ -99,6 +99,12 @@ fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Re
             session.handle(event::read()?);
         }
         session.tick();
+        if let Some(text) = session.take_clipboard() {
+            use std::io::Write;
+            let mut out = io::stdout();
+            let _ = out.write_all(moonhare::clipboard::osc52(&text).as_bytes());
+            let _ = out.flush();
+        }
     }
     Ok(())
 }
