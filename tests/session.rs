@@ -47,8 +47,12 @@ fn files_switch_with_bracket_f_and_by_clicking_the_list() {
     h.keys("[f");
     assert!(h.screen().contains("file 2/3"));
 
-    // Row 0 is the sidebar border, rows 1.. are files.
-    h.click(5, 3);
+    // Click the row the file list shows for src/b.rs, wherever the panes sit.
+    let (x, y) = h
+        .frame()
+        .find("src/b.rs")
+        .expect("src/b.rs is listed in the sidebar");
+    h.click(x, y);
     assert!(h.screen().contains("file 3/3"), "click selects src/b.rs");
 }
 
