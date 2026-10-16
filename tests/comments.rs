@@ -109,7 +109,10 @@ fn comment_command_puts_a_range_comment_in_a_frame_under_the_whole_range_row() {
     let screen = h.screen();
     let rows = sidebar(&screen);
     let whole = rows.iter().position(|r| r.contains("Весь Range")).unwrap();
-    let note = rows.iter().position(|r| r.contains("extract retry")).unwrap();
+    let note = rows
+        .iter()
+        .position(|r| r.contains("extract retry"))
+        .unwrap();
     assert_eq!(note, whole + 2, "{screen}");
     // The commits follow the frame.
     let first = rows.iter().position(|r| r.contains("add a")).unwrap();
@@ -138,7 +141,10 @@ fn without_the_sidebar_a_clickable_range_counter_sits_in_the_status_line() {
 
 /// The diff pane part (from column 32) of every screen row.
 fn diff_pane(screen: &str) -> Vec<String> {
-    screen.lines().map(|l| l.chars().skip(32).collect()).collect()
+    screen
+        .lines()
+        .map(|l| l.chars().skip(32).collect())
+        .collect()
 }
 
 #[test]
@@ -150,8 +156,14 @@ fn a_comment_on_a_removed_line_belongs_to_the_old_side_and_hangs_under_it() {
     let screen = h.screen();
     assert!(screen.contains("old 2"), "{screen}");
     let rows = diff_pane(&screen);
-    let removed = rows.iter().position(|r| r.trim_end().ends_with("    1")).unwrap();
-    let added = rows.iter().position(|r| r.trim_end().ends_with("    10")).unwrap();
+    let removed = rows
+        .iter()
+        .position(|r| r.trim_end().ends_with("    1"))
+        .unwrap();
+    let added = rows
+        .iter()
+        .position(|r| r.trim_end().ends_with("    10"))
+        .unwrap();
     let note = rows.iter().position(|r| r.contains("gone")).unwrap();
     assert!(removed < note && note < added, "{screen}");
 }
@@ -261,11 +273,24 @@ fn a_comment_whose_code_is_gone_is_hidden_not_lost() {
         let mut h = Harness::open(&fx, 160, 30);
         h.keys("jjcimind this<Esc><CR>");
     }
-    fx.write("README.md", "# demo\n\nrewritten\n").commit("rewrite");
+    fx.write("README.md", "# demo\n\nrewritten\n")
+        .commit("rewrite");
     let mut h = Harness::open(&fx, 160, 30);
     let screen = h.screen();
     assert!(screen.contains("1 скрытых Comments"), "{screen}");
     assert!(!screen.contains("mind this"), "{screen}");
+}
+
+#[test]
+fn an_unsaved_draft_survives_a_resize() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("jjcihalf written");
+    h.resize(90, 25);
+    assert!(h.screen().contains("half written"), "{}", h.screen());
+    h.resize(160, 30);
+    assert_eq!(badge(&mut h), "INSERT");
+    assert!(h.screen().contains("half written"), "{}", h.screen());
 }
 
 /// The mode badge at the start of the status line.

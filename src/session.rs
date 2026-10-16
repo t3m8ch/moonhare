@@ -501,7 +501,9 @@ impl Session {
         let cap = (side.height * 35 / 100)
             .max(11)
             .min(side.height.saturating_sub(3));
-        let frame = self.range_frame(side.width.saturating_sub(2) as usize).len() as u16;
+        let frame = self
+            .range_frame(side.width.saturating_sub(2) as usize)
+            .len() as u16;
         let wanted = self.commits.len() as u16 + 3 + frame.min(cap.saturating_sub(4));
         Rect::new(side.x, side.y, side.width, wanted.min(cap))
     }
@@ -1287,7 +1289,8 @@ impl Session {
             DiffLayout::SideBySide => self.render_side_by_side(buf, loaded, area, top, height),
             DiffLayout::Inline => self.render_inline(buf, loaded, area, top, height),
         }
-        self.comment_layout().draw_header(buf, area.x, top, top + height as u16);
+        self.comment_layout()
+            .draw_header(buf, area.x, top, top + height as u16);
         self.render_selection(buf, area, top, height);
     }
 

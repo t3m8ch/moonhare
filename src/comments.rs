@@ -50,6 +50,23 @@ pub struct Comment {
     pub state: State,
 }
 
+/// Where the code a line Comment was written on is in `lines` now: the stored
+/// place when the snapshot still sits there, else the nearest place that holds
+/// it, else nowhere.
+pub fn locate(lines: &[String], start: usize, snapshot: &[String]) -> Option<usize> {
+    let len = snapshot.len();
+    if len == 0 || len > lines.len() {
+        return None;
+    }
+    let at = |i: usize| lines[i..i + len] == *snapshot;
+    if start + len <= lines.len() && at(start) {
+        return Some(start);
+    }
+    (0..=lines.len() - len)
+        .filter(|&i| at(i))
+        .min_by_key(|&i| i.abs_diff(start))
+}
+
 /// All Comments of a Review, in the order they were written, kept in the
 /// Review's directory inside the clone's `.git`.
 #[derive(Debug, Default)]

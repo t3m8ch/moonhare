@@ -66,7 +66,13 @@ impl CommentLayout {
             if y >= bottom {
                 return;
             }
-            buf.set_stringn(x, y, &row.text, buf.area.width.saturating_sub(x) as usize, row.style);
+            buf.set_stringn(
+                x,
+                y,
+                &row.text,
+                buf.area.width.saturating_sub(x) as usize,
+                row.style,
+            );
         }
     }
 
@@ -76,7 +82,13 @@ impl CommentLayout {
             if y >= bottom {
                 return;
             }
-            buf.set_stringn(x, y, &row.text, buf.area.width.saturating_sub(x) as usize, row.style);
+            buf.set_stringn(
+                x,
+                y,
+                &row.text,
+                buf.area.width.saturating_sub(x) as usize,
+                row.style,
+            );
         }
     }
 }
@@ -95,7 +107,13 @@ fn wrap(text: &str, width: usize) -> Vec<String> {
     out
 }
 
-fn comment_box(width: usize, header: &str, body: &str, footer: Option<&str>, style: Style) -> Vec<CRow> {
+fn comment_box(
+    width: usize,
+    header: &str,
+    body: &str,
+    footer: Option<&str>,
+    style: Style,
+) -> Vec<CRow> {
     let pad = " ".repeat(INDENT);
     let row = |text: String| CRow { text, style };
     let mut rows = vec![row(format!("{pad}┌ {header}"))];
@@ -138,34 +156,51 @@ impl Session {
         })
     }
 
+    /// Where a line Comment of the displayed file is in its code now.
+    fn place_of(&self, c: &Comment) -> Option<(Side, usize, usize)> {
+        let Target::Lines {
+            path,
+            side,
+            start,
+            end,
+            snapshot,
+        } = &c.target
+        else {
+            return None;
+        };
+        let (Some(file), Some(Ok(loaded))) = (self.files.get(self.selected), &self.loaded) else {
+            return None;
+        };
+        if *path != file.path {
+            return None;
+        }
+        let at = crate::comments::locate(loaded.lines(*side), *start, snapshot)?;
+        Some((*side, at, at + (end - start)))
+    }
+
     /// The Comment boxes of the displayed file, with the draft.
     pub(super) fn comment_layout(&self) -> CommentLayout {
         let mut under: HashMap<usize, Vec<CRow>> = HashMap::new();
         let mut header = Vec::new();
         let Some(file) = self.files.get(self.selected) else {
-            return CommentLayout { header, top: self.vp.top, under };
+            return CommentLayout {
+                header,
+                top: self.vp.top,
+                under,
+            };
         };
         let width = self.diff_area().width as usize;
         for c in self.comments.all() {
             if matches!(&c.target, Target::File { path } if *path == file.path) {
                 header.extend(self.saved_box(width, c, "file".into()));
             }
-            if let Target::Lines {
-                path,
-                side,
-                start,
-                end,
-                ..
-            } = &c.target
-            {
-                if *path != file.path {
-                    continue;
-                }
-                if let Some(item) = self.item_of_line(*side, *end) {
-                    under
-                        .entry(item)
-                        .or_default()
-                        .extend(self.saved_box(width, c, lines_label(*side, *start, *end)));
+            if let Some((side, start, end)) = self.place_of(c) {
+                if let Some(item) = self.item_of_line(side, end) {
+                    under.entry(item).or_default().extend(self.saved_box(
+                        width,
+                        c,
+                        lines_label(side, start, end),
+                    ));
                 }
             }
         }
@@ -198,7 +233,11 @@ impl Session {
                 }
             }
         }
-        CommentLayout { header, top: self.vp.top, under }
+        CommentLayout {
+            header,
+            top: self.vp.top,
+            under,
+        }
     }
 
     fn saved_box(&self, width: usize, c: &Comment, place: String) -> Vec<CRow> {
@@ -284,7 +323,10 @@ impl Session {
             if y >= bottom {
                 break;
             }
-            buf.set_style(Rect::new(area.x, y, area.width, 1), Style::new().bg(Color::Indexed(24)));
+            buf.set_style(
+                Rect::new(area.x, y, area.width, 1),
+                Style::new().bg(Color::Indexed(24)),
+            );
         }
     }
 
@@ -355,10 +397,13 @@ impl Session {
             return vec![];
         };
         let on_line = self.cursor_line().map(|(side, line)| {
-            ids(&|t| {
-                matches!(t, Target::Lines { path, side: s, start, end, .. }
-                    if *path == file.path && *s == side && (*start..=*end).contains(&line))
-            })
+            (self.comments.all().iter())
+                .filter(|c| {
+                    self.place_of(c)
+                        .is_some_and(|(s, a, b)| s == side && (a..=b).contains(&line))
+                })
+                .map(|c| c.id)
+                .collect::<Vec<_>>()
         });
         match on_line {
             Some(found) if !found.is_empty() => found,
@@ -387,11 +432,11 @@ impl Session {
             .filter(|c| match &c.target {
                 Target::Range => false,
                 Target::File { path } => !self.files.iter().any(|f| f.path == *path),
-                Target::Lines {
-                    path, side, end, ..
-                } => {
+                Target::Lines { path, .. } => {
                     if open == Some(path) {
-                        self.item_of_line(*side, *end).is_none()
+                        self.place_of(c)
+                            .and_then(|(side, _, end)| self.item_of_line(side, end))
+                            .is_none()
                     } else {
                         !self.files.iter().any(|f| f.path == *path)
                     }
@@ -436,7 +481,11 @@ impl Session {
             let lines = wrap(&c.text, width.saturating_sub(5));
             let shown = lines.len().min(2);
             for (k, line) in lines.iter().take(shown).enumerate() {
-                let more = if k + 1 == shown && lines.len() > shown { "…" } else { "" };
+                let more = if k + 1 == shown && lines.len() > shown {
+                    "…"
+                } else {
+                    ""
+                };
                 rows.push(row(format!("   │ {line}{more}")));
             }
             rows.push(row("   └".to_string()));
@@ -493,8 +542,18 @@ impl Session {
             buf.set_string(area.x, y, " ".repeat(width as usize), Style::new().fg(FG));
         }
         draw_box(buf, area, &what);
-        for (k, line) in lines.iter().take(height.saturating_sub(2) as usize).enumerate() {
-            buf.set_stringn(area.x + 2, area.y + 1 + k as u16, line, inner, Style::new().fg(FG));
+        for (k, line) in lines
+            .iter()
+            .take(height.saturating_sub(2) as usize)
+            .enumerate()
+        {
+            buf.set_stringn(
+                area.x + 2,
+                area.y + 1 + k as u16,
+                line,
+                inner,
+                Style::new().fg(FG),
+            );
         }
     }
 
