@@ -22,7 +22,7 @@ impl Session {
                 ('g', KeyCode::Char('g')) => self.go_to_line(count),
                 (']', KeyCode::Char('f')) => {
                     let last = self.files.len().saturating_sub(1);
-                    self.select((self.selected + count.unwrap_or(1)).min(last));
+                    self.select(self.selected.saturating_add(count.unwrap_or(1)).min(last));
                 }
                 ('[', KeyCode::Char('f')) => {
                     self.select(self.selected.saturating_sub(count.unwrap_or(1)));
@@ -38,7 +38,12 @@ impl Session {
             // A lone `0` is a command; after other digits it extends the count.
             if !ctrl && (c != '0' || self.count.is_some()) {
                 let digit = c as usize - '0' as usize;
-                self.count = Some(self.count.unwrap_or(0).saturating_mul(10) + digit);
+                self.count = Some(
+                    self.count
+                        .unwrap_or(0)
+                        .saturating_mul(10)
+                        .saturating_add(digit),
+                );
                 return true;
             }
         }
@@ -62,10 +67,13 @@ impl Session {
                 None => self.vp.jump_to(total.saturating_sub(1), total, height),
             },
             KeyCode::Char('l') if !ctrl => {
-                self.hscroll = (self.hscroll + n * HSCROLL_STEP).min(self.max_hscroll());
+                self.hscroll = self
+                    .hscroll
+                    .saturating_add(n.saturating_mul(HSCROLL_STEP))
+                    .min(self.max_hscroll());
             }
             KeyCode::Char('h') if !ctrl => {
-                self.hscroll = self.hscroll.saturating_sub(n * HSCROLL_STEP);
+                self.hscroll = self.hscroll.saturating_sub(n.saturating_mul(HSCROLL_STEP));
             }
             KeyCode::Char('0') if !ctrl => self.hscroll = 0,
             KeyCode::Char(c @ ('g' | ']' | '[')) if !ctrl => {
