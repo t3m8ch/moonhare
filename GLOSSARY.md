@@ -53,6 +53,13 @@ Marks a file or Group whose changes need no close reading, such as generated fil
 _Russian_: механическое
 _Avoid_: boilerplate, trivial
 
+### Hosting
+
+**Forge**:
+The code-hosting service that holds the repository and its pull requests. GitHub is the only supported one for now; others (GitLab, Forgejo) can be added later.
+_Russian_: форж
+_Avoid_: host, provider, platform
+
 ### Roles
 
 **Reviewer**:
