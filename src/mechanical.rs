@@ -68,12 +68,14 @@ fn generated_paths(repo: &Repo, head: &str, files: &[ChangedFile]) -> HashSet<St
         return HashSet::new();
     };
     // Triples of path, attribute and value, each ended by a NUL.
-    let fields: Vec<&[u8]> = raw.split(|&b| b == 0).collect();
-    fields
-        .chunks_exact(3)
-        .filter(|t| matches!(t[2], b"set" | b"true"))
-        .map(|t| String::from_utf8_lossy(t[0]).into_owned())
-        .collect()
+    let mut fields = raw.split(|&b| b == 0);
+    let mut found = HashSet::new();
+    while let (Some(path), Some(_), Some(value)) = (fields.next(), fields.next(), fields.next()) {
+        if matches!(value, b"set" | b"true") {
+            found.insert(String::from_utf8_lossy(path).into_owned());
+        }
+    }
+    found
 }
 
 /// Paths git itself treats as binary in `base..head` (a NUL byte, or a `-diff`
