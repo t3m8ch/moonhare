@@ -1,6 +1,7 @@
 use std::io;
 use std::process::ExitCode;
 
+use moonhare::git::Target;
 use moonhare::session::Session;
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
@@ -14,7 +15,13 @@ fn main() -> ExitCode {
         }
     };
     let (width, height) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
-    let mut session = match Session::open(&cwd, width, height) {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.len() > 1 {
+        eprintln!("usage: moonhare [<branch> | <base>..<head>]");
+        return ExitCode::FAILURE;
+    }
+    let target = Target::from_arg(args.first().map(String::as_str));
+    let mut session = match Session::open_target(&cwd, &target, width, height) {
         Ok(s) => s,
         Err(e) => {
             eprintln!("moonhare: {e}");

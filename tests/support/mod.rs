@@ -6,6 +6,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use moonhare::git::Target;
 use moonhare::session::{Frame, Session};
 use ratatui::crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -38,6 +39,8 @@ impl Fixture {
         let out = Command::new("git")
             .args(args)
             .current_dir(self.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .output()
             .unwrap();
         assert!(
@@ -140,6 +143,19 @@ impl Harness {
         Harness {
             session: Session::open(fx.path(), width, height).expect("session opens"),
         }
+    }
+
+    pub fn try_open_target(
+        fx: &Fixture,
+        target: &Target,
+        width: u16,
+        height: u16,
+    ) -> Result<Self, moonhare::session::Error> {
+        Session::open_target(fx.path(), target, width, height).map(|session| Harness { session })
+    }
+
+    pub fn open_target(fx: &Fixture, target: &Target, width: u16, height: u16) -> Self {
+        Self::try_open_target(fx, target, width, height).expect("session opens")
     }
 
     /// Feed keys written in Vim notation: plain characters plus `<Esc>`,

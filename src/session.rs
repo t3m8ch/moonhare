@@ -16,7 +16,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::diff::{diff_file, FileDiff, FileKind, Highlight, Limits, Side, Token};
-use crate::git::{ChangedFile, GitError, Range, Repo, Status};
+use crate::git::{ChangedFile, GitError, Range, Repo, Status, Target};
 
 /// Below this size the session shows a "terminal too small" screen.
 pub const MIN_SIZE: (u16, u16) = (60, 15);
@@ -191,15 +191,37 @@ pub struct Session {
     mode: Mode,
     pending: Option<char>,
     message: Option<String>,
+    /// A standing caveat about the Range, shown until the Review closes.
+    warning: Option<String>,
     quit: bool,
 }
 
 impl Session {
     /// Open the current branch of the clone containing `repo_path` as a Range.
     pub fn open(repo_path: &Path, width: u16, height: u16) -> Result<Session, Error> {
+        Self::open_target(repo_path, &Target::Current, width, height)
+    }
+
+    /// Open the Range that `target` names in the clone containing `repo_path`.
+    pub fn open_target(
+        repo_path: &Path,
+        target: &Target,
+        width: u16,
+        height: u16,
+    ) -> Result<Session, Error> {
         let repo = Repo::open(repo_path)?;
-        let range = repo.current_range()?;
+        let range = repo.range_for(target)?;
+        if *target != Target::Current && repo.commit_count(&range.base, &range.head)? == 0 {
+            return Err(Error(format!(
+                "empty range: no commits between {} and {}",
+                range.base_name, range.head_name
+            )));
+        }
         let files = repo.changed_files(&range.base, &range.head)?;
+        let merges = repo.merge_commit_count(&range.base, &range.head)?;
+        let warning = (merges > 0).then(|| {
+            format!("⚠ {merges} merge commit(s) in range, compared against the first parent")
+        });
         let mut session = Session {
             repo,
             range,
@@ -212,6 +234,7 @@ impl Session {
             mode: Mode::Normal,
             pending: None,
             message: None,
+            warning,
             quit: false,
         };
         session.load_selected();
@@ -751,6 +774,10 @@ impl Session {
                 },
                 self.files.len(),
             ),
+        };
+        let text = match &self.warning {
+            Some(w) => format!("{text}  {w}"),
+            None => text,
         };
         buf.set_stringn(8, y, &text, width.saturating_sub(8), bar);
     }

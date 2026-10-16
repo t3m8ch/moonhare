@@ -55,6 +55,33 @@ pub struct Range {
     pub head: String,
 }
 
+/// What the reviewer asked to open.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    /// The branch checked out in the clone.
+    Current,
+    /// A local branch by name, measured against the default branch.
+    Branch(String),
+    /// An explicit `base..head`; each end is any revision.
+    Range { base: String, head: String },
+}
+
+impl Target {
+    /// Interpret the command-line argument: nothing, a branch, or `base..head`.
+    pub fn from_arg(arg: Option<&str>) -> Target {
+        match arg {
+            None => Target::Current,
+            Some(a) => match a.split_once("..") {
+                Some((base, head)) => Target::Range {
+                    base: base.to_string(),
+                    head: head.to_string(),
+                },
+                None => Target::Branch(a.to_string()),
+            },
+        }
+    }
+}
+
 pub struct Repo {
     root: PathBuf,
 }
@@ -121,15 +148,49 @@ impl Repo {
         ))
     }
 
+    fn commit_id(&self, rev: &str) -> Result<String, GitError> {
+        if !self.resolves(rev) {
+            return Err(GitError(format!("unknown revision: {rev}")));
+        }
+        let id = self.run(&["rev-parse", "--verify", &format!("{rev}^{{commit}}")])?;
+        Ok(id.trim().to_string())
+    }
+
+    /// The Range a [`Target`] names.
+    pub fn range_for(&self, target: &Target) -> Result<Range, GitError> {
+        match target {
+            Target::Current => self.current_range(),
+            Target::Branch(name) => {
+                let full = format!("refs/heads/{name}");
+                if !self.resolves(&full) {
+                    return Err(GitError(format!("no such branch: {name}")));
+                }
+                self.branch_range(name, &full)
+            }
+            Target::Range { base: b, head: h } => Ok(Range {
+                head_name: h.clone(),
+                base_name: b.clone(),
+                base: self.commit_id(b)?,
+                head: self.commit_id(h)?,
+            }),
+        }
+    }
+
     /// The Range of the current branch: merge-base with the default branch up
     /// to HEAD.
     pub fn current_range(&self) -> Result<Range, GitError> {
-        let head = self.run(&["rev-parse", "--verify", "HEAD^{commit}"])?;
-        let head = head.trim().to_string();
         let head_name = self
             .run(&["symbolic-ref", "-q", "--short", "HEAD"])
             .map(|s| s.trim().to_string())
             .unwrap_or_else(|_| "HEAD".to_string());
+        self.branch_range(&head_name, "HEAD")
+    }
+
+    /// Merge-base of `rev` with the default branch, up to `rev`.
+    fn branch_range(&self, head_name: &str, rev: &str) -> Result<Range, GitError> {
+        let head = self.run(&["rev-parse", "--verify", &format!("{rev}^{{commit}}")])?;
+        let head = head.trim().to_string();
+        let head_name = head_name.to_string();
         let base_name = self.default_branch()?;
         let base = self.run(&["merge-base", &base_name, &head])?;
         Ok(Range {
@@ -138,6 +199,28 @@ impl Repo {
             base: base.trim().to_string(),
             head,
         })
+    }
+
+    /// How many commits lie in `base..head`.
+    pub fn commit_count(&self, base: &str, head: &str) -> Result<usize, GitError> {
+        self.count_commits(&["rev-list", "--count", &format!("{base}..{head}")])
+    }
+
+    /// How many merge commits lie in `base..head`.
+    pub fn merge_commit_count(&self, base: &str, head: &str) -> Result<usize, GitError> {
+        self.count_commits(&[
+            "rev-list",
+            "--merges",
+            "--count",
+            &format!("{base}..{head}"),
+        ])
+    }
+
+    fn count_commits(&self, args: &[&str]) -> Result<usize, GitError> {
+        let out = self.run(args)?;
+        out.trim()
+            .parse()
+            .map_err(|_| GitError(format!("unexpected rev-list output: {out}")))
     }
 
     /// Files whose content differs between `base` and `head`.
