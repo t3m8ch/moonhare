@@ -1,0 +1,13 @@
+Upstream: https://github.com/Wilfred/difftastic
+Version:  0.71.0
+Commit:   b7d119e90ac9f972f03f69508da765dacd302c0c
+License:  MIT (see LICENSE)
+
+Local changes relative to the upstream snapshot:
+- src/main.rs removed; src/lib.rs added (in-process entry point, see ADR 0001).
+- Only src/, build.rs, LICENSE and the files listed in upstream's `include`
+  (vendored_parsers highlights and C/H sources) are kept.
+- Cargo.toml turned into a library manifest (no binary, no jemalloc).
+- src/options.rs: `env!("CARGO_BIN_NAME")` replaced by "difft".
+- vendored_parsers/highlights/*.scm that were symlinks into other parser
+  directories are real file copies.
