@@ -53,6 +53,10 @@ fn main() -> ExitCode {
         }
     };
 
+    let colorterm = std::env::var("COLORTERM").ok();
+    let forced = std::env::var("MOONHARE_TRUECOLOR").is_ok_and(|v| v == "1");
+    session
+        .set_truecolor(forced || moonhare::color::truecolor_from_colorterm(colorterm.as_deref()));
     if let Some(language) = language {
         session.set_language(&language);
     }
