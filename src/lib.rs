@@ -9,6 +9,7 @@ pub mod forge;
 pub mod git;
 pub mod github;
 pub mod hints;
+pub mod mechanical;
 pub mod review;
 pub mod session;
 pub mod special;

@@ -94,6 +94,20 @@ fn which_key_and_help_list_the_analyst_summary() {
 }
 
 #[test]
+fn help_lists_enter_for_collapsed_mechanical_files() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 120, 60);
+    h.keys("?");
+    let screen = h.screen();
+    assert!(
+        screen
+            .lines()
+            .any(|l| l.contains("развернуть свёрнутый механический файл")),
+        "{screen}"
+    );
+}
+
+#[test]
 fn no_which_key_before_the_pause() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 100, 30);

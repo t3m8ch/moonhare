@@ -73,12 +73,14 @@ fn created_deleted_and_binary_files_are_shown() {
     for f in ["gone.txt", "blob.bin", "fresh.txt"] {
         assert!(screen.contains(f), "{f} listed:\n{screen}");
     }
-    // Sorted: blob.bin, fresh.txt, gone.txt.
-    assert!(screen.contains("Binary file not shown"), "{screen}");
-    h.keys("]f");
-    assert!(h.screen().contains("hello fresh"));
+    // Sorted: fresh.txt, gone.txt, then the binary blob.bin, which is Mechanical.
+    assert!(screen.contains("hello fresh"), "{screen}");
     h.keys("]f");
     assert!(h.screen().contains("bye bye"));
+    h.keys("]f");
+    assert!(!h.screen().contains("Binary file not shown"));
+    h.keys("<CR>");
+    assert!(h.screen().contains("Binary file not shown"));
 }
 
 #[test]
