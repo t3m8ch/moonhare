@@ -289,6 +289,12 @@ impl Session {
             };
             commit_changes.push(review::file_changes(&repo, parent, &commit.sha)?);
         }
+        // A Review belongs to the branch name, or to the explicit range string.
+        let review_name = match target {
+            Target::Range { base, head } => format!("range {base}..{head}"),
+            _ => format!("branch {}", range.head_name),
+        };
+        let review = Review::open(&repo, &review_name)?;
         let merges = repo.merge_commit_count(&range.base, &range.head)?;
         let warning = (merges > 0).then(|| {
             format!("⚠ {merges} merge commit(s) in range, compared against the first parent")
@@ -304,7 +310,7 @@ impl Session {
             picker: false,
             range_files: files.clone(),
             commit_changes,
-            review: Review::default(),
+            review,
             files,
             selected: 0,
             loaded: None,
@@ -390,7 +396,9 @@ impl Session {
     /// Rows available to the file list (the pane minus its border and the
     /// two progress rows).
     fn sidebar_capacity(&self) -> usize {
-        self.files_area().height.saturating_sub(2 + marks::PROGRESS_ROWS) as usize
+        self.files_area()
+            .height
+            .saturating_sub(2 + marks::PROGRESS_ROWS) as usize
     }
 
     fn sidebar_offset(&self) -> usize {
@@ -689,6 +697,7 @@ impl Session {
             }
             KeyCode::Char('a') if !ctrl => self.show_whole_range(),
             KeyCode::Char('m') if !ctrl => self.toggle_mark(),
+            KeyCode::Char('M') if !ctrl => self.mark_and_advance(),
             KeyCode::Tab => {
                 self.focus = match self.focus {
                     Focus::Diff => Focus::Commits,
@@ -819,6 +828,7 @@ impl Session {
         match command {
             "q" | "q!" | "quit" => self.quit = true,
             "" => {}
+            "reset" => self.reset_review(),
             other if other.split_whitespace().next() == Some("scope") => {
                 let arg = other["scope".len()..].trim();
                 if let Err(e) = self.scope_command(arg) {

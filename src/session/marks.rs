@@ -51,10 +51,56 @@ impl Session {
             return;
         }
         let changes = self.scope_changes(self.selected);
-        if self.review.state(&changes) == Mark::Reviewed {
-            self.review.unmark(&changes);
+        let saved = if self.review.state(&changes) == Mark::Reviewed {
+            self.review.unmark(&changes)
         } else {
-            self.review.mark(&changes);
+            self.review.mark(&self.repo, &changes)
+        };
+        self.report(saved);
+    }
+
+    /// `:reset`: forget every mark of this Review and release its pins.
+    pub(super) fn reset_review(&mut self) {
+        let reset = self.review.reset(&self.repo);
+        match reset {
+            Ok(()) => self.message = Some("Review reset".into()),
+            Err(e) => self.message = Some(e),
+        }
+    }
+
+    /// Show a failure to save the Review; the marks stay in memory.
+    fn report(&mut self, saved: Result<(), String>) {
+        if let Err(e) = saved {
+            self.message = Some(e);
+        }
+    }
+
+    /// `M`: mark the selected file Reviewed (never the other way round) and
+    /// move to the next unreviewed one.
+    pub(super) fn mark_and_advance(&mut self) {
+        if self.files.is_empty() {
+            return;
+        }
+        let changes = self.scope_changes(self.selected);
+        let saved = self.review.mark(&self.repo, &changes);
+        self.report(saved);
+        self.jump_unreviewed(true);
+    }
+
+    /// `]u` / `[u`: the nearest file after / before the selected one that is
+    /// not fully Reviewed in the Scope.
+    pub(super) fn jump_unreviewed(&mut self, forward: bool) {
+        let target = if forward {
+            (self.selected + 1..self.files.len()).find(|&i| self.mark_of(i) != Mark::Reviewed)
+        } else {
+            (0..self.selected)
+                .rev()
+                .find(|&i| self.mark_of(i) != Mark::Reviewed)
+        };
+        match target {
+            Some(i) => self.select(i),
+            None if forward => self.message = Some("No more unreviewed files".into()),
+            None => self.message = Some("No previous unreviewed file".into()),
         }
     }
 
@@ -63,9 +109,7 @@ impl Session {
         let count = |files: &[ChangedFile], scope: Scope| {
             let done = files
                 .iter()
-                .filter(|f| {
-                    self.review.state(&self.changes_of(&f.path, scope)) == Mark::Reviewed
-                })
+                .filter(|f| self.review.state(&self.changes_of(&f.path, scope)) == Mark::Reviewed)
                 .count();
             (done, files.len())
         };
@@ -79,11 +123,7 @@ impl Session {
     /// the Scope and `whole Range 4/9` for the Range.
     pub(super) fn render_progress(&self, buf: &mut Buffer, area: Rect) {
         let (scope, range) = self.progress();
-        let filled = if scope.1 == 0 {
-            0
-        } else {
-            scope.0 * BAR_WIDTH / scope.1
-        };
+        let filled = (scope.0 * BAR_WIDTH).checked_div(scope.1).unwrap_or(0);
         let bar = format!("{}{}", "█".repeat(filled), "░".repeat(BAR_WIDTH - filled));
         let width = area.width.saturating_sub(2) as usize;
         let rows = [

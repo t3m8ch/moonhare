@@ -89,6 +89,142 @@ fn progress_counters_follow_the_scope() {
     assert!(screen.contains("reviewed 1/1 [████████]"), "{screen}");
 }
 
+/// Path of the file under the sidebar cursor.
+fn current(h: &mut Harness) -> &'static str {
+    let screen = h.screen();
+    let row = screen
+        .lines()
+        .map(|l| l.chars().take(32).collect::<String>())
+        .find(|l| l.starts_with("│>"))
+        .unwrap_or_else(|| panic!("no cursor row:\n{screen}"));
+    ["README.md", "src/a.rs", "src/b.rs"]
+        .into_iter()
+        .find(|p| row.contains(p))
+        .unwrap_or_else(|| panic!("unexpected cursor row {row}"))
+}
+
+#[test]
+fn capital_m_marks_and_moves_to_the_next_unreviewed_file() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("M");
+    assert!(file_row(&mut h, "README.md").contains('✓'));
+    assert_eq!(current(&mut h), "src/a.rs");
+    h.keys("]f]fM");
+    // Nothing unreviewed is left after b.rs: the cursor stays and says so.
+    assert_eq!(current(&mut h), "src/b.rs");
+    assert!(file_row(&mut h, "src/b.rs").contains('✓'));
+    assert!(h.screen().contains("No more unreviewed"), "{}", h.screen());
+}
+
+#[test]
+fn u_jumps_over_reviewed_files_and_f_always_reaches_them() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("]fm]f");
+    // README is unreviewed, a.rs reviewed, b.rs unreviewed; cursor on b.rs.
+    assert_eq!(current(&mut h), "src/b.rs");
+    h.keys("[u");
+    assert_eq!(current(&mut h), "README.md");
+    h.keys("]u");
+    assert_eq!(current(&mut h), "src/b.rs");
+    h.keys("[f");
+    assert_eq!(current(&mut h), "src/a.rs");
+    h.keys("[f]f");
+    assert_eq!(current(&mut h), "src/a.rs");
+}
+
+#[test]
+fn marks_survive_a_restart_and_follow_the_branch_name() {
+    let fx = feature_branch();
+    Harness::open(&fx, 160, 30).keys("]fm]fm");
+
+    let mut h = Harness::open(&fx, 160, 30);
+    assert!(file_row(&mut h, "src/a.rs").contains('✓'));
+    assert!(file_row(&mut h, "src/b.rs").contains('✓'));
+    assert!(!file_row(&mut h, "README.md").contains('✓'));
+    assert!(h.screen().contains("reviewed 2/3"), "{}", h.screen());
+
+    // The same Review is reached from another checkout by branch name.
+    fx.checkout("main");
+    let target = moonhare::git::Target::Branch("feature".into());
+    let mut h = Harness::open_target(&fx, &target, 160, 30);
+    assert!(file_row(&mut h, "src/a.rs").contains('✓'));
+}
+
+#[test]
+fn an_explicit_range_is_its_own_review_and_the_working_copy_stays_clean() {
+    let fx = feature_branch();
+    Harness::open(&fx, 160, 30).keys("m");
+    let range = moonhare::git::Target::from_arg(Some("main..feature"));
+    let mut h = Harness::open_target(&fx, &range, 160, 30);
+    assert!(!file_row(&mut h, "README.md").contains('✓'));
+    h.keys("m");
+    drop(h);
+    // Neither the branch nor the working copy is touched by marking.
+    assert_eq!(fx.git(&["status", "--porcelain"]), "");
+    assert!(fx
+        .git(&["for-each-ref", "refs/heads"])
+        .contains("refs/heads/feature"));
+}
+
+#[test]
+fn marks_survive_rewritten_history_when_the_content_is_the_same() {
+    let fx = feature_branch();
+    Harness::open(&fx, 160, 30).keys("]fm");
+    // Amending the message rewrites the SHA of the last commit.
+    fx.git(&["commit", "-q", "--amend", "-m", "change a (reworded)"]);
+    let mut h = Harness::open(&fx, 160, 30);
+    assert!(file_row(&mut h, "src/a.rs").contains('✓'));
+
+    // Changing the file again invalidates only that file's mark.
+    fx.write("src/a.rs", "fn a() {\n    11\n}\n")
+        .commit("tweak a");
+    let mut h = Harness::open(&fx, 160, 30);
+    assert!(file_row(&mut h, "src/a.rs").contains('◐'));
+}
+
+#[test]
+fn reviewed_versions_survive_git_gc() {
+    let fx = feature_branch();
+    let newest = fx
+        .git(&["rev-parse", "feature:src/a.rs"])
+        .trim()
+        .to_string();
+    let first = fx
+        .git(&["rev-parse", "feature~2:src/a.rs"])
+        .trim()
+        .to_string();
+    Harness::open(&fx, 160, 30).keys("]fm");
+
+    // Drop every other way to reach the commits, then collect garbage.
+    fx.checkout("main");
+    fx.git(&["branch", "-D", "feature"]);
+    fx.git(&["reflog", "expire", "--expire=now", "--all"]);
+    fx.git(&["gc", "-q", "--prune=now"]);
+
+    for blob in [newest, first] {
+        fx.git(&["cat-file", "-e", &blob]);
+    }
+}
+
+#[test]
+fn reset_clears_the_review_and_its_pins() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("m]fm");
+    assert!(h.screen().contains("reviewed 2/3"), "{}", h.screen());
+    assert!(!fx.git(&["for-each-ref", "refs/moonhare"]).is_empty());
+
+    h.keys(":reset<CR>");
+    assert!(h.screen().contains("reviewed 0/3"), "{}", h.screen());
+    assert!(!file_row(&mut h, "README.md").contains('✓'));
+    assert_eq!(fx.git(&["for-each-ref", "refs/moonhare"]), "");
+
+    let mut h = Harness::open(&fx, 160, 30);
+    assert!(h.screen().contains("reviewed 0/3"), "{}", h.screen());
+}
+
 #[test]
 fn m_again_takes_the_mark_back() {
     let fx = feature_branch();
