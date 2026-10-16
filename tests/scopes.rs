@@ -332,3 +332,33 @@ fn bracket_c_steps_through_single_commits_at_once() {
         "{row}"
     );
 }
+
+#[test]
+fn a_scope_spanning_a_rename_and_a_later_edit_shows_one_renamed_file() {
+    let body = "fn alpha() {\n    1\n}\n\nfn beta() {\n    2\n}\n\nfn gamma() {\n    3\n}\n";
+    let fx = Fixture::new();
+    fx.write("old_name.rs", body).commit("initial");
+    fx.branch("feature");
+    fx.write("other.txt", "other\n").commit("unrelated");
+    fx.git(&["mv", "old_name.rs", "new_name.rs"]);
+    fx.commit("rename");
+    fx.write("new_name.rs", &body.replace("    2\n", "    22\n"))
+        .commit("edit");
+    let mut h = Harness::open(&fx, 160, 30);
+
+    h.keys(":scope 2-3<CR>");
+    let screen = h.screen();
+    assert!(screen.contains("Files (1)"), "{screen}");
+    let header = row_with(&screen, "renamed").unwrap_or_else(|| panic!("renamed:\n{screen}"));
+    assert!(
+        header.contains("old_name.rs") && header.contains("new_name.rs"),
+        "{screen}"
+    );
+    assert!(screen.contains("22"), "the edit is in the Scope:\n{screen}");
+
+    // The edit alone is a plain modification of the new path.
+    h.keys(":scope 3<CR>");
+    let screen = h.screen();
+    assert!(!screen.contains("renamed"), "{screen}");
+    assert!(screen.contains("new_name.rs"), "{screen}");
+}
