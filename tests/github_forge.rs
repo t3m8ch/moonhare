@@ -24,7 +24,7 @@ impl FakeGh {
         fs::write(dir.path().join("stderr"), stderr).unwrap();
         let script = format!(
             "#!/bin/sh\n[ \"$1\" = --probe ] && exit 0\nd='{}'\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> \"$d/args\"; done\n\
-             printf -- '--\\n' >> \"$d/args\"\ncat \"$d/stdout\"\ncat \"$d/stderr\" >&2\nexit {status}\n",
+             printf '<<end>>\\n' >> \"$d/args\"\ncat \"$d/stdout\"\ncat \"$d/stderr\" >&2\nexit {status}\n",
             dir.path().display()
         );
         let path = dir.path().join("gh");
@@ -47,7 +47,7 @@ impl FakeGh {
     /// One entry per invocation, arguments joined by spaces.
     fn calls(&self) -> Vec<String> {
         let log = fs::read_to_string(self.dir.path().join("args")).unwrap_or_default();
-        log.split("--\n")
+        log.split("<<end>>\n")
             .filter(|c| !c.is_empty())
             .map(|c| c.lines().collect::<Vec<_>>().join(" "))
             .collect()
@@ -75,7 +75,21 @@ fn finds_the_pull_request_of_a_branch_with_title_description_and_base() {
     );
     assert_eq!(
         gh.calls(),
-        vec!["pr view feature --json number,title,body,baseRefName"]
+        vec!["pr view --json number,title,body,baseRefName -- feature"]
+    );
+}
+
+#[test]
+fn a_branch_name_with_a_leading_dash_is_not_taken_for_a_flag() {
+    let gh = FakeGh::replying(PR_JSON);
+
+    GitHub::with_program(gh.program())
+        .pull_request_for_branch("--web")
+        .unwrap();
+
+    assert_eq!(
+        gh.calls(),
+        vec!["pr view --json number,title,body,baseRefName -- --web"]
     );
 }
 
@@ -117,7 +131,7 @@ fn looks_up_a_pull_request_by_number_and_reports_an_unknown_one() {
     assert_eq!(pr.title, "Add retry");
     assert_eq!(
         gh.calls(),
-        vec!["pr view 42 --json number,title,body,baseRefName"]
+        vec!["pr view --json number,title,body,baseRefName -- 42"]
     );
 
     let gh = FakeGh::with(

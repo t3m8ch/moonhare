@@ -38,7 +38,7 @@ impl GitHub {
 
     fn view(&self, selector: &str) -> Result<PullRequest, ForgeError> {
         let out = Command::new(&self.program)
-            .args(["pr", "view", selector, "--json", PR_FIELDS])
+            .args(["pr", "view", "--json", PR_FIELDS, "--", selector])
             .output()
             .map_err(|e| self.spawn_error(&e))?;
         if !out.status.success() {

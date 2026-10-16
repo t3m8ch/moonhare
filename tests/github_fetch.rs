@@ -9,6 +9,13 @@ use support::Fixture;
 /// `server` plays GitHub: it advertises pull request 7 as `refs/pull/7/head`.
 /// `clone` is the reviewer's clone with `server` as `origin`.
 fn server_and_clone() -> (Fixture, Fixture, String) {
+    // The adapter runs `git` itself; keep it away from the developer's config.
+    static ISOLATE: std::sync::Once = std::sync::Once::new();
+    ISOLATE.call_once(|| {
+        std::env::set_var("GIT_CONFIG_GLOBAL", "/dev/null");
+        std::env::set_var("GIT_CONFIG_NOSYSTEM", "1");
+    });
+
     let server = Fixture::new();
     server.write("README.md", "# demo\n").commit("initial");
     server.branch("pr-source");

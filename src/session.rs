@@ -18,7 +18,7 @@ use ratatui::style::{Color, Modifier, Style};
 use crate::diff::{diff_file, FileDiff, FileKind, Highlight, Limits, Side, Token};
 use crate::fold::{fold, Folded, Item};
 use crate::forge::{Forge, PullRequest};
-use crate::git::{ChangedFile, GitError, Range, Repo, Status, Target};
+use crate::git::{ChangedFile, Commit, GitError, Range, Repo, Status, Target};
 use crate::special;
 use crate::viewport::Viewport;
 
@@ -192,6 +192,22 @@ enum InlineKind {
     Added,
 }
 
+/// The contiguous run of commits whose combined change is displayed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    /// The whole Range.
+    All,
+    /// Commits `lo..=hi` (0-based indices into the commit list).
+    Commits { lo: usize, hi: usize },
+}
+
+/// Which pane the motion keys act on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Diff,
+    Commits,
+}
+
 mod nav;
 
 enum Mode {
@@ -202,6 +218,17 @@ enum Mode {
 pub struct Session {
     repo: Repo,
     range: Range,
+    commits: Vec<Commit>,
+    scope: Scope,
+    focus: Focus,
+    /// Cursor in the commit list: 0 is the pinned "Весь Range" row, `n` is
+    /// commit `n - 1`.
+    commit_cursor: usize,
+    /// Where `v` started a selection in the commit list (a cursor position,
+    /// never the "Весь Range" row).
+    commit_anchor: Option<usize>,
+    /// The `Space c` commit picker is open.
+    picker: bool,
     files: Vec<ChangedFile>,
     selected: usize,
     loaded: Option<Result<Loaded, String>>,
@@ -315,6 +342,7 @@ impl Session {
                 range.base_name, range.head_name
             )));
         }
+        let commits = repo.commits(&range.base, &range.head)?;
         let files = repo.changed_files(&range.base, &range.head)?;
         let merges = repo.merge_commit_count(&range.base, &range.head)?;
         let warning = (merges > 0).then(|| {
@@ -323,6 +351,12 @@ impl Session {
         let mut session = Session {
             repo,
             range,
+            commits,
+            scope: Scope::All,
+            focus: Focus::Diff,
+            commit_cursor: 0,
+            commit_anchor: None,
+            picker: false,
             files,
             selected: 0,
             loaded: None,
@@ -373,6 +407,7 @@ impl Session {
         self.size.0 < MIN_SIZE.0 || self.size.1 < MIN_SIZE.1
     }
 
+    /// The whole left column: commit list above, file list below.
     fn sidebar_area(&self) -> Rect {
         Rect::new(
             0,
@@ -393,9 +428,26 @@ impl Session {
         self.diff_area().height.saturating_sub(1) as usize
     }
 
+    /// The commit list: about a third of the column, but enough rows for a
+    /// short Range.
+    fn commits_area(&self) -> Rect {
+        let side = self.sidebar_area();
+        let wanted = self.commits.len() as u16 + 3;
+        let cap = (side.height * 35 / 100)
+            .max(11)
+            .min(side.height.saturating_sub(3));
+        Rect::new(side.x, side.y, side.width, wanted.min(cap))
+    }
+
+    fn files_area(&self) -> Rect {
+        let side = self.sidebar_area();
+        let top = self.commits_area().height;
+        Rect::new(side.x, side.y + top, side.width, side.height - top)
+    }
+
     /// Rows available to the file list (the pane minus its border).
     fn sidebar_capacity(&self) -> usize {
-        self.sidebar_area().height.saturating_sub(2) as usize
+        self.files_area().height.saturating_sub(2) as usize
     }
 
     fn sidebar_offset(&self) -> usize {
@@ -405,7 +457,28 @@ impl Session {
 
     // ------------------------------------------------------------ data
 
+    /// The two revisions whose difference the current Scope displays.
+    fn scope_ends(&self) -> (String, String) {
+        self.ends_of(self.scope)
+    }
+
+    fn ends_of(&self, scope: Scope) -> (String, String) {
+        match scope {
+            Scope::All => (self.range.base.clone(), self.range.head.clone()),
+            Scope::Commits { lo, hi } => (self.parent_of(lo), self.commits[hi].sha.clone()),
+        }
+    }
+
+    /// The revision just before commit `index`.
+    fn parent_of(&self, index: usize) -> String {
+        match index.checked_sub(1) {
+            Some(prev) => self.commits[prev].sha.clone(),
+            None => self.range.base.clone(),
+        }
+    }
+
     fn load_selected(&mut self) {
+        let (scope_base, scope_head) = self.scope_ends();
         self.vp = Viewport::default();
         self.hscroll = 0;
         self.view = Folded::default();
@@ -419,11 +492,11 @@ impl Session {
             };
             let old = match f.status {
                 Status::Added => Ok(None),
-                _ => blob(&self.range.base, f.base_path()),
+                _ => blob(&scope_base, f.base_path()),
             };
             let new = match f.status {
                 Status::Deleted => Ok(None),
-                _ => blob(&self.range.head, &f.path),
+                _ => blob(&scope_head, &f.path),
             };
             match (old, new) {
                 (Ok(old), Ok(new)) => Ok(Loaded::new(diff_file(
@@ -435,6 +508,42 @@ impl Session {
                 (Err(e), _) | (_, Err(e)) => Err(e),
             }
         });
+    }
+
+    /// Make `scope` the displayed Scope and reload the file list and diff.
+    fn apply_scope(&mut self, scope: Scope) {
+        let (base, head) = self.ends_of(scope);
+        // On a git error keep the Scope and the screen as they are.
+        let files = match self.repo.changed_files(&base, &head) {
+            Ok(files) => files,
+            Err(e) => {
+                self.message = Some(format!("Cannot apply the Scope: {e}"));
+                return;
+            }
+        };
+        self.scope = scope;
+        let previous = self.files.get(self.selected).map(|f| f.path.clone());
+        self.files = files;
+        self.selected = previous
+            .and_then(|p| self.files.iter().position(|f| f.path == p))
+            .unwrap_or(0);
+        self.load_selected();
+    }
+
+    /// Apply the Scope the commit-list cursor stands on.
+    fn apply_cursor_scope(&mut self) {
+        let scope = match (self.commit_cursor, self.commit_anchor.take()) {
+            (0, _) => Scope::All,
+            (n, None) => Scope::Commits {
+                lo: n - 1,
+                hi: n - 1,
+            },
+            (n, Some(a)) => Scope::Commits {
+                lo: n.min(a) - 1,
+                hi: n.max(a) - 1,
+            },
+        };
+        self.apply_scope(scope);
     }
 
     fn select(&mut self, index: usize) {
@@ -596,7 +705,33 @@ impl Session {
         }
 
         self.message = None;
+        if self.picker {
+            self.picker_key(key);
+            return;
+        }
+        if self.focus == Focus::Commits && self.commits_key(key) {
+            return;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if !ctrl {
+            match (self.pending, key.code) {
+                (Some(prefix @ (' ' | ']' | '[')), KeyCode::Char('c')) => {
+                    self.pending = None;
+                    self.count = None;
+                    match prefix {
+                        ' ' => self.picker = true,
+                        ']' => self.step_commit(true),
+                        _ => self.step_commit(false),
+                    }
+                    return;
+                }
+                (None, KeyCode::Char(' ')) => {
+                    self.pending = Some(' ');
+                    return;
+                }
+                _ => {}
+            }
+        }
         if self.nav_key(key.code, ctrl) {
             return;
         }
@@ -609,15 +744,143 @@ impl Session {
                     DiffLayout::Inline => DiffLayout::SideBySide,
                 });
             }
+            KeyCode::Char('a') if !ctrl => self.show_whole_range(),
+            KeyCode::Tab => {
+                self.focus = match self.focus {
+                    Focus::Diff => Focus::Commits,
+                    Focus::Commits => Focus::Diff,
+                };
+            }
             KeyCode::Char(':') if !ctrl => self.mode = Mode::Command(String::new()),
             _ => {}
         }
+    }
+
+    /// Keys of the open commit picker: the commit list's keys, with `Enter` and
+    /// `a` applying a Scope and closing, and `Esc` closing.
+    fn picker_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc if self.commit_anchor.is_some() => self.commit_anchor = None,
+            KeyCode::Esc => self.picker = false,
+            KeyCode::Enter => {
+                self.apply_cursor_scope();
+                self.picker = false;
+            }
+            KeyCode::Char('a') => {
+                self.show_whole_range();
+                self.picker = false;
+            }
+            _ => {
+                self.commits_key(key);
+            }
+        }
+    }
+
+    /// Keys of the focused commit list; returns whether the key was used.
+    fn commits_key(&mut self, key: KeyEvent) -> bool {
+        if key.modifiers.contains(KeyModifiers::CONTROL) || self.pending.is_some() {
+            return false;
+        }
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.commit_cursor = (self.commit_cursor + 1).min(self.commits.len());
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                // A selection holds commits only: the Range row is out of reach.
+                let floor = usize::from(self.commit_anchor.is_some());
+                self.commit_cursor = self.commit_cursor.saturating_sub(1).max(floor);
+            }
+            KeyCode::Char('v') => {
+                self.commit_anchor = match self.commit_anchor {
+                    Some(_) => None,
+                    None if self.commit_cursor > 0 => Some(self.commit_cursor),
+                    None => None,
+                };
+            }
+            KeyCode::Esc if self.commit_anchor.is_some() => self.commit_anchor = None,
+            KeyCode::Enter => self.apply_cursor_scope(),
+            _ => return false,
+        }
+        true
+    }
+
+    /// `all`, `3` or `3-5`, as `:scope` takes them.
+    fn scope_label(&self) -> String {
+        match self.scope {
+            Scope::All => "all".to_string(),
+            Scope::Commits { lo, hi } if lo == hi => (lo + 1).to_string(),
+            Scope::Commits { lo, hi } => format!("{}-{}", lo + 1, hi + 1),
+        }
+    }
+
+    fn show_whole_range(&mut self) {
+        self.commit_cursor = 0;
+        self.commit_anchor = None;
+        self.apply_scope(Scope::All);
+    }
+
+    /// `]c` / `[c`: the single commit after / before the current Scope, applied
+    /// at once. From the whole Range they land on the first / last commit.
+    fn step_commit(&mut self, forward: bool) {
+        let last = self.commits.len();
+        let target = match (self.scope, forward) {
+            _ if last == 0 => return,
+            (Scope::All, true) => 1,
+            (Scope::All, false) => last,
+            (Scope::Commits { hi, .. }, true) => (hi + 2).min(last),
+            (Scope::Commits { lo, .. }, false) => lo.max(1),
+        };
+        self.commit_cursor = target;
+        self.commit_anchor = None;
+        self.apply_scope(Scope::Commits {
+            lo: target - 1,
+            hi: target - 1,
+        });
+    }
+
+    /// `:scope all`, `:scope N` or `:scope N-M` with 1-based commit numbers.
+    fn scope_command(&mut self, arg: &str) -> Result<(), String> {
+        let number = |t: &str| t.trim().parse::<usize>().ok().filter(|&n| n >= 1);
+        let scope = if arg == "all" {
+            Scope::All
+        } else {
+            let (lo, hi) = match arg.split_once('-') {
+                Some((a, b)) => (number(a), number(b)),
+                None => (number(arg), number(arg)),
+            };
+            let (Some(lo), Some(hi)) = (lo, hi) else {
+                return Err(format!("Usage: :scope all | N | N-M (got \"{arg}\")"));
+            };
+            if lo > hi || hi > self.commits.len() {
+                return Err(format!(
+                    "No such commits: {arg} (the Range has {})",
+                    self.commits.len()
+                ));
+            }
+            Scope::Commits {
+                lo: lo - 1,
+                hi: hi - 1,
+            }
+        };
+        self.apply_scope(scope);
+        self.commit_cursor = match scope {
+            Scope::All => 0,
+            Scope::Commits { lo, .. } => lo + 1,
+        };
+        self.commit_anchor = None;
+        Ok(())
     }
 
     fn run_command(&mut self, command: &str) {
         match command {
             "q" | "q!" | "quit" => self.quit = true,
             "" => {}
+            other if other.split_whitespace().next() == Some("scope") => {
+                let arg = other["scope".len()..].trim();
+                if let Err(e) = self.scope_command(arg) {
+                    self.message = Some(e);
+                }
+            }
             other => self.message = Some(format!("Not an editor command: {other}")),
         }
     }
@@ -631,8 +894,21 @@ impl Session {
             MouseEventKind::ScrollUp if at(self.diff_area()) => {
                 self.scroll_view(-(WHEEL_STEP as isize))
             }
-            MouseEventKind::Down(_) if at(self.sidebar_area()) => {
-                let area = self.sidebar_area();
+            MouseEventKind::Down(_) if at(self.commits_area()) && !self.picker => {
+                let area = self.commits_area();
+                let row = (mouse.row - area.y) as usize;
+                let capacity = area.height.saturating_sub(3) as usize;
+                // Row 0 is the border, row 1 the pinned "Весь Range" row.
+                if row >= 1 && row <= capacity + 1 {
+                    self.focus = Focus::Commits;
+                    self.commit_cursor = match row {
+                        1 => 0,
+                        r => (self.commit_offset(capacity) + r - 1).min(self.commits.len()),
+                    };
+                }
+            }
+            MouseEventKind::Down(_) if at(self.files_area()) && !self.picker => {
+                let area = self.files_area();
                 // Row 0 of the sidebar is its border.
                 if mouse.row > area.y {
                     let index = self.sidebar_offset() + (mouse.row - area.y - 1) as usize;
@@ -667,27 +943,132 @@ impl Session {
         self.render_sidebar(buf);
         self.render_diff(buf);
         self.render_status(buf);
+        if self.picker {
+            self.render_picker(buf);
+        }
     }
 
     fn render_sidebar(&self, buf: &mut Buffer) {
-        let area = self.sidebar_area();
-        let title = format!(" Files ({}) ", self.files.len());
-        let border = Style::new().fg(DIM);
-        let width = area.width as usize;
-        // Top border with title, right border as a column.
-        let mut top = format!("┌{title}");
-        while top.chars().count() < width.saturating_sub(1) {
-            top.push('─');
-        }
-        top.push('┐');
-        buf.set_stringn(area.x, area.y, &top, width, border);
-        for y in 1..area.height.saturating_sub(1) {
-            buf.set_string(area.x, area.y + y, "│", border);
-            buf.set_string(area.x + area.width - 1, area.y + y, "│", border);
-        }
-        let bottom = format!("└{}┘", "─".repeat(width.saturating_sub(2)));
-        buf.set_stringn(area.x, area.y + area.height - 1, &bottom, width, border);
+        self.render_commits(buf);
+        self.render_files(buf);
+    }
 
+    fn render_commits(&self, buf: &mut Buffer) {
+        let area = self.commits_area();
+        draw_box(buf, area, &self.commits_title());
+        let inner = Rect::new(
+            area.x + 1,
+            area.y + 1,
+            area.width.saturating_sub(2),
+            area.height.saturating_sub(2),
+        );
+        self.render_commit_rows(buf, inner, self.focus == Focus::Commits);
+    }
+
+    /// " Commits 4/5 " (the commit under the cursor) or " Commits 5 " while
+    /// the cursor is on the "Весь Range" row.
+    fn commits_title(&self) -> String {
+        match self.commit_cursor {
+            0 => format!(" Commits {} ", self.commits.len()),
+            n => format!(" Commits {n}/{} ", self.commits.len()),
+        }
+    }
+
+    /// Index of the first commit shown when `capacity` commit rows fit.
+    fn commit_offset(&self, capacity: usize) -> usize {
+        self.commit_cursor.max(1).saturating_sub(capacity)
+    }
+
+    /// Whether the commit list marks commit `index` as inside the Scope.
+    fn in_scope(&self, index: usize) -> bool {
+        matches!(self.scope, Scope::Commits { lo, hi } if (lo..=hi).contains(&index))
+    }
+
+    /// The commit list inside `area`: the "Весь Range" row stays pinned at the
+    /// top while the commits scroll to keep the cursor visible.
+    fn render_commit_rows(&self, buf: &mut Buffer, area: Rect, show_cursor: bool) {
+        let width = area.width as usize;
+        let capacity = (area.height as usize).saturating_sub(1);
+        let offset = self.commit_offset(capacity);
+        let selection = self
+            .commit_anchor
+            .map(|a| (a.min(self.commit_cursor), a.max(self.commit_cursor)));
+        let rows = std::iter::once((0, "▣ Весь Range".to_string(), self.scope == Scope::All))
+            .chain(
+                self.commits
+                    .iter()
+                    .enumerate()
+                    .skip(offset)
+                    .take(capacity)
+                    .map(|(i, c)| {
+                        let sha = &c.sha[..7.min(c.sha.len())];
+                        (
+                            i + 1,
+                            format!("{:>2} {sha} {}", i + 1, c.subject),
+                            self.in_scope(i),
+                        )
+                    }),
+            );
+        for (row, (position, text, in_scope)) in rows.enumerate() {
+            let cursor = show_cursor && position == self.commit_cursor;
+            let mark = if in_scope { '●' } else { ' ' };
+            let line = format!("{}{mark} {text}", if cursor { '>' } else { ' ' });
+            let mut style = Style::new().fg(FG);
+            if selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&position)) {
+                style = style.bg(Color::Indexed(24));
+            }
+            if cursor {
+                style = style.bg(Color::Indexed(238)).add_modifier(Modifier::BOLD);
+            }
+            let y = area.y + row as u16;
+            buf.set_style(Rect::new(area.x, y, area.width, 1), style);
+            buf.set_stringn(
+                area.x,
+                y,
+                pad(&fit(&line, width, false), width),
+                width,
+                style,
+            );
+        }
+    }
+
+    /// The `Space c` picker: the commit list in a box over the screen.
+    fn render_picker(&self, buf: &mut Buffer) {
+        let width = self.size.0.saturating_sub(4).min(72);
+        let height = (self.commits.len() as u16 + 4).min(self.size.1.saturating_sub(2));
+        let area = Rect::new(
+            (self.size.0 - width) / 2,
+            (self.size.1 - height) / 2,
+            width,
+            height,
+        );
+        buf.set_style(area, Style::new().fg(FG).bg(Color::Reset));
+        for y in area.y..area.y + area.height {
+            buf.set_string(area.x, y, " ".repeat(width as usize), Style::new().fg(FG));
+        }
+        draw_box(buf, area, " Pick a Scope ");
+        let inner = Rect::new(
+            area.x + 1,
+            area.y + 1,
+            area.width.saturating_sub(2),
+            area.height.saturating_sub(3),
+        );
+        self.render_commit_rows(buf, inner, true);
+        let hint = "j/k move  v select  Enter apply  a whole Range  Esc close";
+        let hint_w = inner.width as usize;
+        buf.set_stringn(
+            inner.x,
+            area.y + area.height - 2,
+            fit(hint, hint_w, false),
+            hint_w,
+            Style::new().fg(DIM),
+        );
+    }
+
+    fn render_files(&self, buf: &mut Buffer) {
+        let area = self.files_area();
+        draw_box(buf, area, &format!(" Files ({}) ", self.files.len()));
+        let width = area.width as usize;
         let inner = width.saturating_sub(2);
         let offset = self.sidebar_offset();
         for (row, (i, file)) in self
@@ -973,9 +1354,10 @@ impl Session {
         let text = match &self.message {
             Some(m) => format!(" {m}"),
             None => format!(
-                " {}..{}  file {}/{}  layout:{layout} ({how})",
+                " {}..{}  scope:{}  file {}/{}  layout:{layout} ({how})",
                 self.range.base_name,
                 self.range.head_name,
+                self.scope_label(),
                 if self.files.is_empty() {
                     0
                 } else {
@@ -990,6 +1372,24 @@ impl Session {
         };
         buf.set_stringn(8, y, &text, width.saturating_sub(8), bar);
     }
+}
+
+/// A bordered box with a title in the top border.
+fn draw_box(buf: &mut Buffer, area: Rect, title: &str) {
+    let border = Style::new().fg(DIM);
+    let width = area.width as usize;
+    let mut top = format!("┌{title}");
+    while top.chars().count() < width.saturating_sub(1) {
+        top.push('─');
+    }
+    top.push('┐');
+    buf.set_stringn(area.x, area.y, &top, width, border);
+    for y in 1..area.height.saturating_sub(1) {
+        buf.set_string(area.x, area.y + y, "│", border);
+        buf.set_string(area.x + area.width - 1, area.y + y, "│", border);
+    }
+    let bottom = format!("└{}┘", "─".repeat(width.saturating_sub(2)));
+    buf.set_stringn(area.x, area.y + area.height - 1, &bottom, width, border);
 }
 
 fn digits(n: usize) -> usize {
