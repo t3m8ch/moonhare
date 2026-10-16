@@ -3,6 +3,7 @@
 pub mod diff;
 pub mod fold;
 pub mod git;
+pub mod hints;
 pub mod session;
 pub mod special;
 pub mod viewport;

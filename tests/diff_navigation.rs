@@ -31,7 +31,7 @@ fn cursor_row(h: &mut Harness) -> String {
 #[test]
 fn j_and_k_move_a_cursor_and_the_view_follows_only_at_the_edge() {
     let fx = long_file();
-    let mut h = Harness::open(&fx, 160, 20);
+    let mut h = Harness::open(&fx, 160, 21);
     assert!(cursor_row(&mut h).contains("line number 001"));
 
     h.keys("j");
@@ -53,7 +53,7 @@ fn j_and_k_move_a_cursor_and_the_view_follows_only_at_the_edge() {
 #[test]
 fn a_lone_zero_is_not_swallowed_by_counts_and_ten_j_moves_ten() {
     let fx = long_file();
-    let mut h = Harness::open(&fx, 160, 20);
+    let mut h = Harness::open(&fx, 160, 21);
     h.keys("10j");
     assert!(cursor_row(&mut h).contains("line number 011"));
 }
@@ -61,7 +61,7 @@ fn a_lone_zero_is_not_swallowed_by_counts_and_ten_j_moves_ten() {
 #[test]
 fn ctrl_d_and_ctrl_u_move_the_cursor_and_the_view_by_half_a_page() {
     let fx = long_file();
-    let mut h = Harness::open(&fx, 160, 20);
+    let mut h = Harness::open(&fx, 160, 21);
     // The pane shows 18 lines, so half a page is 9.
     h.keys("<C-d>");
     assert!(cursor_row(&mut h).contains("line number 010"));
@@ -76,7 +76,7 @@ fn ctrl_d_and_ctrl_u_move_the_cursor_and_the_view_by_half_a_page() {
 #[test]
 fn ctrl_f_and_ctrl_b_move_a_page_with_two_lines_of_overlap() {
     let fx = long_file();
-    let mut h = Harness::open(&fx, 160, 20);
+    let mut h = Harness::open(&fx, 160, 21);
     h.keys("<C-f>");
     let screen = h.screen();
     assert!(!screen.contains("line number 016"), "{screen}");
@@ -90,7 +90,7 @@ fn ctrl_f_and_ctrl_b_move_a_page_with_two_lines_of_overlap() {
 #[test]
 fn ctrl_e_and_ctrl_y_scroll_the_view_while_the_cursor_stays_until_it_leaves() {
     let fx = long_file();
-    let mut h = Harness::open(&fx, 160, 20);
+    let mut h = Harness::open(&fx, 160, 21);
     h.keys("5j3<C-e>");
     let screen = h.screen();
     assert!(!screen.contains("line number 003"), "{screen}");
@@ -117,7 +117,7 @@ fn ctrl_e_and_ctrl_y_scroll_the_view_while_the_cursor_stays_until_it_leaves() {
 #[test]
 fn gg_and_capital_g_and_counted_g_jump_to_lines() {
     let fx = long_file();
-    let mut h = Harness::open(&fx, 160, 20);
+    let mut h = Harness::open(&fx, 160, 21);
     h.keys("G");
     assert!(cursor_row(&mut h).contains("line number 100"));
     h.keys("12G");
@@ -257,7 +257,7 @@ fn h_and_l_scroll_long_lines_sideways_and_a_lone_zero_resets() {
 #[test]
 fn horizontal_offset_survives_a_layout_switch() {
     let fx = long_line();
-    let mut h = Harness::open(&fx, 160, 20);
+    let mut h = Harness::open(&fx, 160, 21);
     h.keys("s"); // inline
     h.keys("l");
     assert!(!h.screen().contains("w01_"));

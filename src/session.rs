@@ -28,6 +28,8 @@ const SIDEBAR_WIDTH: u16 = 32;
 /// The diff pane is shown side-by-side from this width; narrower is inline.
 pub const SIDE_BY_SIDE_MIN_WIDTH: u16 = 90;
 const TAB_WIDTH: usize = 4;
+/// Rows at the bottom of the screen outside the panes.
+const BOTTOM_ROWS: u16 = 2;
 const WHEEL_STEP: usize = 3;
 /// Columns moved by one `h` / `l` press.
 const HSCROLL_STEP: usize = 8;
@@ -208,6 +210,8 @@ enum Focus {
 }
 
 mod nav;
+mod overlay;
+mod windows;
 
 enum Mode {
     Normal,
@@ -244,6 +248,8 @@ pub struct Session {
     layout_override: Option<DiffLayout>,
     mode: Mode,
     pending: Option<char>,
+    /// How long `pending` has been waiting.
+    pending_for: std::time::Duration,
     dirty: bool,
     message: Option<String>,
     /// A standing caveat about the Range, shown until the Review closes.
@@ -300,6 +306,7 @@ impl Session {
             layout_override: None,
             mode: Mode::Normal,
             pending: None,
+            pending_for: std::time::Duration::ZERO,
             dirty: true,
             message: None,
             warning,
@@ -308,6 +315,14 @@ impl Session {
         session.load_selected();
         session.sync_view();
         Ok(session)
+    }
+
+    /// Time passing without input; opens the which-key window once a key
+    /// prefix has been waiting long enough.
+    pub fn tick(&mut self, elapsed: std::time::Duration) {
+        if self.pending.is_some() {
+            self.pending_for += elapsed;
+        }
     }
 
     pub fn should_quit(&self) -> bool {
@@ -337,14 +352,14 @@ impl Session {
             0,
             0,
             SIDEBAR_WIDTH.min(self.size.0),
-            self.size.1.saturating_sub(1),
+            self.size.1.saturating_sub(BOTTOM_ROWS),
         )
     }
 
     /// The diff pane including its header line.
     fn diff_area(&self) -> Rect {
         let x = SIDEBAR_WIDTH.min(self.size.0);
-        Rect::new(x, 0, self.size.0 - x, self.size.1.saturating_sub(1))
+        Rect::new(x, 0, self.size.0 - x, self.size.1.saturating_sub(BOTTOM_ROWS))
     }
 
     /// Rows available to diff lines (the pane minus its header).
@@ -597,6 +612,7 @@ impl Session {
     // ------------------------------------------------------------ events
 
     pub fn handle(&mut self, event: Event) {
+        let waiting = self.pending;
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
             Event::Mouse(mouse) => self.on_mouse(mouse),
@@ -604,6 +620,9 @@ impl Session {
                 self.size = (w, h);
             }
             _ => {}
+        }
+        if self.pending != waiting || self.pending.is_none() {
+            self.pending_for = std::time::Duration::ZERO;
         }
         self.sync_view();
     }
@@ -631,6 +650,9 @@ impl Session {
         self.message = None;
         if self.picker {
             self.picker_key(key);
+            return;
+        }
+        if self.window_key(key.code, key.modifiers) {
             return;
         }
         if self.focus == Focus::Commits && self.commits_key(key) {
@@ -669,12 +691,6 @@ impl Session {
                 });
             }
             KeyCode::Char('a') if !ctrl => self.show_whole_range(),
-            KeyCode::Tab => {
-                self.focus = match self.focus {
-                    Focus::Diff => Focus::Commits,
-                    Focus::Commits => Focus::Diff,
-                };
-            }
             KeyCode::Char(':') if !ctrl => self.mode = Mode::Command(String::new()),
             _ => {}
         }
@@ -867,8 +883,12 @@ impl Session {
         self.render_sidebar(buf);
         self.render_diff(buf);
         self.render_status(buf);
+        self.render_hints(buf);
         if self.picker {
             self.render_picker(buf);
+        }
+        if let Some(prefix) = self.which_key_prefix() {
+            self.render_which_key(buf, prefix);
         }
     }
 
@@ -1247,24 +1267,24 @@ impl Session {
     }
 
     fn render_status(&self, buf: &mut Buffer) {
-        let y = self.size.1 - 1;
+        let y = self.size.1 - BOTTOM_ROWS;
         let width = self.size.0 as usize;
         let bar = Style::new().fg(FG).bg(Color::Indexed(236));
         buf.set_style(Rect::new(0, y, self.size.0, 1), bar);
-
-        if let Mode::Command(cmd) = &self.mode {
-            buf.set_stringn(0, y, format!(":{cmd}█"), width, Style::new().fg(FG));
-            buf.set_style(
-                Rect::new(0, y, self.size.0, 1),
-                Style::new().bg(Color::Reset),
-            );
-            return;
-        }
         let badge = Style::new()
             .fg(Color::Indexed(16))
             .bg(ACCENT)
             .add_modifier(Modifier::BOLD);
-        buf.set_string(0, y, " NORMAL ", badge);
+        buf.set_string(
+            0,
+            y,
+            if self.commit_anchor.is_some() {
+                " VISUAL "
+            } else {
+                " NORMAL "
+            },
+            badge,
+        );
 
         let layout = match self.layout() {
             DiffLayout::SideBySide => "side-by-side",
