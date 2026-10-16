@@ -27,6 +27,41 @@ fn which_key_and_help_list_the_sidebar_and_file_picker_keys() {
 }
 
 #[test]
+fn help_lists_the_reviewed_marks() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 60);
+    h.keys("?");
+    let screen = h.screen();
+    assert!(screen.contains("отревьюено"), "{screen}");
+    assert!(
+        screen
+            .lines()
+            .any(|l| l.contains(" m   ") && l.contains("отревьюено")),
+        "{screen}"
+    );
+    assert!(
+        screen
+            .lines()
+            .any(|l| l.contains(" M   ") && l.contains("следующему")),
+        "{screen}"
+    );
+}
+
+#[test]
+fn which_key_and_help_list_unreviewed_jumps_and_reset() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 60);
+    h.keys("]").wait(350);
+    assert!(h.screen().contains("неотревьюенный"), "{}", h.screen());
+    h.keys("<Esc>[").wait(350);
+    assert!(h.screen().contains("неотревьюенный"));
+    h.keys("<Esc>?");
+    let screen = h.screen();
+    assert!(screen.contains("]u"), "{screen}");
+    assert!(screen.contains(":reset"), "{screen}");
+}
+
+#[test]
 fn no_which_key_before_the_pause() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 100, 30);

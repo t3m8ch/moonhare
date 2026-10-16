@@ -7,6 +7,7 @@ pub mod forge;
 pub mod git;
 pub mod github;
 pub mod hints;
+pub mod review;
 pub mod session;
 pub mod special;
 pub mod viewport;
