@@ -1,0 +1,7 @@
+[package]
+name = "moonhare"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+difftastic = { path = "vendor/difftastic" }
