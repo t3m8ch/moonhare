@@ -17,6 +17,7 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::diff::{diff_file, FileDiff, FileKind, Highlight, Limits, Side, Token};
 use crate::fold::{fold, Folded, Item};
+use crate::forge::{Forge, PullRequest};
 use crate::git::{ChangedFile, Commit, GitError, Range, Repo, Status, Target};
 use crate::special;
 use crate::viewport::Viewport;
@@ -248,6 +249,8 @@ pub struct Session {
     message: Option<String>,
     /// A standing caveat about the Range, shown until the Review closes.
     warning: Option<String>,
+    /// The pull request behind the Range, when the Forge knows one.
+    pull_request: Option<PullRequest>,
     quit: bool,
 }
 
@@ -266,7 +269,74 @@ impl Session {
     ) -> Result<Session, Error> {
         let repo = Repo::open(repo_path)?;
         let range = repo.range_for(target)?;
-        if *target != Target::Current && repo.commit_count(&range.base, &range.head)? == 0 {
+        Self::open_range(repo, range, *target != Target::Current, width, height)
+    }
+
+    /// Like [`Session::open_target`], and ask `forge` for the pull request of
+    /// the branch. If the Forge cannot answer, the Review opens all the same
+    /// and the reason is shown in the status line.
+    pub fn open_target_with_forge(
+        repo_path: &Path,
+        target: &Target,
+        forge: &dyn Forge,
+        width: u16,
+        height: u16,
+    ) -> Result<Session, Error> {
+        let mut session = Self::open_target(repo_path, target, width, height)?;
+        let branch = match target {
+            Target::Branch(name) => Some(name.as_str()),
+            Target::Current if session.range.head_name != "HEAD" => {
+                Some(session.range.head_name.as_str())
+            }
+            _ => None,
+        };
+        if let Some(branch) = branch {
+            match forge.pull_request_for_branch(branch) {
+                Ok(pr) => session.pull_request = pr,
+                Err(e) => session.warn(format!("⚠ {e}")),
+            }
+        }
+        Ok(session)
+    }
+
+    fn warn(&mut self, text: String) {
+        self.warning = Some(match self.warning.take() {
+            Some(w) => format!("{w}  {text}"),
+            None => text,
+        });
+    }
+
+    /// Open pull request `number` as a Range: its head is fetched into a ref
+    /// of moonhare's own, with no new branch and no checkout.
+    pub fn open_pull_request(
+        repo_path: &Path,
+        forge: &dyn Forge,
+        number: u64,
+        width: u16,
+        height: u16,
+    ) -> Result<Session, Error> {
+        let repo = Repo::open(repo_path)?;
+        let pr = forge
+            .pull_request(number)
+            .map_err(|e| Error(e.to_string()))?;
+        let reference = forge
+            .fetch_pull_request_head(repo.root(), number)
+            .map_err(|e| Error(e.to_string()))?;
+        let range =
+            repo.range_for_head(&format!("#{number}"), &reference, Some(&pr.base_branch))?;
+        let mut session = Self::open_range(repo, range, true, width, height)?;
+        session.pull_request = Some(pr);
+        Ok(session)
+    }
+
+    fn open_range(
+        repo: Repo,
+        range: Range,
+        reject_empty: bool,
+        width: u16,
+        height: u16,
+    ) -> Result<Session, Error> {
+        if reject_empty && repo.commit_count(&range.base, &range.head)? == 0 {
             return Err(Error(format!(
                 "empty range: no commits between {} and {}",
                 range.base_name, range.head_name
@@ -303,11 +373,17 @@ impl Session {
             dirty: true,
             message: None,
             warning,
+            pull_request: None,
             quit: false,
         };
         session.load_selected();
         session.sync_view();
         Ok(session)
+    }
+
+    /// The pull request the Range belongs to: its title and description.
+    pub fn pull_request(&self) -> Option<&PullRequest> {
+        self.pull_request.as_ref()
     }
 
     pub fn should_quit(&self) -> bool {
