@@ -62,6 +62,28 @@ fn which_key_and_help_list_unreviewed_jumps_and_reset() {
 }
 
 #[test]
+fn which_key_and_help_list_the_unreviewed_filter() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 60);
+    h.keys("<Space>").wait(350);
+    let screen = h.screen();
+    assert!(screen.contains("непросмотренн"), "{screen}");
+    h.keys("<Esc>?");
+    assert!(h.screen().contains("Space u"), "{}", h.screen());
+}
+
+#[test]
+fn the_visual_badge_shows_only_while_the_commit_list_has_the_focus() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("<Tab>jv");
+    assert!(h.screen().contains("VISUAL"));
+    h.keys("<Space>e");
+    let screen = h.screen();
+    assert!(!screen.contains("VISUAL"), "{screen}");
+}
+
+#[test]
 fn no_which_key_before_the_pause() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 100, 30);
