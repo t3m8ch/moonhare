@@ -1,0 +1,13 @@
+[package]
+name = "moonhare-proto-tui-layout-4"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+# PROTOTYPE, throwaway. Not a workspace member.
+[workspace]
+
+[dependencies]
+# ratatui re-exports crossterm (ratatui::crossterm), so no separate crossterm
+# dependency is needed and the versions cannot drift apart.
+ratatui = "0.30"
