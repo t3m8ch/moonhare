@@ -3,3 +3,4 @@
 pub mod diff;
 pub mod git;
 pub mod session;
+pub mod special;
