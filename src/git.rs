@@ -112,6 +112,11 @@ impl Repo {
         })
     }
 
+    /// The top of the working tree.
+    pub fn root(&self) -> &Path {
+        &self.root
+    }
+
     fn run_bytes(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
         let out = Command::new("git")
             .arg("--no-optional-locks")
@@ -198,12 +203,42 @@ impl Repo {
         self.branch_range(&head_name, "HEAD")
     }
 
+    /// The Range of a head that is not a local branch (a pull request head
+    /// fetched into a ref of our own). It is measured against `base_hint`, the
+    /// branch the Forge says it targets, when that exists here (as is or on
+    /// `origin`), otherwise against the default branch.
+    pub fn range_for_head(
+        &self,
+        head_name: &str,
+        rev: &str,
+        base_hint: Option<&str>,
+    ) -> Result<Range, GitError> {
+        let base_name = base_hint.and_then(|b| {
+            [format!("origin/{b}"), format!("refs/heads/{b}")]
+                .into_iter()
+                .find(|c| self.resolves(c))
+        });
+        self.branch_range_against(head_name, rev, base_name)
+    }
+
     /// Merge-base of `rev` with the default branch, up to `rev`.
     fn branch_range(&self, head_name: &str, rev: &str) -> Result<Range, GitError> {
+        self.branch_range_against(head_name, rev, None)
+    }
+
+    fn branch_range_against(
+        &self,
+        head_name: &str,
+        rev: &str,
+        base_name: Option<String>,
+    ) -> Result<Range, GitError> {
         let head = self.run(&["rev-parse", "--verify", &format!("{rev}^{{commit}}")])?;
         let head = head.trim().to_string();
         let head_name = head_name.to_string();
-        let base_name = self.default_branch()?;
+        let base_name = match base_name {
+            Some(b) => b,
+            None => self.default_branch()?,
+        };
         let base = self.run(&["merge-base", &base_name, &head])?;
         Ok(Range {
             head_name,
