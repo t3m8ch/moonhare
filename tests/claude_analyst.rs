@@ -24,13 +24,17 @@ impl FakeClaude {
         fs::write(d.join("reply"), stdout).unwrap();
         fs::write(d.join("code"), "0").unwrap();
         let script = format!(
-            "#!/bin/sh\nd='{}'\nprintf '%s\\n' \"$@\" > \"$d/args\"\nenv > \"$d/env\"\ncat > \"$d/stdin\"\npwd > \"$d/cwd\"\ngit rev-parse HEAD > \"$d/head\" 2>/dev/null\ncat \"$d/reply\"\nexit $(cat \"$d/code\")\n",
+            "#!/bin/sh\nd='{}'\nprintf '%s\\n' \"$@\" > \"$d/args\"\nenv > \"$d/env\"\ncat > \"$d/stdin\"\n[ -f \"$d/hang\" ] && exec sleep 30\npwd > \"$d/cwd\"\nls -A . > \"$d/cwdfiles\"\nadd=; prev=; for a in \"$@\"; do [ \"$prev\" = --add-dir ] && add=\"$a\"; prev=\"$a\"; done\necho \"$add\" > \"$d/adddir\"\ngit -C \"$add\" rev-parse HEAD > \"$d/head\" 2>/dev/null\nls -A \"$add\" > \"$d/addfiles\"\ncat \"$d/reply\"\nexit $(cat \"$d/code\")\n",
             d.display()
         );
         let path = d.join("claude");
         fs::write(&path, script).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
         fake
+    }
+
+    fn hang(&self) {
+        fs::write(self.dir.path().join("hang"), "").unwrap();
     }
 
     fn fail_with(&self, code: i32) {
@@ -141,6 +145,28 @@ fn strips_anthropic_variables_from_the_environment() {
 }
 
 #[test]
+fn strips_variables_that_switch_the_provider_or_carry_cloud_credentials() {
+    let fx = feature_branch();
+    let fake = FakeClaude::replying(&success("x"));
+    let analyst = fake.analyst().with_environment([
+        ("CLAUDE_CODE_USE_BEDROCK", "1"),
+        ("CLAUDE_CODE_USE_VERTEX", "1"),
+        ("AWS_SECRET_ACCESS_KEY", "aws-secret"),
+        ("PATH", "/usr/bin:/bin"),
+        ("CLAUDE_CONFIG_DIR", "/home/reviewer/.claude-alt"),
+    ]);
+    analyst.summarize(&request(&fx)).unwrap();
+    let env = fake.recorded("env");
+    for gone in ["CLAUDE_CODE_USE", "AWS_", "aws-secret"] {
+        assert!(!env.contains(gone), "{gone}: {env}");
+    }
+    assert!(
+        env.contains("CLAUDE_CONFIG_DIR=/home/reviewer/.claude-alt"),
+        "{env}"
+    );
+}
+
+#[test]
 fn works_in_a_temporary_worktree_on_the_head_and_removes_it() {
     let fx = feature_branch();
     fx.checkout("main");
@@ -148,13 +174,53 @@ fn works_in_a_temporary_worktree_on_the_head_and_removes_it() {
     let fake = FakeClaude::replying(&success("x"));
     let req = request(&fx);
     fake.analyst().summarize(&req).unwrap();
-    let cwd = fake.recorded("cwd");
-    let cwd = cwd.trim();
-    assert_ne!(std::path::Path::new(cwd), fx.path());
+    let worktree = fake.recorded("adddir");
+    let worktree = worktree.trim();
+    assert_ne!(std::path::Path::new(worktree), fx.path());
     assert_eq!(fake.recorded("head").trim(), req.head);
-    assert!(!std::path::Path::new(cwd).exists(), "worktree left behind");
+    assert!(
+        !std::path::Path::new(worktree).exists(),
+        "worktree left behind"
+    );
     assert_eq!(fx.git(&["worktree", "list"]).lines().count(), 1);
     assert_eq!(fx.state(), before);
+}
+
+#[test]
+fn never_runs_in_the_reviewed_tree_so_its_project_settings_do_not_apply() {
+    let fx = feature_branch();
+    fx.write(
+        ".claude/settings.json",
+        r#"{"hooks":{"SessionStart":[{"hooks":[{"type":"command","command":"touch /tmp/pwned"}]}]}}"#,
+    )
+    .write(".mcp.json", r#"{"mcpServers":{}}"#)
+    .commit("add project settings");
+    let fake = FakeClaude::replying(&success("x"));
+    let mut req = request(&fx);
+    req.head = fx.git(&["rev-parse", "HEAD"]).trim().to_string();
+    fake.analyst().summarize(&req).unwrap();
+
+    // The reviewed code is there to read, but only through --add-dir ...
+    assert!(fake.recorded("addfiles").contains(".claude"));
+    // ... while the process itself starts in an empty directory elsewhere.
+    let cwd = fake.recorded("cwd");
+    let cwd = std::path::Path::new(cwd.trim());
+    assert_eq!(fake.recorded("cwdfiles").trim(), "");
+    assert!(!cwd.starts_with(fake.recorded("adddir").trim()));
+    assert!(!cwd.starts_with(fx.path()));
+    assert!(cwd.ancestors().all(|a| !a.join(".git").exists()));
+
+    // And the settings that could carry hooks or servers are not loaded.
+    let args = args_of(&fake);
+    assert_eq!(
+        value_after(&args, "--setting-sources").as_deref(),
+        Some("user")
+    );
+    assert!(args.contains(&"--strict-mcp-config".to_string()));
+    assert!(args.contains(&"--disable-slash-commands".to_string()));
+    assert!(!args
+        .iter()
+        .any(|a| a == "--mcp-config" || a == "--settings"));
 }
 
 #[test]
@@ -190,6 +256,53 @@ fn no_login_is_reported_as_such() {
     let err = fake.analyst().summarize(&request(&fx)).unwrap_err();
     assert!(matches!(err, AnalystError::NotLoggedIn(_)), "{err:?}");
     assert!(err.to_string().contains("claude /login"), "{err}");
+}
+
+#[test]
+fn a_revision_that_looks_like_an_option_is_never_taken_for_one() {
+    let fx = feature_branch();
+    let fake = FakeClaude::replying(&success("x"));
+    let planted = fx.path().join("planted");
+    let mut req = request(&fx);
+    req.base = format!("--output={}", planted.display());
+    let _ = fake.analyst().summarize(&req);
+    assert!(!planted.exists(), "git took the revision for an option");
+}
+
+#[test]
+fn worktrees_left_behind_by_a_crashed_run_are_pruned() {
+    let fx = feature_branch();
+    let leftover = tempfile::tempdir().unwrap();
+    let path = leftover.path().join("gone");
+    fx.git(&[
+        "worktree",
+        "add",
+        "--detach",
+        path.to_str().unwrap(),
+        "feature",
+    ]);
+    fs::remove_dir_all(&path).unwrap();
+    assert_eq!(fx.git(&["worktree", "list"]).lines().count(), 2);
+    let fake = FakeClaude::replying(&success("x"));
+    fake.analyst().summarize(&request(&fx)).unwrap();
+    assert_eq!(fx.git(&["worktree", "list"]).lines().count(), 1);
+}
+
+#[test]
+fn a_claude_that_hangs_is_stopped_after_the_timeout() {
+    let fx = feature_branch();
+    fx.checkout("main");
+    let fake = FakeClaude::replying(&success("x"));
+    fake.hang();
+    let analyst = fake
+        .analyst()
+        .with_timeout(std::time::Duration::from_millis(300));
+    let started = std::time::Instant::now();
+    let err = analyst.summarize(&request(&fx)).unwrap_err();
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    assert!(matches!(err, AnalystError::Failed(_)), "{err:?}");
+    assert!(err.to_string().contains("timed out"), "{err}");
+    assert_eq!(fx.git(&["worktree", "list"]).lines().count(), 1);
 }
 
 #[test]
