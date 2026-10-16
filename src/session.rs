@@ -1134,10 +1134,11 @@ impl Session {
     /// The `Space c` picker: the commit list in a box over the screen.
     fn render_picker(&self, buf: &mut Buffer) {
         let width = self.size.0.saturating_sub(4).min(72);
-        let height = (self.commits.len() as u16 + 4).min(self.size.1.saturating_sub(2));
+        let height =
+            (self.commits.len() as u16 + 4).min(self.size.1.saturating_sub(BOTTOM_ROWS + 1));
         let area = Rect::new(
             (self.size.0 - width) / 2,
-            (self.size.1 - height) / 2,
+            (self.size.1 - BOTTOM_ROWS - height) / 2,
             width,
             height,
         );

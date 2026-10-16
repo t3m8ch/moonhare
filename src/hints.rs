@@ -25,6 +25,8 @@ const fn b(prefix: Option<char>, key: &'static str, label: &'static str) -> Bind
 
 pub const BINDINGS: &[Binding] = &[
     b(Some(' '), "c", "выбор коммита (срез)"),
+    b(Some(' '), "e", "показать/скрыть сайдбар"),
+    b(Some(' '), "f", "выбор файла"),
     b(Some('g'), "g", "в начало файла (Ngg: к строке N)"),
     b(Some(']'), "c", "следующий коммит"),
     b(Some(']'), "f", "следующий файл"),

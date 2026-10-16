@@ -13,6 +13,20 @@ fn space_pause_opens_which_key_listing_continuations() {
 }
 
 #[test]
+fn which_key_and_help_list_the_sidebar_and_file_picker_keys() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 60);
+    h.keys("<Space>").wait(350);
+    let screen = h.screen();
+    assert!(screen.contains("сайдбар"), "{screen}");
+    assert!(screen.contains("выбор файла"), "{screen}");
+    h.keys("<Esc>?");
+    let screen = h.screen();
+    assert!(screen.contains("Space e"), "{screen}");
+    assert!(screen.contains("Space f"), "{screen}");
+}
+
+#[test]
 fn no_which_key_before_the_pause() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 100, 30);
@@ -77,6 +91,49 @@ fn tab_and_ctrl_hjkl_aliases_move_between_windows() {
     assert_eq!(scope_after("<C-h><C-l>"), "scope:all");
     assert_eq!(scope_after("<C-k>"), "scope:2");
     assert_eq!(scope_after("<C-k><C-j>"), "scope:all");
+}
+
+#[test]
+fn a_hidden_sidebar_never_gets_the_focus() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 80, 30);
+    for keys in ["<Tab>", "<C-w>h", "<C-w>k", "<C-w>w", "<C-h>", "<C-k>"] {
+        h.keys(keys).keys("jj<CR>");
+        let screen = h.screen();
+        assert!(screen.contains("scope:all"), "{keys}:\n{screen}");
+        let row = hint_row(&mut h);
+        assert!(!row.contains("Enter: срез"), "{keys}: {row}");
+    }
+}
+
+#[test]
+fn hiding_the_sidebar_returns_the_focus_to_the_diff() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("<Tab><Space>e");
+    let row = hint_row(&mut h);
+    assert!(!row.contains("Enter: срез"), "{row}");
+    h.keys("jj<CR>");
+    assert!(h.screen().contains("scope:all"));
+}
+
+#[test]
+fn pickers_leave_the_status_and_hint_rows_alone() {
+    let fx = support::Fixture::new();
+    fx.write("README.md", "x\n").commit("initial");
+    fx.branch("feature");
+    for i in 0..30 {
+        fx.write(&format!("f{i:02}.txt"), "x\n")
+            .commit(&format!("add {i}"));
+    }
+    for keys in ["<Space>c", "<Space>f"] {
+        let mut h = Harness::open(&fx, 100, 16);
+        h.keys(keys);
+        let screen = h.screen();
+        let rows: Vec<&str> = screen.lines().collect();
+        assert!(rows[rows.len() - 2].contains("scope:"), "{keys}:\n{screen}");
+        assert!(rows[rows.len() - 1].contains("Space"), "{keys}:\n{screen}");
+    }
 }
 
 #[test]

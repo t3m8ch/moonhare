@@ -30,8 +30,22 @@ impl Session {
         true
     }
 
+    /// The window that has the focus: the commit list only while the sidebar
+    /// is shown.
+    pub(super) fn window(&self) -> Focus {
+        if self.sidebar_visible() {
+            self.focus
+        } else {
+            Focus::Diff
+        }
+    }
+
     /// Windows are the commit list (the left column) and the diff.
     fn go_window(&mut self, direction: char) {
+        if !self.sidebar_visible() {
+            self.focus = Focus::Diff;
+            return;
+        }
         self.focus = match direction {
             'h' | 'k' => Focus::Commits,
             'l' | 'j' => Focus::Diff,
