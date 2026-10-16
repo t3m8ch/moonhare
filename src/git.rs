@@ -119,7 +119,7 @@ impl Repo {
         })
     }
 
-    fn run_bytes(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
+    pub(crate) fn run_bytes(&self, args: &[&str]) -> Result<Vec<u8>, GitError> {
         let out = Command::new("git")
             .arg("--no-optional-locks")
             .args(args)
@@ -138,7 +138,7 @@ impl Repo {
         }
     }
 
-    fn run(&self, args: &[&str]) -> Result<String, GitError> {
+    pub(crate) fn run(&self, args: &[&str]) -> Result<String, GitError> {
         self.run_bytes(args)
             .map(|b| String::from_utf8_lossy(&b).into_owned())
     }

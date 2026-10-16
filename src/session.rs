@@ -18,6 +18,7 @@ use ratatui::style::{Color, Modifier, Style};
 use crate::diff::{diff_file, FileDiff, FileKind, Highlight, Limits, Side, Token};
 use crate::fold::{fold, Folded, Item};
 use crate::git::{ChangedFile, Commit, GitError, Range, Repo, Status, Target};
+use crate::review::{self, FileChange, Mark, Review};
 use crate::special;
 use crate::viewport::Viewport;
 
@@ -207,6 +208,7 @@ enum Focus {
     Commits,
 }
 
+mod marks;
 mod nav;
 
 enum Mode {
@@ -229,6 +231,11 @@ pub struct Session {
     /// The `Space c` commit picker is open.
     picker: bool,
     files: Vec<ChangedFile>,
+    /// The files of the whole Range, for the Range-wide progress.
+    range_files: Vec<ChangedFile>,
+    /// The File changes each commit makes, by commit index.
+    commit_changes: Vec<Vec<FileChange>>,
+    review: Review,
     selected: usize,
     loaded: Option<Result<Loaded, String>>,
     vp: Viewport,
@@ -274,6 +281,14 @@ impl Session {
         }
         let commits = repo.commits(&range.base, &range.head)?;
         let files = repo.changed_files(&range.base, &range.head)?;
+        let mut commit_changes = Vec::new();
+        for (i, commit) in commits.iter().enumerate() {
+            let parent = match i.checked_sub(1) {
+                Some(prev) => &commits[prev].sha,
+                None => &range.base,
+            };
+            commit_changes.push(review::file_changes(&repo, parent, &commit.sha)?);
+        }
         let merges = repo.merge_commit_count(&range.base, &range.head)?;
         let warning = (merges > 0).then(|| {
             format!("⚠ {merges} merge commit(s) in range, compared against the first parent")
@@ -287,6 +302,9 @@ impl Session {
             commit_cursor: 0,
             commit_anchor: None,
             picker: false,
+            range_files: files.clone(),
+            commit_changes,
+            review: Review::default(),
             files,
             selected: 0,
             loaded: None,
@@ -369,9 +387,10 @@ impl Session {
         Rect::new(side.x, side.y + top, side.width, side.height - top)
     }
 
-    /// Rows available to the file list (the pane minus its border).
+    /// Rows available to the file list (the pane minus its border and the
+    /// two progress rows).
     fn sidebar_capacity(&self) -> usize {
-        self.files_area().height.saturating_sub(2) as usize
+        self.files_area().height.saturating_sub(2 + marks::PROGRESS_ROWS) as usize
     }
 
     fn sidebar_offset(&self) -> usize {
@@ -669,6 +688,7 @@ impl Session {
                 });
             }
             KeyCode::Char('a') if !ctrl => self.show_whole_range(),
+            KeyCode::Char('m') if !ctrl => self.toggle_mark(),
             KeyCode::Tab => {
                 self.focus = match self.focus {
                     Focus::Diff => Focus::Commits,
@@ -836,7 +856,7 @@ impl Session {
                 // Row 0 of the sidebar is its border.
                 if mouse.row > area.y {
                     let index = self.sidebar_offset() + (mouse.row - area.y - 1) as usize;
-                    if (mouse.row - area.y - 1) as usize <= self.sidebar_capacity() {
+                    if ((mouse.row - area.y - 1) as usize) < self.sidebar_capacity() {
                         self.select(index);
                     }
                 }
@@ -995,6 +1015,7 @@ impl Session {
         let width = area.width as usize;
         let inner = width.saturating_sub(2);
         let offset = self.sidebar_offset();
+        self.render_progress(buf, area);
         for (row, (i, file)) in self
             .files
             .iter()
@@ -1016,8 +1037,13 @@ impl Session {
                 style = style.bg(Color::Indexed(238)).add_modifier(Modifier::BOLD);
             }
             let marker = if selected { '>' } else { ' ' };
+            let reviewed = match self.mark_of(i) {
+                Mark::Reviewed => '✓',
+                Mark::Partial => '◐',
+                Mark::Unreviewed => ' ',
+            };
             let path = fit(&file.path, inner.saturating_sub(4), true);
-            let line = format!("{marker} {} {path}", file.status.letter());
+            let line = format!("{marker}{reviewed}{} {path}", file.status.letter());
             buf.set_stringn(area.x + 1, y, pad(&line, inner), inner, style);
             buf.set_style(Rect::new(area.x + 3, y, 1, 1), style.fg(color));
         }
