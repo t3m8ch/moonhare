@@ -19,7 +19,7 @@ impl Session {
         self.changes_of(&file.path, self.scope)
     }
 
-    fn changes_of(&self, path: &str, scope: Scope) -> Vec<FileChange> {
+    pub(super) fn changes_of(&self, path: &str, scope: Scope) -> Vec<FileChange> {
         let (lo, hi) = match scope {
             Scope::All => (0, self.commits.len().saturating_sub(1)),
             Scope::Commits { lo, hi } => (lo, hi),
@@ -57,6 +57,7 @@ impl Session {
             self.review.mark(&self.repo, &changes)
         };
         self.report(saved);
+        self.refilter_if_filtering();
     }
 
     /// `:reset`: forget every mark of this Review and release its pins.
@@ -84,7 +85,11 @@ impl Session {
         let changes = self.scope_changes(self.selected);
         let saved = self.review.mark(&self.repo, &changes);
         self.report(saved);
-        self.jump_unreviewed(true);
+        if self.unreviewed_only {
+            self.advance_in_queue();
+        } else {
+            self.jump_unreviewed(true);
+        }
     }
 
     /// `]u` / `[u`: the nearest file after / before the selected one that is
@@ -114,7 +119,7 @@ impl Session {
             (done, files.len())
         };
         (
-            count(&self.files, self.scope),
+            count(&self.scope_files, self.scope),
             count(&self.range_files, Scope::All),
         )
     }
