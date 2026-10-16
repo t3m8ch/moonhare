@@ -16,9 +16,11 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::diff::{diff_file, FileDiff, FileKind, Highlight, Limits, Side, Token};
+use crate::fold::{fold, Folded, Item};
 use crate::forge::{Forge, PullRequest};
 use crate::git::{ChangedFile, GitError, Range, Repo, Status, Target};
 use crate::special;
+use crate::viewport::Viewport;
 
 /// Below this size the session shows a "terminal too small" screen.
 pub const MIN_SIZE: (u16, u16) = (60, 15);
@@ -28,6 +30,8 @@ const SIDEBAR_WIDTH: u16 = 32;
 pub const SIDE_BY_SIDE_MIN_WIDTH: u16 = 90;
 const TAB_WIDTH: usize = 4;
 const WHEEL_STEP: usize = 3;
+/// Columns moved by one `h` / `l` press.
+const HSCROLL_STEP: usize = 8;
 
 const FG: Color = Color::Indexed(252);
 const DIM: Color = Color::Indexed(244);
@@ -115,6 +119,8 @@ struct Loaded {
     diff: FileDiff,
     old_tokens: LineTokens,
     new_tokens: LineTokens,
+    /// Width in cells of the widest line on either side.
+    max_width: usize,
 }
 
 impl Loaded {
@@ -126,7 +132,17 @@ impl Loaded {
             }
             by_line
         };
+        let width = |line: &String| {
+            line.chars()
+                .map(|c| if c == '\t' { TAB_WIDTH } else { 1 })
+                .sum::<usize>()
+        };
+        let max_width = (diff.old_lines.iter().chain(&diff.new_lines))
+            .map(width)
+            .max()
+            .unwrap_or(0);
         Loaded {
+            max_width,
             old_tokens: group(Side::Old, diff.old_lines.len()),
             new_tokens: group(Side::New, diff.new_lines.len()),
             diff,
@@ -176,6 +192,8 @@ enum InlineKind {
     Added,
 }
 
+mod nav;
+
 enum Mode {
     Normal,
     Command(String),
@@ -187,11 +205,20 @@ pub struct Session {
     files: Vec<ChangedFile>,
     selected: usize,
     loaded: Option<Result<Loaded, String>>,
-    scroll: usize,
+    vp: Viewport,
+    hscroll: usize,
+    /// Digits typed so far: the count of the next command.
+    count: Option<usize>,
+    /// The folded display model of the loaded file, built for `view_layout`.
+    view: Folded,
+    view_layout: DiffLayout,
+    /// Lines of the inline layout; empty in side-by-side.
+    inline: Vec<InlineLine>,
     size: (u16, u16),
     layout_override: Option<DiffLayout>,
     mode: Mode,
     pending: Option<char>,
+    dirty: bool,
     message: Option<String>,
     /// A standing caveat about the Range, shown until the Review closes.
     warning: Option<String>,
@@ -299,17 +326,24 @@ impl Session {
             files,
             selected: 0,
             loaded: None,
-            scroll: 0,
+            vp: Viewport::default(),
+            hscroll: 0,
+            count: None,
+            view: Folded::default(),
+            view_layout: DiffLayout::SideBySide,
+            inline: Vec::new(),
             size: (width, height),
             layout_override: None,
             mode: Mode::Normal,
             pending: None,
+            dirty: true,
             message: None,
             warning,
             pull_request: None,
             quit: false,
         };
         session.load_selected();
+        session.sync_view();
         Ok(session)
     }
 
@@ -372,7 +406,10 @@ impl Session {
     // ------------------------------------------------------------ data
 
     fn load_selected(&mut self) {
-        self.scroll = 0;
+        self.vp = Viewport::default();
+        self.hscroll = 0;
+        self.view = Folded::default();
+        self.dirty = true;
         self.loaded = self.files.get(self.selected).map(|f| {
             let blob = |rev: &str, path: &str| {
                 self.repo
@@ -407,7 +444,7 @@ impl Session {
         }
     }
 
-    fn inline_lines(&self) -> Vec<InlineLine> {
+    fn compute_inline(&self) -> Vec<InlineLine> {
         let Some(Ok(loaded)) = &self.loaded else {
             return vec![];
         };
@@ -444,25 +481,84 @@ impl Session {
         out
     }
 
-    fn line_count(&self) -> usize {
-        match (&self.loaded, self.layout()) {
-            (Some(Ok(l)), DiffLayout::SideBySide) => l.diff.rows.len(),
-            (Some(Ok(_)), DiffLayout::Inline) => self.inline_lines().len(),
-            _ => 0,
+    /// Old and new line numbers (0-based) of an entry of the built layout.
+    fn entry_lines(&self, entry: usize) -> (Option<usize>, Option<usize>) {
+        match (&self.loaded, self.view_layout) {
+            (Some(Ok(l)), DiffLayout::SideBySide) => {
+                let r = l.diff.rows[entry];
+                (r.old, r.new)
+            }
+            (Some(Ok(_)), DiffLayout::Inline) => {
+                let r = self.inline[entry];
+                (r.old, r.new)
+            }
+            _ => (None, None),
         }
     }
 
-    fn max_scroll(&self) -> usize {
-        self.line_count().saturating_sub(self.viewport_height())
+    /// The source lines an item stands for (the first one of a fold).
+    fn item_lines(&self, item: Item) -> (Option<usize>, Option<usize>) {
+        match item {
+            Item::Line(e) | Item::Fold { from: e, .. } => self.entry_lines(e),
+        }
     }
 
-    fn clamp_scroll(&mut self) {
-        self.scroll = self.scroll.min(self.max_scroll());
+    /// Rebuild the folded display model when the file or the layout changed,
+    /// keeping the cursor on the same source line.
+    fn sync_view(&mut self) {
+        let layout = self.layout();
+        if !self.dirty && self.view_layout == layout {
+            return;
+        }
+        let anchor = (!self.dirty)
+            .then(|| self.view.items.get(self.vp.cursor).copied())
+            .flatten()
+            .map(|item| self.item_lines(item));
+        self.dirty = false;
+        self.view_layout = layout;
+        self.inline = Vec::new();
+        let mut changed = Vec::new();
+        if let Some(Ok(l)) = &self.loaded {
+            match layout {
+                DiffLayout::SideBySide => {
+                    for row in &l.diff.rows {
+                        let flag = |side, line: Option<usize>, other| {
+                            line.is_some_and(|x| l.line_changed(side, x, other))
+                        };
+                        changed.push(
+                            flag(Side::Old, row.old, row.new) || flag(Side::New, row.new, row.old),
+                        );
+                    }
+                }
+                DiffLayout::Inline => {
+                    self.inline = self.compute_inline();
+                    changed = self
+                        .inline
+                        .iter()
+                        .map(|l| l.kind != InlineKind::Context)
+                        .collect();
+                }
+            }
+        }
+        self.view = fold(&changed);
+        if let Some((old, new)) = anchor {
+            let found = self.view.items.iter().position(|&item| {
+                let (o, n) = self.item_lines(item);
+                (new.is_some() && n == new) || (new.is_none() && o == old)
+            });
+            if let Some(i) = found {
+                self.vp.cursor = i;
+            }
+        }
+        self.clamp_view();
     }
 
-    fn scroll_by(&mut self, delta: isize) {
-        let target = self.scroll as isize + delta;
-        self.scroll = target.clamp(0, self.max_scroll() as isize) as usize;
+    fn line_count(&self) -> usize {
+        self.view.items.len()
+    }
+
+    fn clamp_view(&mut self) {
+        self.vp.clamp(self.line_count(), self.viewport_height());
     }
 
     // ------------------------------------------------------------ events
@@ -476,7 +572,7 @@ impl Session {
             }
             _ => {}
         }
-        self.clamp_scroll();
+        self.sync_view();
     }
 
     fn on_key(&mut self, key: KeyEvent) {
@@ -501,25 +597,11 @@ impl Session {
 
         self.message = None;
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        let half_page = (self.viewport_height() / 2).max(1) as isize;
-
-        if let Some(prefix) = self.pending.take() {
-            match (prefix, key.code) {
-                ('g', KeyCode::Char('g')) => self.scroll = 0,
-                (']', KeyCode::Char('f')) => self.select(self.selected + 1),
-                ('[', KeyCode::Char('f')) => self.select(self.selected.saturating_sub(1)),
-                _ => {}
-            }
+        if self.nav_key(key.code, ctrl) {
             return;
         }
 
         match key.code {
-            KeyCode::Char('d') if ctrl => self.scroll_by(half_page),
-            KeyCode::Char('u') if ctrl => self.scroll_by(-half_page),
-            KeyCode::Char('j') | KeyCode::Down if !ctrl => self.scroll_by(1),
-            KeyCode::Char('k') | KeyCode::Up if !ctrl => self.scroll_by(-1),
-            KeyCode::Char('G') => self.scroll = self.max_scroll(),
-            KeyCode::Char(c @ ('g' | ']' | '[')) if !ctrl => self.pending = Some(c),
             KeyCode::Char('s') if !ctrl => {
                 // The manual choice wins over the width-based default from now on.
                 self.layout_override = Some(match self.layout() {
@@ -544,10 +626,10 @@ impl Session {
         let at = |area: Rect| area.contains((mouse.column, mouse.row).into());
         match mouse.kind {
             MouseEventKind::ScrollDown if at(self.diff_area()) => {
-                self.scroll_by(WHEEL_STEP as isize)
+                self.scroll_view(WHEEL_STEP as isize)
             }
             MouseEventKind::ScrollUp if at(self.diff_area()) => {
-                self.scroll_by(-(WHEEL_STEP as isize))
+                self.scroll_view(-(WHEEL_STEP as isize))
             }
             MouseEventKind::Down(_) if at(self.sidebar_area()) => {
                 let area = self.sidebar_area();
@@ -707,15 +789,23 @@ impl Session {
         let half = (area.width as usize).saturating_sub(1) / 2;
         let right_x = area.x + half as u16 + 1;
         let right_w = area.width as usize - half - 1;
-        for (screen_row, row) in l
-            .diff
-            .rows
+        for (screen_row, item) in self
+            .view
+            .items
             .iter()
-            .skip(self.scroll)
+            .skip(self.vp.top)
             .take(height)
             .enumerate()
         {
             let y = top + screen_row as u16;
+            let is_cursor = self.vp.top + screen_row == self.vp.cursor;
+            let row = match *item {
+                Item::Line(e) => l.diff.rows[e],
+                Item::Fold { len, .. } => {
+                    self.render_fold(buf, area.x, y, area.width, len, is_cursor);
+                    continue;
+                }
+            };
             buf.set_string(area.x + half as u16, y, "│", Style::new().fg(DIM));
             self.render_half(buf, l, Side::Old, row.old, row.new, area.x, y, half, digits);
             self.render_half(
@@ -729,7 +819,24 @@ impl Session {
                 right_w,
                 digits,
             );
+            if is_cursor {
+                let marker = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
+                let gutter = (digits + 1) as u16;
+                buf.set_style(Rect::new(area.x, y, gutter, 1), marker);
+                buf.set_style(Rect::new(right_x, y, gutter, 1), marker);
+            }
         }
+    }
+
+    /// The placeholder row of a folded stretch of unchanged lines.
+    fn render_fold(&self, buf: &mut Buffer, x: u16, y: u16, width: u16, len: usize, cursor: bool) {
+        let mut style = Style::new().fg(DIM).bg(Color::Indexed(235));
+        if cursor {
+            style = style.fg(ACCENT).add_modifier(Modifier::BOLD);
+        }
+        buf.set_style(Rect::new(x, y, width, 1), style);
+        let text = format!("  ⋯ {len} unchanged lines");
+        buf.set_stringn(x, y, &text, width as usize, style);
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -764,15 +871,29 @@ impl Session {
         let code_x = x + gutter.chars().count() as u16;
         let code_w = width.saturating_sub(gutter.chars().count());
         let cells = code_cells(&l.lines(side)[line], &l.tokens(side)[line], bg, frag_bg);
-        draw_cells(buf, code_x, y, code_w, &cells);
+        draw_cells(buf, code_x, y, code_w, shifted(&cells, self.hscroll));
     }
 
     fn render_inline(&self, buf: &mut Buffer, l: &Loaded, area: Rect, top: u16, height: usize) {
         let digits = digits(l.diff.old_lines.len().max(l.diff.new_lines.len()));
-        let lines = self.inline_lines();
         let width = area.width as usize;
-        for (screen_row, line) in lines.iter().skip(self.scroll).take(height).enumerate() {
+        for (screen_row, item) in self
+            .view
+            .items
+            .iter()
+            .skip(self.vp.top)
+            .take(height)
+            .enumerate()
+        {
             let y = top + screen_row as u16;
+            let is_cursor = self.vp.top + screen_row == self.vp.cursor;
+            let line = match *item {
+                Item::Line(e) => &self.inline[e],
+                Item::Fold { len, .. } => {
+                    self.render_fold(buf, area.x, y, area.width, len, is_cursor);
+                    continue;
+                }
+            };
             let (side, idx, bg, frag_bg, mark) = match line.kind {
                 InlineKind::Context => (Side::New, line.new.unwrap(), None, None, ' '),
                 InlineKind::Removed => (
@@ -805,7 +926,18 @@ impl Session {
             buf.set_stringn(area.x, y, &gutter, width, gutter_style);
             let gw = gutter.chars().count();
             let cells = code_cells(&l.lines(side)[idx], &l.tokens(side)[idx], bg, frag_bg);
-            draw_cells(buf, area.x + gw as u16, y, width.saturating_sub(gw), &cells);
+            let code_w = width.saturating_sub(gw);
+            draw_cells(
+                buf,
+                area.x + gw as u16,
+                y,
+                code_w,
+                shifted(&cells, self.hscroll),
+            );
+            if is_cursor {
+                let marker = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
+                buf.set_style(Rect::new(area.x, y, gw as u16, 1), marker);
+            }
         }
     }
 
@@ -936,6 +1068,11 @@ fn code_cells(
         }
     }
     cells
+}
+
+/// The cells from column `offset` on.
+fn shifted(cells: &[(char, Style)], offset: usize) -> &[(char, Style)] {
+    &cells[offset.min(cells.len())..]
 }
 
 /// Draw cells into `width` columns, ending with `…` when cut.
