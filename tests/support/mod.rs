@@ -173,6 +173,11 @@ impl Harness {
         self
     }
 
+    pub fn set_truecolor(&mut self, on: bool) -> &mut Self {
+        self.session.set_truecolor(on);
+        self
+    }
+
     pub fn click(&mut self, column: u16, row: u16) -> &mut Self {
         self.mouse(MouseEventKind::Down(MouseButton::Left), column, row)
     }
