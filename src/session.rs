@@ -27,6 +27,8 @@ use crate::viewport::Viewport;
 pub const MIN_SIZE: (u16, u16) = (60, 15);
 /// Width of the file list on the left.
 const SIDEBAR_WIDTH: u16 = 32;
+/// Terminals at least this wide show the sidebar by default.
+pub const SIDEBAR_AUTO_MIN_WIDTH: u16 = 100;
 /// The diff pane is shown side-by-side from this width; narrower is inline.
 pub const SIDE_BY_SIDE_MIN_WIDTH: u16 = 90;
 const TAB_WIDTH: usize = 4;
@@ -209,6 +211,8 @@ enum Focus {
     Commits,
 }
 
+mod file_bar;
+mod file_picker;
 mod marks;
 mod nav;
 
@@ -231,6 +235,8 @@ pub struct Session {
     commit_anchor: Option<usize>,
     /// The `Space c` commit picker is open.
     picker: bool,
+    /// The `Space f` file picker is open, with its cursor on this file.
+    file_picker: Option<usize>,
     files: Vec<ChangedFile>,
     /// The files of the whole Range, for the Range-wide progress.
     range_files: Vec<ChangedFile>,
@@ -250,6 +256,10 @@ pub struct Session {
     inline: Vec<InlineLine>,
     size: (u16, u16),
     layout_override: Option<DiffLayout>,
+    /// The Reviewer's `Space e` choice; it beats the width-based default.
+    sidebar_manual: Option<bool>,
+    /// Emit exact RGB instead of the 256-colour palette.
+    truecolor: bool,
     mode: Mode,
     pending: Option<char>,
     dirty: bool,
@@ -387,6 +397,7 @@ impl Session {
             range_files: files.clone(),
             commit_changes,
             review,
+            file_picker: None,
             files,
             selected: 0,
             loaded: None,
@@ -398,6 +409,8 @@ impl Session {
             inline: Vec::new(),
             size: (width, height),
             layout_override: None,
+            sidebar_manual: None,
+            truecolor: false,
             mode: Mode::Normal,
             pending: None,
             dirty: true,
@@ -409,6 +422,11 @@ impl Session {
         session.load_selected();
         session.sync_view();
         Ok(session)
+    }
+
+    /// Draw with truecolor (exact RGB) instead of the 256-colour palette.
+    pub fn set_truecolor(&mut self, on: bool) {
+        self.truecolor = on;
     }
 
     /// The pull request the Range belongs to: its title and description.
@@ -433,23 +451,32 @@ impl Session {
 
     // ------------------------------------------------------------ geometry
 
+    /// Whether the sidebar is shown: the manual choice, else by width.
+    pub fn sidebar_visible(&self) -> bool {
+        self.sidebar_manual
+            .unwrap_or(self.size.0 >= SIDEBAR_AUTO_MIN_WIDTH)
+    }
+
+    fn sidebar_width(&self) -> u16 {
+        if self.sidebar_visible() {
+            SIDEBAR_WIDTH.min(self.size.0)
+        } else {
+            0
+        }
+    }
+
     fn too_small(&self) -> bool {
         self.size.0 < MIN_SIZE.0 || self.size.1 < MIN_SIZE.1
     }
 
     /// The whole left column: commit list above, file list below.
     fn sidebar_area(&self) -> Rect {
-        Rect::new(
-            0,
-            0,
-            SIDEBAR_WIDTH.min(self.size.0),
-            self.size.1.saturating_sub(1),
-        )
+        Rect::new(0, 0, self.sidebar_width(), self.size.1.saturating_sub(1))
     }
 
     /// The diff pane including its header line.
     fn diff_area(&self) -> Rect {
-        let x = SIDEBAR_WIDTH.min(self.size.0);
+        let x = self.sidebar_width();
         Rect::new(x, 0, self.size.0 - x, self.size.1.saturating_sub(1))
     }
 
@@ -738,11 +765,15 @@ impl Session {
         }
 
         self.message = None;
+        if let Some(cursor) = self.file_picker {
+            self.file_picker_key(key, cursor);
+            return;
+        }
         if self.picker {
             self.picker_key(key);
             return;
         }
-        if self.focus == Focus::Commits && self.commits_key(key) {
+        if self.focus == Focus::Commits && self.sidebar_visible() && self.commits_key(key) {
             return;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -756,6 +787,18 @@ impl Session {
                         ']' => self.step_commit(true),
                         _ => self.step_commit(false),
                     }
+                    return;
+                }
+                (Some(' '), KeyCode::Char('e')) => {
+                    self.pending = None;
+                    self.count = None;
+                    self.sidebar_manual = Some(!self.sidebar_visible());
+                    return;
+                }
+                (Some(' '), KeyCode::Char('f')) => {
+                    self.pending = None;
+                    self.count = None;
+                    self.open_file_picker();
                     return;
                 }
                 (None, KeyCode::Char(' ')) => {
@@ -967,6 +1010,13 @@ impl Session {
 
     /// Draw the whole screen into `buf`, whose area is the terminal.
     pub fn render(&self, buf: &mut Buffer) {
+        self.render_screen(buf);
+        if self.truecolor {
+            crate::color::to_truecolor(buf);
+        }
+    }
+
+    fn render_screen(&self, buf: &mut Buffer) {
         buf.set_style(buf.area, Style::new().fg(FG));
         if self.too_small() {
             let msg = format!(
@@ -976,11 +1026,16 @@ impl Session {
             buf.set_stringn(0, 0, &msg, self.size.0 as usize, Style::new().fg(FG));
             return;
         }
-        self.render_sidebar(buf);
+        if self.sidebar_visible() {
+            self.render_sidebar(buf);
+        }
         self.render_diff(buf);
         self.render_status(buf);
         if self.picker {
             self.render_picker(buf);
+        }
+        if let Some(cursor) = self.file_picker {
+            self.render_file_picker(buf, cursor);
         }
     }
 
@@ -1174,7 +1229,7 @@ impl Session {
         };
 
         let d = &loaded.diff;
-        let header = special::header(file, d);
+        let header = self.file_bar(file, d);
         let header_style = Style::new()
             .fg(Color::Indexed(231))
             .bg(Color::Indexed(236))
@@ -1396,16 +1451,10 @@ impl Session {
         let text = match &self.message {
             Some(m) => format!(" {m}"),
             None => format!(
-                " {}..{}  scope:{}  file {}/{}  layout:{layout} ({how})",
+                " {}..{}  scope:{}  layout:{layout} ({how})",
                 self.range.base_name,
                 self.range.head_name,
                 self.scope_label(),
-                if self.files.is_empty() {
-                    0
-                } else {
-                    self.selected + 1
-                },
-                self.files.len(),
             ),
         };
         let text = match &self.warning {
