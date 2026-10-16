@@ -27,6 +27,8 @@ impl Session {
                 ('[', KeyCode::Char('f')) => {
                     self.select(self.selected.saturating_sub(count.unwrap_or(1)));
                 }
+                (']', KeyCode::Char('u')) => self.jump_unreviewed(true),
+                ('[', KeyCode::Char('u')) => self.jump_unreviewed(false),
                 (']', KeyCode::Char('h')) => self.jump_hunk(true, count.unwrap_or(1)),
                 ('[', KeyCode::Char('h')) => self.jump_hunk(false, count.unwrap_or(1)),
                 _ => {}

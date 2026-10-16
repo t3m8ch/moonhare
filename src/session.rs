@@ -19,6 +19,7 @@ use crate::diff::{diff_file, FileDiff, FileKind, Highlight, Limits, Side, Token}
 use crate::fold::{fold, Folded, Item};
 use crate::forge::{Forge, PullRequest};
 use crate::git::{ChangedFile, Commit, GitError, Range, Repo, Status, Target};
+use crate::review::{self, FileChange, Mark, Review};
 use crate::special;
 use crate::viewport::Viewport;
 
@@ -213,6 +214,7 @@ enum Focus {
 mod analysis;
 mod file_bar;
 mod file_picker;
+mod marks;
 mod nav;
 
 enum Mode {
@@ -237,6 +239,11 @@ pub struct Session {
     /// The `Space f` file picker is open, with its cursor on this file.
     file_picker: Option<usize>,
     files: Vec<ChangedFile>,
+    /// The files of the whole Range, for the Range-wide progress.
+    range_files: Vec<ChangedFile>,
+    /// The File changes each commit makes, by commit index.
+    commit_changes: Vec<Vec<FileChange>>,
+    review: Review,
     selected: usize,
     loaded: Option<Result<Loaded, String>>,
     vp: Viewport,
@@ -281,7 +288,12 @@ impl Session {
     ) -> Result<Session, Error> {
         let repo = Repo::open(repo_path)?;
         let range = repo.range_for(target)?;
-        let mut session = Self::open_range(repo, range, *target != Target::Current, width, height)?;
+        let explicit = match target {
+            Target::Range { base, head } => Some(format!("{base}..{head}")),
+            _ => None,
+        };
+        let reject_empty = *target != Target::Current;
+        let mut session = Self::open_range(repo, range, reject_empty, explicit, width, height)?;
         session.analysis.head_rev = match target {
             Target::Current => "HEAD".to_string(),
             Target::Branch(name) => format!("refs/heads/{name}"),
@@ -342,7 +354,7 @@ impl Session {
             .map_err(|e| Error(e.to_string()))?;
         let range =
             repo.range_for_head(&format!("#{number}"), &reference, Some(&pr.base_branch))?;
-        let mut session = Self::open_range(repo, range, true, width, height)?;
+        let mut session = Self::open_range(repo, range, true, None, width, height)?;
         session.pull_request = Some(pr);
         session.analysis.head_rev = reference;
         Ok(session)
@@ -352,6 +364,7 @@ impl Session {
         repo: Repo,
         range: Range,
         reject_empty: bool,
+        explicit_range: Option<String>,
         width: u16,
         height: u16,
     ) -> Result<Session, Error> {
@@ -363,6 +376,20 @@ impl Session {
         }
         let commits = repo.commits(&range.base, &range.head)?;
         let files = repo.changed_files(&range.base, &range.head)?;
+        let mut commit_changes = Vec::new();
+        for (i, commit) in commits.iter().enumerate() {
+            let parent = match i.checked_sub(1) {
+                Some(prev) => &commits[prev].sha,
+                None => &range.base,
+            };
+            commit_changes.push(review::file_changes(&repo, parent, &commit.sha)?);
+        }
+        // A Review belongs to the branch name, or to the explicit range string.
+        let review_name = match explicit_range {
+            Some(text) => format!("range {text}"),
+            None => format!("branch {}", range.head_name),
+        };
+        let review = Review::open(&repo, &review_name)?;
         let merges = repo.merge_commit_count(&range.base, &range.head)?;
         let warning = (merges > 0).then(|| {
             format!("⚠ {merges} merge commit(s) in range, compared against the first parent")
@@ -376,6 +403,9 @@ impl Session {
             commit_cursor: 0,
             commit_anchor: None,
             picker: false,
+            range_files: files.clone(),
+            commit_changes,
+            review,
             file_picker: None,
             files,
             selected: 0,
@@ -482,9 +512,12 @@ impl Session {
         Rect::new(side.x, side.y + top, side.width, side.height - top)
     }
 
-    /// Rows available to the file list (the pane minus its border).
+    /// Rows available to the file list (the pane minus its border and the
+    /// two progress rows).
     fn sidebar_capacity(&self) -> usize {
-        self.files_area().height.saturating_sub(2) as usize
+        self.files_area()
+            .height
+            .saturating_sub(2 + marks::PROGRESS_ROWS) as usize
     }
 
     fn sidebar_offset(&self) -> usize {
@@ -801,6 +834,8 @@ impl Session {
                 });
             }
             KeyCode::Char('a') if !ctrl => self.show_whole_range(),
+            KeyCode::Char('m') if !ctrl => self.toggle_mark(),
+            KeyCode::Char('M') if !ctrl => self.mark_and_advance(),
             KeyCode::Tab => {
                 self.focus = match self.focus {
                     Focus::Diff => Focus::Commits,
@@ -931,6 +966,7 @@ impl Session {
         match command {
             "q" | "q!" | "quit" => self.quit = true,
             "" => {}
+            "reset" => self.reset_review(),
             other if self.analysis_command(other) => {}
             other if other.split_whitespace().next() == Some("scope") => {
                 let arg = other["scope".len()..].trim();
@@ -969,7 +1005,7 @@ impl Session {
                 // Row 0 of the sidebar is its border.
                 if mouse.row > area.y {
                     let index = self.sidebar_offset() + (mouse.row - area.y - 1) as usize;
-                    if (mouse.row - area.y - 1) as usize <= self.sidebar_capacity() {
+                    if ((mouse.row - area.y - 1) as usize) < self.sidebar_capacity() {
                         self.select(index);
                     }
                 }
@@ -1141,6 +1177,7 @@ impl Session {
         let width = area.width as usize;
         let inner = width.saturating_sub(2);
         let offset = self.sidebar_offset();
+        self.render_progress(buf, area);
         for (row, (i, file)) in self
             .files
             .iter()
@@ -1162,8 +1199,13 @@ impl Session {
                 style = style.bg(Color::Indexed(238)).add_modifier(Modifier::BOLD);
             }
             let marker = if selected { '>' } else { ' ' };
+            let reviewed = match self.mark_of(i) {
+                Mark::Reviewed => '✓',
+                Mark::Partial => '◐',
+                Mark::Unreviewed => ' ',
+            };
             let path = fit(&file.path, inner.saturating_sub(4), true);
-            let line = format!("{marker} {} {path}", file.status.letter());
+            let line = format!("{marker}{reviewed}{} {path}", file.status.letter());
             buf.set_stringn(area.x + 1, y, pad(&line, inner), inner, style);
             buf.set_style(Rect::new(area.x + 3, y, 1, 1), style.fg(color));
         }
