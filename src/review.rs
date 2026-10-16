@@ -10,7 +10,7 @@ use std::path::PathBuf;
 use crate::git::{GitError, Repo};
 
 /// The all-zero object id git prints for "no such blob".
-const NULL_BLOB: &str = "0000000000000000000000000000000000000000";
+pub const NULL_BLOB: &str = "0000000000000000000000000000000000000000";
 
 /// One commit's modification of one file, with the blobs on both sides.
 #[derive(Debug, Clone, PartialEq, Eq)]
