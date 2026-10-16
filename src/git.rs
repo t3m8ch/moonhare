@@ -332,6 +332,11 @@ impl Repo {
         Ok(files)
     }
 
+    /// Content of the blob `id`.
+    pub fn blob(&self, id: &str) -> Result<Vec<u8>, GitError> {
+        self.run_bytes(&["cat-file", "blob", id])
+    }
+
     /// Content of `path` at `rev`.
     pub fn file_at(&self, rev: &str, path: &str) -> Result<Vec<u8>, GitError> {
         self.run_bytes(&["cat-file", "blob", &format!("{rev}:{path}")])

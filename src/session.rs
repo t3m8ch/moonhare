@@ -216,6 +216,7 @@ mod file_picker;
 mod marks;
 mod mechanical_view;
 mod nav;
+mod unreviewed;
 
 enum Mode {
     Normal,
@@ -241,6 +242,10 @@ pub struct Session {
     /// The selected Mechanical file was expanded with `Enter`.
     mechanical_open: bool,
     files: Vec<ChangedFile>,
+    /// Every file of the Scope, before the unreviewed filter.
+    scope_files: Vec<ChangedFile>,
+    /// `Space u`: only the files still to read, with their delta.
+    unreviewed_only: bool,
     /// The files of the whole Range, for the Range-wide progress.
     range_files: Vec<ChangedFile>,
     /// The File changes each commit makes, by commit index.
@@ -402,6 +407,8 @@ impl Session {
             review,
             file_picker: None,
             mechanical_open: false,
+            scope_files: files.clone(),
+            unreviewed_only: false,
             files,
             selected: 0,
             loaded: None,
@@ -555,9 +562,12 @@ impl Session {
                     .map(Some)
                     .map_err(|e| e.to_string())
             };
-            let old = match f.status {
-                Status::Added => Ok(None),
-                _ => blob(&scope_base, f.base_path()),
+            let old = match self.delta_baseline(&f.path) {
+                Some(reviewed) => reviewed,
+                None => match f.status {
+                    Status::Added => Ok(None),
+                    _ => blob(&scope_base, f.base_path()),
+                },
             };
             let new = match f.status {
                 Status::Deleted => Ok(None),
@@ -588,7 +598,8 @@ impl Session {
         };
         self.scope = scope;
         let previous = self.files.get(self.selected).map(|f| f.path.clone());
-        self.files = files;
+        self.scope_files = files;
+        self.files = self.visible_files();
         self.selected = previous
             .and_then(|p| self.files.iter().position(|f| f.path == p))
             .unwrap_or(0);
@@ -802,6 +813,12 @@ impl Session {
                     self.pending = None;
                     self.count = None;
                     self.sidebar_manual = Some(!self.sidebar_visible());
+                    return;
+                }
+                (Some(' '), KeyCode::Char('u')) => {
+                    self.pending = None;
+                    self.count = None;
+                    self.toggle_unreviewed();
                     return;
                 }
                 (Some(' '), KeyCode::Char('f')) => {
@@ -1210,10 +1227,14 @@ impl Session {
         let area = self.diff_area();
         let w = area.width as usize;
         let Some(file) = self.files.get(self.selected) else {
-            let msg = format!(
-                "No changes between {} and {}",
-                self.range.base_name, self.range.head_name
-            );
+            let msg = if self.unreviewed_only && !self.scope_files.is_empty() {
+                "Nothing left to review: every file in this Scope is reviewed".to_string()
+            } else {
+                format!(
+                    "No changes between {} and {}",
+                    self.range.base_name, self.range.head_name
+                )
+            };
             buf.set_stringn(
                 area.x + 1,
                 area.y + 1,
@@ -1474,6 +1495,10 @@ impl Session {
         let text = match &self.warning {
             Some(w) => format!("{text}  {w}"),
             None => text,
+        };
+        let text = match self.unreviewed_only {
+            true => format!(" [only unreviewed]{text}"),
+            false => text,
         };
         buf.set_stringn(8, y, &text, width.saturating_sub(8), bar);
     }
