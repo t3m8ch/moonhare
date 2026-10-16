@@ -211,6 +211,7 @@ enum Focus {
     Commits,
 }
 
+mod analysis;
 mod file_bar;
 mod file_picker;
 mod marks;
@@ -274,6 +275,7 @@ pub struct Session {
     /// The pull request behind the Range, when the Forge knows one.
     pull_request: Option<PullRequest>,
     quit: bool,
+    analysis: analysis::Analysis,
 }
 
 impl Session {
@@ -296,7 +298,13 @@ impl Session {
             _ => None,
         };
         let reject_empty = *target != Target::Current;
-        Self::open_range(repo, range, reject_empty, explicit, width, height)
+        let mut session = Self::open_range(repo, range, reject_empty, explicit, width, height)?;
+        session.analysis.head_rev = match target {
+            Target::Current => "HEAD".to_string(),
+            Target::Branch(name) => format!("refs/heads/{name}"),
+            Target::Range { head, .. } => head.clone(),
+        };
+        Ok(session)
     }
 
     /// Like [`Session::open_target`], and ask `forge` for the pull request of
@@ -353,6 +361,7 @@ impl Session {
             repo.range_for_head(&format!("#{number}"), &reference, Some(&pr.base_branch))?;
         let mut session = Self::open_range(repo, range, true, None, width, height)?;
         session.pull_request = Some(pr);
+        session.analysis.head_rev = reference;
         Ok(session)
     }
 
@@ -425,6 +434,7 @@ impl Session {
             warning,
             pull_request: None,
             quit: false,
+            analysis: Default::default(),
         };
         session.load_selected();
         session.sync_view();
@@ -776,6 +786,9 @@ impl Session {
         }
 
         self.message = None;
+        if self.analysis_key(key) {
+            return;
+        }
         if let Some(cursor) = self.file_picker {
             self.file_picker_key(key, cursor);
             return;
@@ -971,6 +984,7 @@ impl Session {
             "q" | "q!" | "quit" => self.quit = true,
             "" => {}
             "reset" => self.reset_review(),
+            other if self.analysis_command(other) => {}
             other if other.split_whitespace().next() == Some("scope") => {
                 let arg = other["scope".len()..].trim();
                 if let Err(e) = self.scope_command(arg) {
@@ -1051,6 +1065,7 @@ impl Session {
         if self.picker {
             self.render_picker(buf);
         }
+        self.render_summary(buf);
         if let Some(cursor) = self.file_picker {
             self.render_file_picker(buf, cursor);
         }
@@ -1478,6 +1493,7 @@ impl Session {
                 self.scope_label(),
             ),
         };
+        let text = self.analysis_status(&text);
         let text = match &self.warning {
             Some(w) => format!("{text}  {w}"),
             None => text,
