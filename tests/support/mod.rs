@@ -146,6 +146,10 @@ impl Harness {
         }
     }
 
+    pub fn from_session(session: Session) -> Self {
+        Harness { session }
+    }
+
     pub fn try_open_target(
         fx: &Fixture,
         target: &Target,
