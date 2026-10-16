@@ -38,6 +38,8 @@ impl Fixture {
         let out = Command::new("git")
             .args(args)
             .current_dir(self.path())
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .env("GIT_CONFIG_NOSYSTEM", "1")
             .output()
             .unwrap();
         assert!(

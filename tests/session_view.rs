@@ -114,11 +114,11 @@ fn vim_motions_scroll_the_diff() {
     h.keys("gg");
     assert!(visible(&mut h, 1), "gg returns to the top");
 
-    h.keys("j");
-    assert!(!visible(&mut h, 1), "j scrolls one line down");
+    h.keys("<C-e>");
+    assert!(!visible(&mut h, 1), "Ctrl-e scrolls one line down");
     assert!(visible(&mut h, 2));
-    h.keys("k");
-    assert!(visible(&mut h, 1), "k scrolls back");
+    h.keys("<C-y>");
+    assert!(visible(&mut h, 1), "Ctrl-y scrolls back");
 
     h.keys("<C-d>");
     assert!(!visible(&mut h, 1), "Ctrl-d scrolls half a page");
