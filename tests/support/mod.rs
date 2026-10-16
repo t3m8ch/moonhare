@@ -178,6 +178,10 @@ impl Harness {
         self
     }
 
+    pub fn next_tick_in(&self) -> Option<std::time::Duration> {
+        self.session.next_tick_in()
+    }
+
     pub fn resize(&mut self, width: u16, height: u16) -> &mut Self {
         self.session.handle(Event::Resize(width, height));
         self

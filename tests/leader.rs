@@ -212,6 +212,57 @@ fn question_mark_shows_help_with_all_keys_and_zellij_caveat() {
 }
 
 #[test]
+fn help_warns_that_ctrl_h_often_arrives_as_backspace() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 60);
+    h.keys("?");
+    assert!(h.screen().contains("Backspace"));
+}
+
+#[test]
+fn the_mouse_does_nothing_under_the_help() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("?").click(5, 8);
+    h.keys("<Esc>");
+    let screen = h.screen();
+    assert!(screen.contains("file 1/3"), "{screen}");
+}
+
+#[test]
+fn which_key_and_help_fit_the_smallest_terminal() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 60, 15);
+    for prefix in ["<Space>", "g", "]", "[", "<C-w>"] {
+        h.keys(prefix).wait(350);
+        let screen = h.screen();
+        assert_eq!(screen.lines().count(), 15, "{prefix}:\n{screen}");
+        h.keys("<Esc>");
+    }
+    h.keys("?jjjjj");
+    assert_eq!(h.screen().lines().count(), 15);
+}
+
+#[test]
+fn next_tick_is_due_only_while_a_prefix_waits_for_the_pause() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 30);
+    assert_eq!(h.next_tick_in(), None);
+    h.keys("<Space>");
+    assert_eq!(
+        h.next_tick_in(),
+        Some(std::time::Duration::from_millis(300))
+    );
+    h.wait(120);
+    assert_eq!(
+        h.next_tick_in(),
+        Some(std::time::Duration::from_millis(180))
+    );
+    h.wait(200);
+    assert_eq!(h.next_tick_in(), None, "the window is open already");
+}
+
+#[test]
 fn help_scrolls_on_a_short_terminal() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 100, 20);

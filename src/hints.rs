@@ -72,6 +72,7 @@ const NOTES: &[&str] = &[
     "окна переключаются через Ctrl-w и Tab.",
     "zellij перехватывает Ctrl-h/j/k/l (и Ctrl-w в некоторых раскладках):",
     "если алиасы не доходят, используйте Ctrl-w + h/j/k/l и Tab.",
+    "Ctrl-h в большинстве терминалов приходит как Backspace и не работает.",
 ];
 
 /// The `?` help: notes, then every key from [`PLAIN`] and [`BINDINGS`].

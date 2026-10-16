@@ -417,6 +417,15 @@ impl Session {
         self.truecolor = on;
     }
 
+    /// How long until a [`tick`](Self::tick) changes what is drawn, if any is
+    /// due: the real loop sleeps this long instead of redrawing idly.
+    pub fn next_tick_in(&self) -> Option<std::time::Duration> {
+        let waiting = self.pending.is_some() && self.help.is_none();
+        waiting
+            .then(|| crate::hints::WHICH_KEY_DELAY.checked_sub(self.pending_for))?
+            .filter(|left| !left.is_zero())
+    }
+
     /// The pull request the Range belongs to: its title and description.
     pub fn pull_request(&self) -> Option<&PullRequest> {
         self.pull_request.as_ref()
@@ -966,6 +975,9 @@ impl Session {
     }
 
     fn on_mouse(&mut self, mouse: MouseEvent) {
+        if self.help.is_some() {
+            return;
+        }
         let at = |area: Rect| area.contains((mouse.column, mouse.row).into());
         match mouse.kind {
             MouseEventKind::ScrollDown if at(self.diff_area()) => {
