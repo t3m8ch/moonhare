@@ -8,6 +8,8 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use crate::mechanical::{self, Kind};
+
 #[derive(Debug)]
 pub struct GitError(pub String);
 
@@ -46,6 +48,8 @@ pub struct ChangedFile {
     pub status: Status,
     /// Where the file was before, for a rename.
     pub old_path: Option<String>,
+    /// Set for a Mechanical file: it is shown collapsed and listed last.
+    pub mechanical: Option<Kind>,
 }
 
 impl ChangedFile {
@@ -321,8 +325,10 @@ impl Repo {
                 path,
                 status,
                 old_path,
+                mechanical: None,
             });
         }
+        mechanical::classify(self, base, head, &mut files);
         Ok(files)
     }
 
