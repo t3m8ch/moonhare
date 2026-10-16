@@ -216,6 +216,7 @@ mod comments;
 mod file_bar;
 mod file_picker;
 mod marks;
+mod mechanical_view;
 mod nav;
 mod unreviewed;
 
@@ -240,6 +241,8 @@ pub struct Session {
     picker: bool,
     /// The `Space f` file picker is open, with its cursor on this file.
     file_picker: Option<usize>,
+    /// The selected Mechanical file was expanded with `Enter`.
+    mechanical_open: bool,
     files: Vec<ChangedFile>,
     /// Every file of the Scope, before the unreviewed filter.
     scope_files: Vec<ChangedFile>,
@@ -421,6 +424,7 @@ impl Session {
             editor: None,
             visual: None,
             file_picker: None,
+            mechanical_open: false,
             scope_files: files.clone(),
             unreviewed_only: false,
             files,
@@ -572,6 +576,7 @@ impl Session {
         self.hscroll = 0;
         self.view = Folded::default();
         self.dirty = true;
+        self.mechanical_open = false;
         self.loaded = self.files.get(self.selected).map(|f| {
             let blob = |rev: &str, path: &str| {
                 self.repo
@@ -742,7 +747,11 @@ impl Session {
                 }
             }
         }
-        self.view = fold(&changed);
+        self.view = if self.collapsed() {
+            Folded::default()
+        } else {
+            fold(&changed)
+        };
         if let Some((old, new)) = anchor {
             let found = self.view.items.iter().position(|&item| {
                 let (o, n) = self.item_lines(item);
@@ -872,6 +881,7 @@ impl Session {
             KeyCode::Char('M') if !ctrl => self.mark_and_advance(),
             KeyCode::Char(c @ ('c' | 'C' | 'v' | 'x' | 'o')) if !ctrl => self.comment_key(c),
             KeyCode::Esc if self.visual.is_some() => self.visual = None,
+            KeyCode::Enter if !ctrl => self.expand_mechanical(),
             KeyCode::Tab => {
                 self.focus = match self.focus {
                     Focus::Diff => Focus::Commits,
@@ -1311,6 +1321,10 @@ impl Session {
 
         let top = area.y + 1;
         let height = self.viewport_height();
+        if self.collapsed() {
+            self.render_collapsed(buf, file, area, top);
+            return;
+        }
         if d.kind == FileKind::Binary {
             buf.set_stringn(
                 area.x + 1,
