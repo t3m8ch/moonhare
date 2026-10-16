@@ -2,7 +2,9 @@
 
 pub mod diff;
 pub mod fold;
+pub mod forge;
 pub mod git;
+pub mod github;
 pub mod review;
 pub mod session;
 pub mod special;
