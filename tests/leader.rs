@@ -84,6 +84,16 @@ fn the_visual_badge_shows_only_while_the_commit_list_has_the_focus() {
 }
 
 #[test]
+fn which_key_and_help_list_the_analyst_summary() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 60);
+    h.keys("<Space>").wait(350);
+    assert!(h.screen().contains("саммари"), "{}", h.screen());
+    h.keys("<Esc>?");
+    assert!(h.screen().contains("Space s"), "{}", h.screen());
+}
+
+#[test]
 fn no_which_key_before_the_pause() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 100, 30);

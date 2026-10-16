@@ -174,7 +174,7 @@ impl Harness {
 
     /// Let `ms` milliseconds pass without input.
     pub fn wait(&mut self, ms: u64) -> &mut Self {
-        self.session.tick(std::time::Duration::from_millis(ms));
+        self.session.elapse(std::time::Duration::from_millis(ms));
         self
     }
 
@@ -217,6 +217,11 @@ impl Harness {
     /// The frame as text, rows joined by newlines, trailing blanks trimmed.
     pub fn screen(&mut self) -> String {
         self.frame().text()
+    }
+
+    /// The session under test, for calls that are not terminal events.
+    pub fn session(&mut self) -> &mut Session {
+        &mut self.session
     }
 
     pub fn quit_requested(&self) -> bool {

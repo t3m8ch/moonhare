@@ -1,7 +1,8 @@
 use std::io;
 use std::process::ExitCode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
+use moonhare::claude::ClaudeAnalyst;
 use moonhare::git::Target;
 use moonhare::github::GitHub;
 use moonhare::session::Session;
@@ -17,7 +18,16 @@ fn main() -> ExitCode {
         }
     };
     let (width, height) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let language = match take_flag_value(&mut args, "--lang") {
+        Ok(language) => language,
+        Err(()) => {
+            eprintln!(
+                "usage: moonhare [--lang <code>] [<branch> | <base>..<head> | --pr <number>]"
+            );
+            return ExitCode::FAILURE;
+        }
+    };
     let forge = GitHub::new();
     let opened = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["--pr", n] => match n.trim_start_matches('#').parse::<u64>() {
@@ -47,6 +57,10 @@ fn main() -> ExitCode {
     let forced = std::env::var("MOONHARE_TRUECOLOR").is_ok_and(|v| v == "1");
     session
         .set_truecolor(forced || moonhare::color::truecolor_from_colorterm(colorterm.as_deref()));
+    if let Some(language) = language {
+        session.set_language(&language);
+    }
+    session.set_analyst(std::sync::Arc::new(ClaudeAnalyst::new()));
 
     let mut terminal = ratatui::init();
     let _ = execute!(io::stdout(), EnableMouseCapture);
@@ -63,22 +77,47 @@ fn main() -> ExitCode {
     }
 }
 
+/// Remove `--flag <value>` from `args` and return the value. `Err` when the
+/// flag has no value.
+fn take_flag_value(args: &mut Vec<String>, flag: &str) -> Result<Option<String>, ()> {
+    let Some(at) = args.iter().position(|a| a == flag) else {
+        return Ok(None);
+    };
+    if at + 1 >= args.len() {
+        return Err(());
+    }
+    let value = args.remove(at + 1);
+    args.remove(at);
+    Ok(Some(value))
+}
+
+/// How often to look for the Analyst's answers while it works.
+const ANALYST_POLL: Duration = Duration::from_millis(200);
+
 fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Result<()> {
     while !session.should_quit() {
         terminal.draw(|f| session.render(f.buffer_mut()))?;
-        // Sleep until input, or until a pause makes the screen change; never
-        // redraw an idle screen.
-        match session.next_tick_in() {
-            Some(due) => {
+        // Sleep until input, until a pause makes the screen change, or (while
+        // the Analyst works) until it may have answered; never redraw an idle
+        // screen.
+        let wake = match (session.next_tick_in(), session.analyst_busy()) {
+            (Some(due), true) => Some(due.min(ANALYST_POLL)),
+            (Some(due), false) => Some(due),
+            (None, true) => Some(ANALYST_POLL),
+            (None, false) => None,
+        };
+        match wake {
+            Some(wake) => {
                 let waited = Instant::now();
-                if event::poll(due)? {
+                if event::poll(wake)? {
                     session.handle(event::read()?);
                 } else {
-                    session.tick(due.max(waited.elapsed()));
+                    session.elapse(wake.max(waited.elapsed()));
                 }
             }
             None => session.handle(event::read()?),
         }
+        session.tick();
     }
     Ok(())
 }
