@@ -25,6 +25,8 @@ pub enum Status {
     Added,
     Modified,
     Deleted,
+    /// Moved to `path` from `old_path`, possibly with edits.
+    Renamed,
 }
 
 impl Status {
@@ -33,6 +35,7 @@ impl Status {
             Status::Added => 'A',
             Status::Modified => 'M',
             Status::Deleted => 'D',
+            Status::Renamed => 'R',
         }
     }
 }
@@ -41,6 +44,15 @@ impl Status {
 pub struct ChangedFile {
     pub path: String,
     pub status: Status,
+    /// Where the file was before, for a rename.
+    pub old_path: Option<String>,
+}
+
+impl ChangedFile {
+    /// The path of the file at the base of the Range.
+    pub fn base_path(&self) -> &str {
+        self.old_path.as_deref().unwrap_or(&self.path)
+    }
 }
 
 /// The Range under review: from the merge-base with the default branch up to
@@ -225,26 +237,25 @@ impl Repo {
 
     /// Files whose content differs between `base` and `head`.
     pub fn changed_files(&self, base: &str, head: &str) -> Result<Vec<ChangedFile>, GitError> {
-        let raw = self.run_bytes(&[
-            "diff-tree",
-            "-r",
-            "--no-renames",
-            "--name-status",
-            "-z",
-            base,
-            head,
-        ])?;
+        let raw = self.run_bytes(&["diff-tree", "-r", "-M", "--name-status", "-z", base, head])?;
+        let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
         let mut parts = raw.split(|&b| b == 0).filter(|p| !p.is_empty());
         let mut files = Vec::new();
         while let (Some(status), Some(path)) = (parts.next(), parts.next()) {
-            let status = match status[0] {
-                b'A' => Status::Added,
-                b'D' => Status::Deleted,
-                _ => Status::Modified,
+            let (status, path, old_path) = match status[0] {
+                b'A' => (Status::Added, text(path), None),
+                b'D' => (Status::Deleted, text(path), None),
+                // A rename lists the old path, then the new one.
+                b'R' => match parts.next() {
+                    Some(new) => (Status::Renamed, text(new), Some(text(path))),
+                    None => break,
+                },
+                _ => (Status::Modified, text(path), None),
             };
             files.push(ChangedFile {
-                path: String::from_utf8_lossy(path).into_owned(),
+                path,
                 status,
+                old_path,
             });
         }
         Ok(files)
