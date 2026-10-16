@@ -133,6 +133,11 @@ impl Review {
         Ok(Review { id, dir, marked })
     }
 
+    /// The directory the Review keeps its records in.
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
     pub fn is_marked(&self, change: &FileChange) -> bool {
         self.marked.contains(&Self::key(change))
     }

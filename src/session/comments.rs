@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use super::*;
-use crate::comments::{Comment, Target};
+use crate::comments::{Comment, State, Target};
 
 const COMMENT_COLOR: Color = Color::Indexed(179);
 const DRAFT_COLOR: Color = Color::Indexed(215);
@@ -23,12 +23,16 @@ pub(super) struct Editor {
 /// One drawn row of a Comment box.
 #[derive(Clone)]
 pub(super) struct CRow {
-    text: String,
-    style: Style,
+    pub(super) text: String,
+    pub(super) style: Style,
 }
 
 /// The Comment rows of the displayed file, by the view item they hang under.
 pub(super) struct CommentLayout {
+    /// File Comments: a frame above the first line.
+    header: Vec<CRow>,
+    /// The first view item on screen.
+    top: usize,
     under: HashMap<usize, Vec<CRow>>,
 }
 
@@ -40,7 +44,30 @@ impl CommentLayout {
             .filter_map(|i| self.under.get(&i))
             .map(Vec::len)
             .sum();
-        first + (item - top + extra) as u16
+        first + (self.header_rows(top) + item - top + extra) as u16
+    }
+
+    /// Rows the file frame takes: it scrolls away with the first line.
+    fn header_rows(&self, top: usize) -> usize {
+        if top == 0 {
+            self.header.len()
+        } else {
+            0
+        }
+    }
+
+    pub(super) fn draw_header(&self, buf: &mut Buffer, x: u16, first: u16, bottom: u16) {
+        // Only while the first line is the top one.
+        if self.header_rows(self.top) == 0 {
+            return;
+        }
+        for (k, row) in self.header.iter().enumerate() {
+            let y = first + k as u16;
+            if y >= bottom {
+                return;
+            }
+            buf.set_stringn(x, y, &row.text, buf.area.width.saturating_sub(x) as usize, row.style);
+        }
     }
 
     pub(super) fn draw(&self, buf: &mut Buffer, x: u16, y: u16, bottom: u16, item: usize) {
@@ -114,11 +141,15 @@ impl Session {
     /// The Comment boxes of the displayed file, with the draft.
     pub(super) fn comment_layout(&self) -> CommentLayout {
         let mut under: HashMap<usize, Vec<CRow>> = HashMap::new();
+        let mut header = Vec::new();
         let Some(file) = self.files.get(self.selected) else {
-            return CommentLayout { under };
+            return CommentLayout { header, top: self.vp.top, under };
         };
         let width = self.diff_area().width as usize;
         for c in self.comments.all() {
+            if matches!(&c.target, Target::File { path } if *path == file.path) {
+                header.extend(self.saved_box(width, c, "file".into()));
+            }
             if let Target::Lines {
                 path,
                 side,
@@ -167,7 +198,7 @@ impl Session {
                 }
             }
         }
-        CommentLayout { under }
+        CommentLayout { header, top: self.vp.top, under }
     }
 
     fn saved_box(&self, width: usize, c: &Comment, place: String) -> Vec<CRow> {
@@ -276,10 +307,204 @@ impl Session {
         });
     }
 
+    /// The status-line counter of Range Comments, which stands in for their
+    /// frame while the sidebar is hidden: its column and text.
+    fn range_chip(&self) -> Option<(u16, String)> {
+        let count = self
+            .comments
+            .all()
+            .iter()
+            .filter(|c| c.target == Target::Range)
+            .count();
+        if count == 0 || self.sidebar_visible() {
+            return None;
+        }
+        let text = format!(" Range ✎{count} ");
+        let x = self.size.0.saturating_sub(text.chars().count() as u16);
+        Some((x, text))
+    }
+
+    pub(super) fn draw_range_chip(&self, buf: &mut Buffer, y: u16) {
+        if let Some((x, text)) = self.range_chip() {
+            let style = Style::new().fg(Color::Indexed(16)).bg(COMMENT_COLOR);
+            buf.set_string(x, y, text, style);
+        }
+    }
+
+    /// Whether a click at the cell lands on the Range counter.
+    pub(super) fn on_range_chip(&self, column: u16, row: u16) -> bool {
+        self.range_chip().is_some_and(|(x, text)| {
+            row == self.size.1 - 1 && column >= x && column < x + text.chars().count() as u16
+        })
+    }
+
+    /// The Comments `x` and `o` act on: the Range ones while the cursor is on
+    /// the "Весь Range" row, else the line ones that cover the cursor line or,
+    /// failing that, the ones on the file.
+    fn comments_at_cursor(&self) -> Vec<u64> {
+        let ids = |keep: &dyn Fn(&Target) -> bool| -> Vec<u64> {
+            (self.comments.all().iter())
+                .filter(|c| keep(&c.target))
+                .map(|c| c.id)
+                .collect()
+        };
+        if self.focus == Focus::Commits && self.commit_cursor == 0 {
+            return ids(&|t| *t == Target::Range);
+        }
+        let Some(file) = self.files.get(self.selected) else {
+            return vec![];
+        };
+        let on_line = self.cursor_line().map(|(side, line)| {
+            ids(&|t| {
+                matches!(t, Target::Lines { path, side: s, start, end, .. }
+                    if *path == file.path && *s == side && (*start..=*end).contains(&line))
+            })
+        });
+        match on_line {
+            Some(found) if !found.is_empty() => found,
+            _ => ids(&|t| matches!(t, Target::File { path } if *path == file.path)),
+        }
+    }
+
+    fn set_comment_state(&mut self, state: State) {
+        let ids = self.comments_at_cursor();
+        if ids.is_empty() {
+            self.message = Some("No Comment here".into());
+            return;
+        }
+        let saved = self.comments.set_state(&ids, state);
+        self.report_saved(saved);
+    }
+
+    /// Comments about files and lines that the Scope leaves off the screen:
+    /// their file is not in the list, or their code is not in the open file.
+    /// Range Comments are always shown, so they never count.
+    fn hidden_comments(&self) -> usize {
+        let open = self.files.get(self.selected).map(|f| &f.path);
+        self.comments
+            .all()
+            .iter()
+            .filter(|c| match &c.target {
+                Target::Range => false,
+                Target::File { path } => !self.files.iter().any(|f| f.path == *path),
+                Target::Lines {
+                    path, side, end, ..
+                } => {
+                    if open == Some(path) {
+                        self.item_of_line(*side, *end).is_none()
+                    } else {
+                        !self.files.iter().any(|f| f.path == *path)
+                    }
+                }
+            })
+            .count()
+    }
+
+    /// `text` with the hint about hidden Comments, when there are any.
+    pub(super) fn with_hidden_hint(&self, text: String) -> String {
+        match self.hidden_comments() {
+            0 => text,
+            n => format!("{text}  {n} скрытых Comments"),
+        }
+    }
+
+    /// `:comment`: a Comment on the whole Range.
+    pub(super) fn comment_on_range(&mut self) {
+        self.editor = Some(Editor {
+            target: Target::Range,
+            text: String::new(),
+            insert: false,
+            confirm: false,
+        });
+        self.visual = None;
+    }
+
+    /// The Range Comments as frames hanging under the "Весь Range" row: the
+    /// state and the first two lines of each.
+    pub(super) fn range_frame(&self, width: usize) -> Vec<CRow> {
+        let mut rows = Vec::new();
+        for c in self.comments.all() {
+            if c.target != Target::Range {
+                continue;
+            }
+            let style = Style::new().fg(match c.state {
+                crate::comments::State::Open => COMMENT_COLOR,
+                _ => DIM,
+            });
+            let row = |text: String| CRow { text, style };
+            rows.push(row(format!("   ┌ Comment · {}", c.state.label())));
+            let lines = wrap(&c.text, width.saturating_sub(5));
+            let shown = lines.len().min(2);
+            for (k, line) in lines.iter().take(shown).enumerate() {
+                let more = if k + 1 == shown && lines.len() > shown { "…" } else { "" };
+                rows.push(row(format!("   │ {line}{more}")));
+            }
+            rows.push(row("   └".to_string()));
+        }
+        rows
+    }
+
+    /// [`Self::range_frame`] cut so that a box of `height` rows keeps its
+    /// "Весь Range" row and border.
+    pub(super) fn range_frame_in(&self, width: u16, height: u16) -> Vec<CRow> {
+        let mut rows = self.range_frame(width as usize);
+        rows.truncate(height.saturating_sub(2) as usize);
+        rows
+    }
+
+    /// `C`: a Comment on the whole file.
+    fn comment_on_file(&mut self) {
+        let Some(file) = self.files.get(self.selected) else {
+            return;
+        };
+        self.editor = Some(Editor {
+            target: Target::File {
+                path: file.path.clone(),
+            },
+            text: String::new(),
+            insert: false,
+            confirm: false,
+        });
+        self.visual = None;
+    }
+
+    /// File and Range drafts have no line to hang under: a box over the screen.
+    pub(super) fn render_editor_popup(&self, buf: &mut Buffer) {
+        let Some(ed) = &self.editor else { return };
+        let what = match &ed.target {
+            Target::Lines { .. } => return,
+            Target::File { path } => format!(" Comment on {path} "),
+            Target::Range => " Comment on the whole Range ".to_string(),
+        };
+        let width = self.size.0.saturating_sub(4).min(72);
+        let inner = width.saturating_sub(4) as usize;
+        let body = format!("{}{}", ed.text, if ed.insert { "█" } else { "" });
+        let mut lines = wrap(&body, inner);
+        lines.push(String::new());
+        lines.push(editor_hint(ed.insert, ed.confirm).to_string());
+        let height = (lines.len() as u16 + 2).min(self.size.1);
+        let area = Rect::new(
+            (self.size.0 - width) / 2,
+            (self.size.1 - height) / 2,
+            width,
+            height,
+        );
+        for y in area.y..area.y + area.height {
+            buf.set_string(area.x, y, " ".repeat(width as usize), Style::new().fg(FG));
+        }
+        draw_box(buf, area, &what);
+        for (k, line) in lines.iter().take(height.saturating_sub(2) as usize).enumerate() {
+            buf.set_stringn(area.x + 2, area.y + 1 + k as u16, line, inner, Style::new().fg(FG));
+        }
+    }
+
     /// Keys of Normal mode that deal with Comments.
     pub(super) fn comment_key(&mut self, key: char) {
         match key {
             'c' => self.comment_on_line(),
+            'C' => self.comment_on_file(),
+            'x' => self.set_comment_state(State::Closed),
+            'o' => self.set_comment_state(State::Open),
             'v' => {
                 self.visual = match self.visual {
                     Some(_) => None,
@@ -326,6 +551,12 @@ impl Session {
         }
     }
 
+    fn report_saved(&mut self, saved: Result<(), String>) {
+        if let Err(e) = saved {
+            self.message = Some(e);
+        }
+    }
+
     fn save_draft(&mut self) {
         let Some(ed) = self.editor.take() else {
             return;
@@ -335,7 +566,8 @@ impl Session {
             self.message = Some("Empty Comment discarded".into());
             return;
         }
-        self.comments.add(ed.target, text);
+        let saved = self.comments.add(ed.target, text).map(|_| ());
+        self.report_saved(saved);
     }
 }
 

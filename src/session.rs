@@ -390,6 +390,7 @@ impl Session {
         let warning = (merges > 0).then(|| {
             format!("⚠ {merges} merge commit(s) in range, compared against the first parent")
         });
+        let review_dir = review.dir().to_path_buf();
         let mut session = Session {
             repo,
             range,
@@ -402,7 +403,7 @@ impl Session {
             range_files: files.clone(),
             commit_changes,
             review,
-            comments: Default::default(),
+            comments: crate::comments::Comments::open(&review_dir),
             editor: None,
             visual: None,
             file_picker: None,
@@ -497,10 +498,11 @@ impl Session {
     /// short Range.
     fn commits_area(&self) -> Rect {
         let side = self.sidebar_area();
-        let wanted = self.commits.len() as u16 + 3;
         let cap = (side.height * 35 / 100)
             .max(11)
             .min(side.height.saturating_sub(3));
+        let frame = self.range_frame(side.width.saturating_sub(2) as usize).len() as u16;
+        let wanted = self.commits.len() as u16 + 3 + frame.min(cap.saturating_sub(4));
         Rect::new(side.x, side.y, side.width, wanted.min(cap))
     }
 
@@ -836,7 +838,7 @@ impl Session {
             KeyCode::Char('a') if !ctrl => self.show_whole_range(),
             KeyCode::Char('m') if !ctrl => self.toggle_mark(),
             KeyCode::Char('M') if !ctrl => self.mark_and_advance(),
-            KeyCode::Char(c @ ('c' | 'v')) if !ctrl => self.comment_key(c),
+            KeyCode::Char(c @ ('c' | 'C' | 'v' | 'x' | 'o')) if !ctrl => self.comment_key(c),
             KeyCode::Esc if self.visual.is_some() => self.visual = None,
             KeyCode::Tab => {
                 self.focus = match self.focus {
@@ -969,6 +971,7 @@ impl Session {
             "q" | "q!" | "quit" => self.quit = true,
             "" => {}
             "reset" => self.reset_review(),
+            "comment" => self.comment_on_range(),
             other if other.split_whitespace().next() == Some("scope") => {
                 let arg = other["scope".len()..].trim();
                 if let Err(e) = self.scope_command(arg) {
@@ -982,6 +985,9 @@ impl Session {
     fn on_mouse(&mut self, mouse: MouseEvent) {
         let at = |area: Rect| area.contains((mouse.column, mouse.row).into());
         match mouse.kind {
+            MouseEventKind::Down(_) if self.on_range_chip(mouse.column, mouse.row) => {
+                self.picker = true;
+            }
             MouseEventKind::ScrollDown if at(self.diff_area()) => {
                 self.scroll_view(WHEEL_STEP as isize)
             }
@@ -991,13 +997,15 @@ impl Session {
             MouseEventKind::Down(_) if at(self.commits_area()) && !self.picker => {
                 let area = self.commits_area();
                 let row = (mouse.row - area.y) as usize;
-                let capacity = area.height.saturating_sub(3) as usize;
-                // Row 0 is the border, row 1 the pinned "Весь Range" row.
-                if row >= 1 && row <= capacity + 1 {
+                let frame = self.range_frame_in(area.width - 2, area.height - 2).len();
+                let capacity = (area.height.saturating_sub(3) as usize).saturating_sub(frame);
+                // Row 0 is the border, row 1 the pinned "Весь Range" row, the
+                // Range Comments hang under it.
+                if row >= 1 && row <= capacity + 1 + frame {
                     self.focus = Focus::Commits;
                     self.commit_cursor = match row {
-                        1 => 0,
-                        r => (self.commit_offset(capacity) + r - 1).min(self.commits.len()),
+                        r if r <= 1 + frame => 0,
+                        r => (self.commit_offset(capacity) + r - 1 - frame).min(self.commits.len()),
                     };
                 }
             }
@@ -1052,6 +1060,7 @@ impl Session {
         if let Some(cursor) = self.file_picker {
             self.render_file_picker(buf, cursor);
         }
+        self.render_editor_popup(buf);
     }
 
     fn render_sidebar(&self, buf: &mut Buffer) {
@@ -1094,7 +1103,10 @@ impl Session {
     /// top while the commits scroll to keep the cursor visible.
     fn render_commit_rows(&self, buf: &mut Buffer, area: Rect, show_cursor: bool) {
         let width = area.width as usize;
-        let capacity = (area.height as usize).saturating_sub(1);
+        let frame = self.range_frame_in(area.width, area.height);
+        let capacity = (area.height as usize)
+            .saturating_sub(1)
+            .saturating_sub(frame.len());
         let offset = self.commit_offset(capacity);
         let selection = self
             .commit_anchor
@@ -1126,7 +1138,7 @@ impl Session {
             if cursor {
                 style = style.bg(Color::Indexed(238)).add_modifier(Modifier::BOLD);
             }
-            let y = area.y + row as u16;
+            let y = area.y + row as u16 + if row > 0 { frame.len() as u16 } else { 0 };
             buf.set_style(Rect::new(area.x, y, area.width, 1), style);
             buf.set_stringn(
                 area.x,
@@ -1135,13 +1147,20 @@ impl Session {
                 width,
                 style,
             );
+            if row == 0 {
+                for (k, f) in frame.iter().enumerate() {
+                    let y = area.y + 1 + k as u16;
+                    buf.set_stringn(area.x, y, fit(&f.text, width, false), width, f.style);
+                }
+            }
         }
     }
 
     /// The `Space c` picker: the commit list in a box over the screen.
     fn render_picker(&self, buf: &mut Buffer) {
         let width = self.size.0.saturating_sub(4).min(72);
-        let height = (self.commits.len() as u16 + 4).min(self.size.1.saturating_sub(2));
+        let frame = self.range_frame(width.saturating_sub(2) as usize).len() as u16;
+        let height = (self.commits.len() as u16 + 4 + frame).min(self.size.1.saturating_sub(2));
         let area = Rect::new(
             (self.size.0 - width) / 2,
             (self.size.1 - height) / 2,
@@ -1268,6 +1287,7 @@ impl Session {
             DiffLayout::SideBySide => self.render_side_by_side(buf, loaded, area, top, height),
             DiffLayout::Inline => self.render_inline(buf, loaded, area, top, height),
         }
+        self.comment_layout().draw_header(buf, area.x, top, top + height as u16);
         self.render_selection(buf, area, top, height);
     }
 
@@ -1489,7 +1509,9 @@ impl Session {
             Some(w) => format!("{text}  {w}"),
             None => text,
         };
+        let text = self.with_hidden_hint(text);
         buf.set_stringn(8, y, &text, width.saturating_sub(8), bar);
+        self.draw_range_chip(buf, y);
     }
 }
 
