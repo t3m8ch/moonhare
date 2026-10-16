@@ -17,6 +17,7 @@ use ratatui::style::{Color, Modifier, Style};
 
 use crate::diff::{diff_file, FileDiff, FileKind, Highlight, Limits, Side, Token};
 use crate::git::{ChangedFile, Commit, GitError, Range, Repo, Status};
+use crate::special;
 
 /// Below this size the session shows a "terminal too small" screen.
 pub const MIN_SIZE: (u16, u16) = (60, 15);
@@ -343,14 +344,19 @@ impl Session {
         let (scope_base, scope_head) = self.scope_ends();
         self.scroll = 0;
         self.loaded = self.files.get(self.selected).map(|f| {
-            let blob = |rev: &str| self.repo.file_at(rev, &f.path).map_err(|e| e.to_string());
+            let blob = |rev: &str, path: &str| {
+                self.repo
+                    .file_at(rev, path)
+                    .map(Some)
+                    .map_err(|e| e.to_string())
+            };
             let old = match f.status {
                 Status::Added => Ok(None),
-                _ => blob(&scope_base).map(Some),
+                _ => blob(&scope_base, f.base_path()),
             };
             let new = match f.status {
                 Status::Deleted => Ok(None),
-                _ => blob(&scope_head).map(Some),
+                _ => blob(&scope_head, &f.path),
             };
             match (old, new) {
                 (Ok(old), Ok(new)) => Ok(Loaded::new(diff_file(
@@ -870,6 +876,7 @@ impl Session {
                 Status::Added => Color::Indexed(114),
                 Status::Deleted => Color::Indexed(174),
                 Status::Modified => Color::Indexed(179),
+                Status::Renamed => Color::Indexed(110),
             };
             let mut style = Style::new().fg(FG);
             if selected {
@@ -916,13 +923,7 @@ impl Session {
         };
 
         let d = &loaded.diff;
-        let mut header = format!(" {} ", file.path);
-        if let Some(lang) = &d.language {
-            header.push_str(&format!("[{lang}] "));
-        }
-        if d.fallback.is_some() {
-            header.push_str("(line-based diff) ");
-        }
+        let header = special::header(file, d);
         let header_style = Style::new()
             .fg(Color::Indexed(231))
             .bg(Color::Indexed(236))
