@@ -38,7 +38,11 @@ impl Session {
             area
         } else if self.prompt_view.is_some() || self.help.is_some() {
             full
-        } else if self.explain_open() || self.diagram_open() || self.summary_open() {
+        } else if self.group_info_open()
+            || self.explain_open()
+            || self.diagram_open()
+            || self.summary_open()
+        {
             self.overlay_area()
         } else {
             return None;
@@ -213,6 +217,8 @@ impl Session {
             self.prompt_lines()
         } else if self.help.is_some() {
             self.help_lines()
+        } else if self.group_info_open() {
+            self.group_info_lines()
         } else if self.explain_open() {
             self.explain_lines()
         } else if self.diagram_open() {
@@ -232,6 +238,8 @@ impl Session {
             self.prompt_view.as_mut().map(|(_, scroll)| scroll)
         } else if self.help.is_some() {
             self.help.as_mut()
+        } else if self.group_info_open() {
+            self.group_info_scroll_mut()
         } else if self.explain_open() {
             self.explain_scroll_mut()
         } else if self.diagram_open() {

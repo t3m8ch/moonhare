@@ -222,6 +222,7 @@ mod diagram;
 mod diffs;
 mod explain;
 mod file_bar;
+mod file_panel;
 mod file_picker;
 mod forge_load;
 mod groups;
@@ -265,8 +266,8 @@ pub struct Session {
     commit_anchor: Option<usize>,
     /// The `Space c` commit picker is open.
     picker: bool,
-    /// The `Space f` file picker is open, with its cursor on this file.
-    file_picker: Option<usize>,
+    /// The `Space f` file picker is open, with its cursor here.
+    file_picker: Option<file_panel::At>,
     /// The selected Mechanical file was expanded with `Enter`.
     mechanical_open: bool,
     files: Vec<ChangedFile>,
@@ -338,9 +339,11 @@ pub struct Session {
     /// The Prompts copied so far, which cut the commits into Rounds.
     prompts: crate::rounds::Prompts,
     mouse: mouse::Mouse,
-    /// The file list scrolled by the wheel: the selected file it was done
-    /// for, and the first row shown.
-    sidebar_scroll: Option<(usize, usize)>,
+    /// The file list scrolled by the wheel: where the cursor stood when it
+    /// was done, and the first row shown.
+    sidebar_scroll: Option<(file_panel::At, usize)>,
+    /// The tree of the file panel: its cursor, folds and Group description.
+    panel: file_panel::FilePanel,
 }
 
 impl Session {
@@ -534,6 +537,7 @@ impl Session {
             prompts: crate::rounds::Prompts::open(&review_dir),
             mouse: mouse::Mouse::default(),
             sidebar_scroll: None,
+            panel: Default::default(),
             diffs,
         };
         session.load_selected();
@@ -681,18 +685,14 @@ impl Session {
     /// The first sidebar row shown: scrolled so the selected file is visible.
     fn sidebar_offset(&self) -> usize {
         let cap = self.sidebar_capacity().max(1);
-        // The wheel scrolled the list away from the selected file.
-        if let Some((selected, offset)) = self.sidebar_scroll {
-            if selected == self.selected {
-                return offset.min(self.sidebar_rows().len().saturating_sub(cap));
+        let rows = self.sidebar_rows();
+        // The wheel scrolled the list away from the cursor.
+        if let Some((at, offset)) = &self.sidebar_scroll {
+            if *at == self.sidebar_at() {
+                return (*offset).min(rows.len().saturating_sub(cap));
             }
         }
-        let at = self
-            .sidebar_rows()
-            .iter()
-            .position(|r| *r == groups::Row::File(self.selected))
-            .unwrap_or(self.selected);
-        (at + 1).saturating_sub(cap)
+        file_panel::offset_for(self.sidebar_cursor(&rows).unwrap_or(0), cap)
     }
 
     // ------------------------------------------------------------ data
@@ -844,7 +844,13 @@ impl Session {
         self.apply_scope(scope);
     }
 
+    /// Open file `index`: the cursor of the file panel goes to it, and the
+    /// directories above it unfold.
     fn select(&mut self, index: usize) {
+        if index < self.files.len() {
+            self.panel.dir = None;
+            self.unfold_to(index);
+        }
         if index < self.files.len() && index != self.selected {
             self.selected = index;
             self.load_selected();
@@ -1035,7 +1041,8 @@ impl Session {
             self.help_key(key);
             return;
         }
-        if self.diagram_key(key)
+        if self.group_info_key(key)
+            || self.diagram_key(key)
             || self.explain_key(key)
             || self.analysis_key(key)
             || self.groups_key(key)
@@ -1043,8 +1050,8 @@ impl Session {
         {
             return;
         }
-        if let Some(cursor) = self.file_picker {
-            self.file_picker_key(key, cursor);
+        if let Some(at) = self.file_picker.clone() {
+            self.file_picker_key(key, at);
             return;
         }
         if self.picker {
@@ -1323,8 +1330,8 @@ impl Session {
                 if mouse.row > area.y {
                     let at = self.sidebar_offset() + (mouse.row - area.y - 1) as usize;
                     if ((mouse.row - area.y - 1) as usize) < self.sidebar_capacity() {
-                        if let Some(groups::Row::File(index)) = self.sidebar_rows().get(at) {
-                            self.select(*index);
+                        if let Some(row) = self.sidebar_rows().get(at) {
+                            self.click_sidebar_row(&row.clone());
                         }
                     }
                 }
@@ -1377,9 +1384,10 @@ impl Session {
         self.render_summary(buf);
         self.render_diagram_overlay(buf);
         self.render_explain(buf);
-        if let Some(cursor) = self.file_picker {
-            self.render_file_picker(buf, cursor);
+        if let Some(at) = &self.file_picker {
+            self.render_file_picker(buf, at);
         }
+        self.render_group_info(buf);
         if let Some(scroll) = self.help {
             self.render_help(buf, &scroll);
         }
@@ -1543,45 +1551,20 @@ impl Session {
             &format!(" Files ({}){} ", self.files.len(), self.groups_note()),
             self.window() == Focus::Files,
         );
-        let width = area.width as usize;
-        let inner = width.saturating_sub(2);
-        let offset = self.sidebar_offset();
+        let inner = (area.width as usize).saturating_sub(2);
         self.render_progress(buf, area);
-        for (row, shown) in self
-            .sidebar_rows()
-            .into_iter()
-            .skip(offset)
-            .take(self.sidebar_capacity())
-            .enumerate()
-        {
-            let y = area.y + 1 + row as u16;
-            let groups::Row::File(i) = shown else {
-                self.render_group_row(buf, area.x + 1, y, inner, shown);
-                continue;
-            };
-            let file = &self.files[i];
-            let selected = i == self.selected;
-            let color = match file.status {
-                Status::Added => Color::Indexed(114),
-                Status::Deleted => Color::Indexed(174),
-                Status::Modified => Color::Indexed(179),
-                Status::Renamed => Color::Indexed(110),
-            };
-            let mut style = Style::new().fg(FG);
-            if selected {
-                style = style.bg(Color::Indexed(238)).add_modifier(Modifier::BOLD);
-            }
-            let marker = if selected { '>' } else { ' ' };
-            let reviewed = match self.mark_of(i) {
-                Mark::Reviewed => '✓',
-                Mark::Partial => '◐',
-                Mark::Unreviewed => ' ',
-            };
-            let path = fit(&file.path, inner.saturating_sub(4), true);
-            let line = format!("{marker}{reviewed}{} {path}", file.status.letter());
-            buf.set_stringn(area.x + 1, y, pad(&line, inner), inner, style);
-            buf.set_style(Rect::new(area.x + 3, y, 1, 1), style.fg(color));
-        }
+        let rows = self.sidebar_rows();
+        let cursor = self.sidebar_cursor(&rows);
+        self.render_tree_rows(
+            buf,
+            area.x + 1,
+            area.y + 1,
+            inner,
+            &rows,
+            self.sidebar_offset(),
+            self.sidebar_capacity(),
+            cursor,
+        );
     }
 
     fn render_diff(&self, buf: &mut Buffer) {

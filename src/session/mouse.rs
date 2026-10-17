@@ -143,7 +143,7 @@ impl Session {
             } else {
                 offset.saturating_sub(WHEEL_STEP)
             };
-            self.sidebar_scroll = Some((self.selected, to));
+            self.sidebar_scroll = Some((self.sidebar_at(), to));
             return true;
         }
         false
