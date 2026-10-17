@@ -1748,11 +1748,12 @@ impl Session {
         let text = match &self.message {
             Some(m) => format!(" {m}"),
             None => format!(
-                " {}..{}  scope:{}  round:{}  layout:{layout} ({how})",
+                " {}..{}  scope:{}  round:{}  layout:{layout} ({how}){}",
                 self.range.base_name,
                 self.range.head_name,
                 self.scope_label(),
                 self.current_round(),
+                self.settings_status(),
             ),
         };
         let text = self.groups_status(&text);

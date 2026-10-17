@@ -8,6 +8,19 @@ use std::path::PathBuf;
 
 use crate::forge::PullRequest;
 
+/// The levels of reasoning effort that `claude --effort` accepts.
+pub const EFFORT_LEVELS: [&str; 5] = ["low", "medium", "high", "xhigh", "max"];
+
+/// How the Analyst is run, as the Reviewer set it during the session. `None`
+/// leaves the choice to the agent's own defaults.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct AnalystSettings {
+    /// Reasoning effort, one of [`EFFORT_LEVELS`].
+    pub effort: Option<String>,
+    /// Model, as an alias or a full name.
+    pub model: Option<String>,
+}
+
 /// What the Analyst is asked to summarize.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SummaryRequest {
@@ -19,6 +32,8 @@ pub struct SummaryRequest {
     pub language: String,
     /// Title and description of the pull request, when the Forge gave them.
     pub pull_request: Option<PullRequest>,
+    /// Effort and model for this request.
+    pub settings: AnalystSettings,
 }
 
 /// The Analyst's account of what a Range changes and why.
@@ -50,6 +65,8 @@ pub struct DiagramRequest {
     pub head: String,
     pub language: String,
     pub subject: DiagramSubject,
+    /// Effort and model for this request.
+    pub settings: AnalystSettings,
 }
 
 /// A sequence or flowchart diagram as Mermaid text.
@@ -79,6 +96,8 @@ pub struct ExplainRequest {
     pub language: String,
     pub pull_request: Option<PullRequest>,
     pub target: ExplainTarget,
+    /// Effort and model for this request.
+    pub settings: AnalystSettings,
 }
 
 /// The Analyst's explanation of a hunk or a file.
@@ -151,6 +170,8 @@ pub struct GroupRequest {
     pub pull_request: Option<PullRequest>,
     /// Every file the Range changes.
     pub files: Vec<String>,
+    /// Effort and model for this request.
+    pub settings: AnalystSettings,
 }
 
 /// One Group as the Analyst names it.

@@ -96,6 +96,7 @@ impl Session {
             base: self.range.base.clone(),
             head: key.0.clone(),
             language: key.1.clone(),
+            settings: self.analysis.settings.clone(),
             pull_request: self.pull_request.clone(),
             files: self.range_files.iter().map(|f| f.path.clone()).collect(),
         };
