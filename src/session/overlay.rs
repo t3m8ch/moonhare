@@ -29,6 +29,7 @@ impl Session {
             (Some(prefix), ..) => hints::Context::Pending(prefix),
             (None, Focus::Commits, Some(_)) => hints::Context::CommitsVisual,
             (None, Focus::Commits, None) => hints::Context::Commits,
+            (None, Focus::Files, _) => hints::Context::Files,
             (None, Focus::Diff, _) => hints::Context::Diff,
         };
         buf.set_stringn(

@@ -30,7 +30,8 @@ impl Session {
     /// Where the picker box is.
     pub(super) fn file_picker_area(&self) -> Rect {
         let width = self.size.0.saturating_sub(4).min(72);
-        let height = (self.files.len() as u16 + 4).min(self.size.1.saturating_sub(BOTTOM_ROWS + 1));
+        let height =
+            (self.sidebar_rows().len() as u16 + 4).min(self.size.1.saturating_sub(BOTTOM_ROWS + 1));
         Rect::new(
             (self.size.0 - width) / 2,
             (self.size.1 - BOTTOM_ROWS - height) / 2,
@@ -46,6 +47,7 @@ impl Session {
         };
         let area = self.file_picker_area();
         let capacity = (area.height as usize).saturating_sub(4);
+        let rows = self.sidebar_rows();
         match mouse.kind {
             MouseEventKind::ScrollDown => {
                 let last = self.files.len().saturating_sub(1);
@@ -53,14 +55,14 @@ impl Session {
             }
             MouseEventKind::ScrollUp => self.file_picker = Some(cursor.saturating_sub(1)),
             MouseEventKind::Down(MouseButton::Left) => {
-                let offset = (cursor + 1).saturating_sub(capacity.max(1));
+                let offset = picker_offset(&rows, cursor, capacity);
                 let row = (mouse.row as usize).checked_sub(area.y as usize + 1);
                 let inside =
                     (area.x + 1..(area.x + area.width).saturating_sub(1)).contains(&mouse.column);
                 if let Some(row) = row.filter(|&r| r < capacity && inside) {
-                    if offset + row < self.files.len() {
+                    if let Some(groups::Row::File(index)) = rows.get(offset + row) {
                         self.file_picker = None;
-                        self.select(offset + row);
+                        self.select(*index);
                     }
                 }
             }
@@ -78,15 +80,15 @@ impl Session {
         draw_box(buf, area, " Pick a file ");
         let inner_w = area.width.saturating_sub(2) as usize;
         let capacity = (area.height as usize).saturating_sub(4);
-        let offset = (cursor + 1).saturating_sub(capacity.max(1));
-        for (row, (i, file)) in self
-            .files
-            .iter()
-            .enumerate()
-            .skip(offset)
-            .take(capacity)
-            .enumerate()
-        {
+        let rows = self.sidebar_rows();
+        let offset = picker_offset(&rows, cursor, capacity);
+        for (row, shown) in rows.iter().skip(offset).take(capacity).enumerate() {
+            let y = area.y + 1 + row as u16;
+            let groups::Row::File(i) = *shown else {
+                self.render_group_row(buf, area.x + 1, y, inner_w, *shown);
+                continue;
+            };
+            let file = &self.files[i];
             let at = i == cursor;
             let mut style = Style::new().fg(FG);
             if at {
@@ -98,13 +100,7 @@ impl Session {
                 file.status.letter(),
                 fit(&file.path, inner_w.saturating_sub(4), true)
             );
-            buf.set_stringn(
-                area.x + 1,
-                area.y + 1 + row as u16,
-                pad(&line, inner_w),
-                inner_w,
-                style,
-            );
+            buf.set_stringn(area.x + 1, y, pad(&line, inner_w), inner_w, style);
         }
         let hint = "j/k move  Enter open  Esc close";
         buf.set_stringn(
@@ -115,4 +111,13 @@ impl Session {
             Style::new().fg(DIM),
         );
     }
+}
+
+/// The first row shown: scrolled so the file under the cursor is visible.
+fn picker_offset(rows: &[groups::Row], cursor: usize, capacity: usize) -> usize {
+    let at = rows
+        .iter()
+        .position(|r| *r == groups::Row::File(cursor))
+        .unwrap_or(cursor);
+    (at + 1).saturating_sub(capacity.max(1))
 }
