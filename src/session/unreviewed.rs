@@ -17,9 +17,7 @@ impl Session {
             .map(|mut f| {
                 // Against a version the Reviewer saw, a new file is a change.
                 let seen = self.last_seen(&f.path);
-                if f.status == Status::Added
-                    && seen.is_some_and(|c| c.new_blob != review::NULL_BLOB)
-                {
+                if f.status == Status::Added && seen.is_some_and(|blob| blob != review::NULL_BLOB) {
                     f.status = Status::Modified;
                 }
                 f
@@ -62,36 +60,23 @@ impl Session {
         self.load_selected();
     }
 
-    /// With the filter on: the last File change of the longest run of marked
-    /// ones from the start of the Scope, whose result is what the Reviewer
-    /// has seen of `path`. `None` when that run is empty.
-    fn last_seen(&self, path: &str) -> Option<FileChange> {
+    /// With the filter on: the version of `path` the Reviewer has reviewed up
+    /// to, which is where the delta starts. `None` when there is none.
+    fn last_seen(&self, path: &str) -> Option<String> {
         if !self.unreviewed_only {
             return None;
         }
-        let changes = self.changes_of(path, self.scope);
-        let run = changes
-            .iter()
-            .rev()
-            .take_while(|c| self.review.is_marked(c))
-            .count();
-        // `changes` is newest first, so the run's last change sits at len - run.
-        changes
-            .get(changes.len().checked_sub(run).filter(|_| run > 0)?)
-            .cloned()
+        self.review.seen_blob(&self.changes_of(path, self.scope))
     }
 
     /// The content from which only the delta of `path` is shown, or `None`
     /// to show the whole Scope's diff.
     pub(super) fn delta_baseline(&self, path: &str) -> Option<Result<Option<Vec<u8>>, String>> {
         let seen = self.last_seen(path)?;
-        Some(if seen.new_blob == review::NULL_BLOB {
+        Some(if seen == review::NULL_BLOB {
             Ok(None)
         } else {
-            self.repo
-                .blob(&seen.new_blob)
-                .map(Some)
-                .map_err(|e| e.to_string())
+            self.repo.blob(&seen).map(Some).map_err(|e| e.to_string())
         })
     }
 }

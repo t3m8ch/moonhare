@@ -38,6 +38,8 @@ pub enum DiagramSubject {
     /// The fragment of a changed file around a line of its new version
     /// (1-based).
     Fragment { path: String, line: usize },
+    /// A Group: all its files together.
+    Group { name: String, files: Vec<String> },
 }
 
 /// What the Analyst is asked to draw.

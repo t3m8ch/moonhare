@@ -95,29 +95,37 @@ fn take_flag_value(args: &mut Vec<String>, flag: &str) -> Result<Option<String>,
 const ANALYST_POLL: Duration = Duration::from_millis(200);
 
 fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Result<()> {
+    let mut redraw = true;
+    let mut last = Instant::now();
     while !session.should_quit() {
-        terminal.draw(|f| session.render(f.buffer_mut()))?;
-        // Sleep until input, until a pause makes the screen change, or (while
-        // the Analyst works) until it may have answered; never redraw an idle
-        // screen.
-        let wake = match (session.next_tick_in(), session.analyst_busy()) {
-            (Some(due), true) => Some(due.min(ANALYST_POLL)),
-            (Some(due), false) => Some(due),
-            (None, true) => Some(ANALYST_POLL),
-            (None, false) => None,
-        };
-        match wake {
-            Some(wake) => {
-                let waited = Instant::now();
-                if event::poll(wake)? {
-                    session.handle(event::read()?);
-                } else {
-                    session.elapse(wake.max(waited.elapsed()));
-                }
-            }
-            None => session.handle(event::read()?),
+        if redraw {
+            terminal.draw(|f| session.render(f.buffer_mut()))?;
         }
+        // Sleep until input, until a pause makes the screen change, or (while
+        // the Analyst works) until it may have answered, and in any case until
+        // it is time to look for new commits in the branch. An idle screen is
+        // redrawn only when that look found something.
+        let poll = session.next_poll_in();
+        let wake = match (session.next_tick_in(), session.analyst_busy()) {
+            (Some(due), true) => due.min(ANALYST_POLL),
+            (Some(due), false) => due,
+            (None, true) => ANALYST_POLL,
+            (None, false) => poll,
+        }
+        .min(poll);
+        redraw = if event::poll(wake)? {
+            session.handle(event::read()?);
+            // Typing must not starve the watch on the branch: the time spent
+            // here counts too.
+            session.watch(last.elapsed());
+            true
+        } else {
+            session.elapse(wake.max(last.elapsed()))
+        };
+        last = Instant::now();
+        let busy = session.analyst_busy();
         session.tick();
+        redraw |= busy || session.analyst_busy();
         if let Some(text) = session.take_clipboard() {
             let mut out = io::stdout();
             let _ = out.write_all(moonhare::clipboard::osc52(&text).as_bytes());
