@@ -5,6 +5,7 @@ pub mod claude;
 pub mod clipboard;
 pub mod color;
 pub mod comments;
+pub mod diagram;
 pub mod diff;
 pub mod fold;
 pub mod forge;

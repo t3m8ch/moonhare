@@ -62,6 +62,16 @@ fn which_key_and_help_list_unreviewed_jumps_and_reset() {
 }
 
 #[test]
+fn help_lists_the_diagram_command_and_the_overlay_keys() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 80);
+    h.keys("?");
+    let screen = h.screen();
+    assert!(screen.contains(":diagram"), "{screen}");
+    assert!(screen.contains("диаграмм"), "{screen}");
+}
+
+#[test]
 fn which_key_and_help_list_the_unreviewed_filter() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 100, 60);

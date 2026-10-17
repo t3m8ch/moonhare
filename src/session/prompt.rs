@@ -163,7 +163,7 @@ impl Session {
             }
         }
         let sequence = match &how {
-            Delivery::Clipboard => match crate::clipboard::osc52(&text) {
+            Delivery::Clipboard => match crate::clipboard::osc52_limited(&text) {
                 Some(sequence) => Some(sequence),
                 None => {
                     self.message = Some(format!(

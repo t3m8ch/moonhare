@@ -1,22 +1,25 @@
-//! Copying to the Reviewer's clipboard through the terminal (OSC 52).
+//! Copying to the Reviewer's clipboard through the terminal (OSC 52), which
+//! works over ssh and needs no clipboard library.
 
-const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
-fn base64(bytes: &[u8]) -> String {
-    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
-    for chunk in bytes.chunks(3) {
+/// The escape sequence that asks the terminal to copy `text`.
+pub fn osc52(text: &str) -> String {
+    let mut out = String::from("\x1b]52;c;");
+    for chunk in text.as_bytes().chunks(3) {
         let n = chunk
             .iter()
             .enumerate()
-            .fold(0u32, |n, (i, &b)| n | (b as u32) << (16 - 8 * i));
-        for k in 0..4 {
-            if k <= chunk.len() {
-                out.push(B64[(n >> (18 - 6 * k) & 63) as usize] as char);
+            .fold(0u32, |n, (i, b)| n | (*b as u32) << (16 - 8 * i));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(n >> (18 - 6 * i) & 63) as usize] as char);
             } else {
                 out.push('=');
             }
         }
     }
+    out.push('\x07');
     out
 }
 
@@ -41,8 +44,7 @@ pub fn sanitize(text: &str) -> String {
 /// so a longer text is refused instead of arriving cut.
 pub const MAX_TEXT: usize = 74_994;
 
-/// The sequence that makes the terminal put `text` into the clipboard, or
-/// `None` when `text` is longer than [`MAX_TEXT`] bytes.
-pub fn osc52(text: &str) -> Option<String> {
-    (text.len() <= MAX_TEXT).then(|| format!("\x1b]52;c;{}\x07", base64(text.as_bytes())))
+/// [`osc52`], or `None` when `text` is longer than [`MAX_TEXT`] bytes.
+pub fn osc52_limited(text: &str) -> Option<String> {
+    (text.len() <= MAX_TEXT).then(|| osc52(text))
 }
