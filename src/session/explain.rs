@@ -244,9 +244,7 @@ impl Session {
             width,
             height,
         );
-        for y in area.y..area.y + area.height {
-            buf.set_string(area.x, y, " ".repeat(width as usize), Style::new().fg(FG));
-        }
+        clear_area(buf, area);
         draw_box(buf, area, &overlay.title);
         let inner_w = width.saturating_sub(4) as usize;
         let text = match &overlay.state {

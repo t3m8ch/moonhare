@@ -631,9 +631,7 @@ impl Session {
             width,
             height,
         );
-        for y in area.y..area.y + area.height {
-            buf.set_string(area.x, y, " ".repeat(width as usize), Style::new().fg(FG));
-        }
+        clear_area(buf, area);
         draw_box(buf, area, &what);
         for (k, line) in lines
             .iter()

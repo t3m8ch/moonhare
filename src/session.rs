@@ -22,6 +22,7 @@ use crate::git::{ChangedFile, Commit, GitError, Range, Repo, Status, Target};
 use crate::review::{self, FileChange, Mark, Review};
 use crate::special;
 use crate::viewport::Viewport;
+use diagram::clear_area;
 use rounds::HEADER;
 
 /// Below this size the session shows a "terminal too small" screen.
@@ -1421,11 +1422,8 @@ impl Session {
 
     fn render_picker(&self, buf: &mut Buffer) {
         let area = self.picker_area();
-        let width = area.width;
         buf.set_style(area, Style::new().fg(FG).bg(Color::Reset));
-        for y in area.y..area.y + area.height {
-            buf.set_string(area.x, y, " ".repeat(width as usize), Style::new().fg(FG));
-        }
+        clear_area(buf, area);
         draw_box(buf, area, " Pick a Scope ");
         let inner = self.picker_inner();
         self.render_commit_rows(buf, inner, true);

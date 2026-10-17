@@ -73,10 +73,7 @@ impl Session {
 
     pub(super) fn render_file_picker(&self, buf: &mut Buffer, cursor: usize) {
         let area = self.file_picker_area();
-        let width = area.width;
-        for y in area.y..area.y + area.height {
-            buf.set_string(area.x, y, " ".repeat(width as usize), Style::new().fg(FG));
-        }
+        clear_area(buf, area);
         draw_box(buf, area, " Pick a file ");
         let inner_w = area.width.saturating_sub(2) as usize;
         let capacity = (area.height as usize).saturating_sub(4);
