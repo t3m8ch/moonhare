@@ -151,7 +151,7 @@ fn the_summary_diagram_scrolls_with_h_and_l_and_copies_with_y() {
     assert!(h.screen().contains("Foxtrot"), "{}", h.screen());
 
     h.keys("y");
-    assert_eq!(h.session().take_clipboard().as_deref(), Some(WIDE));
+    assert_eq!(h.copied(), vec![WIDE.to_string()]);
 
     h.keys("q<Space>s");
     assert!(h.screen().contains("Alpha"), "{}", h.screen());
@@ -231,8 +231,8 @@ fn a_source_too_large_to_copy_is_refused() {
     h.keys(":diagram<CR>");
     h.session().wait_for_analyst();
     h.keys("y");
-    assert_eq!(h.session().take_clipboard(), None);
-    assert!(h.screen().contains("too large"), "{}", h.screen());
+    assert!(h.copied().is_empty());
+    assert!(h.screen().contains("Too large"), "{}", h.screen());
 }
 
 #[test]
@@ -281,12 +281,12 @@ fn y_copies_the_mermaid_source_whether_or_not_it_could_be_drawn() {
         let mut h = review_with(&fx, &analyst);
         h.keys(":diagram<CR>");
         h.session().wait_for_analyst();
-        assert_eq!(h.session().take_clipboard(), None);
+        assert!(h.copied().is_empty());
 
         h.keys("y");
 
-        assert_eq!(h.session().take_clipboard().as_deref(), Some(source));
-        assert_eq!(h.session().take_clipboard(), None);
+        assert_eq!(h.copied(), vec![source.to_string()]);
+        assert!(h.copied().is_empty());
         assert!(h.screen().contains("Copied"), "{}", h.screen());
     }
 }

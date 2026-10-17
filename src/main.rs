@@ -136,12 +136,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Re
                 execute!(io::stdout(), DisableMouseCapture)?;
             }
         }
-        if let Some(text) = session.take_clipboard() {
-            let mut out = io::stdout();
-            let _ = out.write_all(moonhare::clipboard::osc52(&text).as_bytes());
-            let _ = out.flush();
-        }
-        // Prompts come as ready OSC 52 sequences.
+        // Everything copied comes as ready OSC 52 sequences.
         let sequences = session.take_terminal_output();
         if !sequences.is_empty() {
             let mut out = io::stdout();

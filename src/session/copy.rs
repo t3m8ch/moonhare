@@ -126,7 +126,7 @@ impl Session {
             }
             None => {
                 self.message = Some(format!(
-                    "Too big for the clipboard ({} KB, at most {}): not copied",
+                    "Too large for the clipboard ({} KB, at most {}): not copied",
                     text.len() / 1000,
                     crate::clipboard::MAX_TEXT / 1000
                 ));

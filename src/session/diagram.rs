@@ -15,9 +15,6 @@ type Key = (String, String, DiagramSubject);
 /// The diagram is drawn on the worker's thread, not the event loop's.
 type Answer = (Key, Result<Drawn, String>);
 
-/// The largest Mermaid source that is copied, in bytes.
-const CLIPBOARD_LIMIT: usize = 100_000;
-
 /// A diagram that came back, drawn once.
 struct Drawn {
     mermaid: String,
@@ -41,7 +38,6 @@ pub(super) struct Diagrams {
     /// `g` was typed and waits for a second one.
     g_typed: bool,
     /// Text the Reviewer asked to copy, until the terminal layer takes it.
-    clipboard: Option<String>,
     /// Mermaid texts of Summaries, drawn once.
     drawings: HashMap<String, Result<Vec<String>, String>>,
 }
@@ -59,7 +55,6 @@ impl Default for Diagrams {
             hscroll: 0,
             vscroll: 0,
             g_typed: false,
-            clipboard: None,
             drawings: HashMap::new(),
         }
     }
@@ -173,16 +168,11 @@ impl Session {
             KeyCode::Char('h') => {
                 self.diagrams.hscroll = self.diagrams.hscroll.saturating_sub(HSCROLL_STEP)
             }
-            KeyCode::Char('y') => match source {
-                Some(source) if source.len() > CLIPBOARD_LIMIT => {
-                    self.message = Some("The Mermaid source is too large to copy".into());
+            KeyCode::Char('y') => {
+                if let Some(source) = source {
+                    self.copy_to_clipboard(&source, "the Mermaid source");
                 }
-                Some(source) => {
-                    self.diagrams.clipboard = Some(source);
-                    self.message = Some("Copied the Mermaid source".into());
-                }
-                None => {}
-            },
+            }
             _ => {}
         }
     }
@@ -225,12 +215,6 @@ impl Session {
             Some(Err(e)) => failure_lines(e, mermaid),
             None => Vec::new(),
         }
-    }
-
-    /// The text the Reviewer asked to copy since the last call. The terminal
-    /// layer puts it on the clipboard.
-    pub fn take_clipboard(&mut self) -> Option<String> {
-        self.diagrams.clipboard.take()
     }
 
     /// Keys of the diagram overlay; returns whether the key was used.

@@ -217,4 +217,24 @@ fn set_nomouse_gives_the_mouse_back_to_the_terminal() {
     h.drag((x, y), (kx + 9, ky));
     assert_eq!(h.copied().len(), 1);
 }
+
+#[test]
+fn copied_code_cannot_smuggle_escape_sequences_or_direction_marks() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n").commit("initial");
+    fx.branch("feature");
+    fx.write("a.txt", "one\nevil \u{1b}]52;c;AAAA\u{7} \u{202e}rtl\u{200f}\n")
+        .commit("change");
+    let mut h = Harness::open(&fx, 100, 24);
+    let (x, y) = h.frame().find("evil").unwrap();
+    h.click(x, y).wait(1000);
+    h.keys("vy");
+    let copied = h.copied();
+    assert_eq!(copied.len(), 1);
+    assert!(!copied[0].contains('\u{1b}'), "{:?}", copied[0]);
+    assert!(!copied[0].contains('\u{7}'), "{:?}", copied[0]);
+    assert!(!copied[0].contains('\u{202e}'), "{:?}", copied[0]);
+    assert!(!copied[0].contains('\u{200f}'), "{:?}", copied[0]);
+    assert!(copied[0].starts_with("evil "), "{:?}", copied[0]);
+}
 // END

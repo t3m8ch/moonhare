@@ -130,7 +130,7 @@ fn the_group_diagram_shows_the_source_on_a_render_error_and_copies_it() {
     assert!(h.screen().contains("Collect] --> ???"), "{}", h.screen());
 
     h.keys("y");
-    assert_eq!(h.session().take_clipboard().as_deref(), Some(source));
+    assert_eq!(h.copied(), vec![source.to_string()]);
 }
 
 #[test]
