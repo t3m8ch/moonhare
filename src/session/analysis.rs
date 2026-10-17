@@ -1,9 +1,11 @@
 //! The Analyst inside the session: the Summary built in the background, its
 //! cache, and the `Space s` overlay.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
+use std::time::Duration;
 
 use super::diagram::clear_area;
 use super::*;
@@ -15,6 +17,52 @@ use crate::analyst::{
 type Key = (String, String);
 
 type Answer = (Key, Result<Summary, AnalystError>);
+
+/// Requests that have not been answered, and when each was sent.
+pub(super) struct Pending<K>(HashMap<K, Duration>);
+
+impl<K: Hash + Eq> Pending<K> {
+    /// Note a request sent at `now`; false when the key is already on its way.
+    pub(super) fn insert(&mut self, key: K, now: Duration) -> bool {
+        match self.0.entry(key) {
+            std::collections::hash_map::Entry::Occupied(_) => false,
+            std::collections::hash_map::Entry::Vacant(slot) => {
+                slot.insert(now);
+                true
+            }
+        }
+    }
+
+    pub(super) fn remove(&mut self, key: &K) {
+        self.0.remove(key);
+    }
+
+    pub(super) fn contains(&self, key: &K) -> bool {
+        self.0.contains_key(key)
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// How many requests are on their way and when the oldest was sent.
+    pub(super) fn oldest(&self) -> Option<(usize, Duration)> {
+        Some((self.0.len(), *self.0.values().min()?))
+    }
+}
+
+impl<K> Default for Pending<K> {
+    fn default() -> Self {
+        Pending(HashMap::new())
+    }
+}
+
+const SPINNER: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// The spinner's frame for the time since the session opened.
+pub(super) fn spinner(clock: Duration) -> char {
+    SPINNER[(clock.as_millis() / 100) as usize % SPINNER.len()]
+}
 
 pub(super) struct Analysis {
     pub(super) analyst: Option<Arc<dyn Analyst>>,
@@ -29,7 +77,7 @@ pub(super) struct Analysis {
     /// The revision that names the head of the Range: it moves when the
     /// branch gets new commits.
     pub(super) head_rev: String,
-    pending: HashSet<Key>,
+    pending: Pending<Key>,
     /// Why the last request for a key failed.
     errors: HashMap<Key, String>,
     sender: Sender<Answer>,
@@ -49,7 +97,7 @@ impl Default for Analysis {
             cache: HashMap::new(),
             built: Vec::new(),
             head_rev: "HEAD".to_string(),
-            pending: HashSet::new(),
+            pending: Pending::default(),
             errors: HashMap::new(),
             sender,
             receiver,
@@ -196,8 +244,9 @@ impl Session {
             return;
         };
         let key = self.current_key();
+        let now = self.clock();
         if (!force && self.analysis.cache.contains_key(&key))
-            || !self.analysis.pending.insert(key.clone())
+            || !self.analysis.pending.insert(key.clone(), now)
         {
             return;
         }
@@ -257,6 +306,54 @@ impl Session {
     /// Whether the Analyst still owes an answer.
     pub fn analyst_busy(&self) -> bool {
         !self.analysis.pending.is_empty()
+            || self.groups_busy()
+            || self.diagrams_busy()
+            || self.explanations_busy()
+    }
+
+    /// What the Analyst is working on: the kind of request, how many are on
+    /// their way and the age of the oldest.
+    fn analyst_work(&self) -> Vec<(&'static str, usize, Duration)> {
+        [
+            ("Summary", self.analysis.pending.oldest()),
+            ("Groups", self.groups_work()),
+            ("Explanation", self.explanations_work()),
+            ("Diagram", self.diagrams_work()),
+        ]
+        .into_iter()
+        .filter_map(|(what, work)| {
+            work.map(|(n, since)| (what, n, self.clock().saturating_sub(since)))
+        })
+        .collect()
+    }
+
+    /// The status line with the Analyst's work in front of it: a spinner and
+    /// what is being built, for as long as it takes.
+    pub(super) fn busy_status(&self, rest: &str) -> String {
+        let work = self.analyst_work();
+        if work.is_empty() {
+            return rest.to_string();
+        }
+        let list: Vec<String> = work
+            .iter()
+            .map(|(what, n, age)| match n {
+                1 => format!("{what} {}s", age.as_secs()),
+                n => format!("{what} ×{n} {}s", age.as_secs()),
+            })
+            .collect();
+        format!(
+            "{} Analyst: {}  {rest}",
+            spinner(self.clock()),
+            list.join(", ")
+        )
+    }
+
+    /// Seconds the oldest request of the Analyst's work on `what` has taken.
+    pub(super) fn work_seconds(&self, what: &str) -> u64 {
+        self.analyst_work()
+            .iter()
+            .find(|(w, ..)| *w == what)
+            .map_or(0, |(_, _, age)| age.as_secs())
     }
 
     /// Block until every request to the Analyst has been answered.
@@ -361,7 +458,11 @@ impl Session {
                 format!("Analyst: {}", self.analysis.errors[&self.current_key()])
             }
             None if self.analysis.pending.contains(&self.current_key()) => {
-                "The Summary is being built…".to_string()
+                format!(
+                    "{} The Analyst is working: the Summary is being built… {}s",
+                    spinner(self.clock()),
+                    self.work_seconds("Summary")
+                )
             }
             None => "There is no Summary yet. :analyze builds it.".to_string(),
         };
