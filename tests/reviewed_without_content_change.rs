@@ -42,6 +42,69 @@ fn assert_needs_an_explicit_mark(fx: &Fixture) {
     assert!(!screen.contains('✓'), "{screen}");
 }
 
+const LATER: u64 = 5_000;
+
+/// One file, `README.md`, edited by the first commit of `feature`.
+fn edited() -> Fixture {
+    let fx = base();
+    fx.write("README.md", &demo("edited")).commit("edit");
+    fx
+}
+
+fn chmod(fx: &Fixture) {
+    fx.git(&["update-index", "--chmod=+x", "README.md"]);
+    fx.git(&["commit", "-q", "-m", "chmod"]);
+}
+
+#[test]
+fn a_mode_change_added_after_the_review_is_not_reviewed_by_the_earlier_mark() {
+    let fx = edited();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("m");
+    assert!(h.screen().contains("reviewed 1/1"), "{}", h.screen());
+
+    chmod(&fx);
+    h.wait(LATER);
+    h.keys(":reload<CR>");
+
+    let screen = h.screen();
+    assert!(screen.contains("reviewed 0/1"), "{screen}");
+    h.keys(" u");
+    assert!(h.screen().contains("Files (1)"), "{}", h.screen());
+}
+
+#[test]
+fn a_mode_change_slipped_into_the_middle_of_a_reviewed_chain_is_not_reviewed() {
+    let fx = edited();
+    fx.write("README.md", &demo("finished")).commit("finish");
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("m");
+    assert!(h.screen().contains("reviewed 1/1"), "{}", h.screen());
+
+    // The agent rewrites the history with a chmod between the two edits.
+    fx.git(&["reset", "-q", "--hard", "main"]);
+    fx.write("README.md", &demo("edited")).commit("edit");
+    chmod(&fx);
+    fx.write("README.md", &demo("finished")).commit("finish");
+    h.wait(LATER);
+    h.keys(":reload<CR>");
+
+    assert!(h.screen().contains("reviewed 0/1"), "{}", h.screen());
+}
+
+#[test]
+fn a_chain_with_a_mode_change_inside_is_reviewed_once_all_of_it_is_marked() {
+    let fx = edited();
+    chmod(&fx);
+    fx.write("README.md", &demo("finished")).commit("finish");
+    let mut h = Harness::open(&fx, 160, 30);
+    assert!(h.screen().contains("reviewed 0/1"), "{}", h.screen());
+
+    h.keys("m");
+
+    assert!(h.screen().contains("reviewed 1/1"), "{}", h.screen());
+}
+
 #[test]
 fn a_pure_rename_is_unreviewed_until_marked() {
     let fx = base();

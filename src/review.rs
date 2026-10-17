@@ -233,10 +233,7 @@ impl Review {
         for c in changes {
             self.remove(&Self::key(c));
         }
-        while let Some(walk) = self
-            .walk(changes)
-            .filter(|w| Self::reaches_head(changes, w))
-        {
+        while let Some(walk) = self.walk(changes).filter(|w| self.reaches_head(changes, w)) {
             if walk.edges.is_empty() {
                 break;
             }
@@ -311,10 +308,18 @@ impl Review {
         Some(Walk { reached, edges })
     }
 
-    fn reaches_head(changes: &[FileChange], walk: &Walk) -> bool {
+    /// Whether the marks lead to the newest version. A change that leaves
+    /// the blob as it was (a rename, a mode change) is a step the walk can
+    /// take through any mark of the same version, so each such change has to
+    /// be marked itself.
+    fn reaches_head(&self, changes: &[FileChange], walk: &Walk) -> bool {
         changes
             .first()
             .is_some_and(|newest| walk.reached.contains(&newest.new_blob))
+            && changes
+                .iter()
+                .filter(|c| c.old_blob == c.new_blob)
+                .all(|c| self.is_marked(c))
     }
 
     /// `changes` (newest first) are Reviewed when the marks lead from the
@@ -326,7 +331,7 @@ impl Review {
         let Some(walk) = self.walk(changes) else {
             return Mark::Unreviewed;
         };
-        if Self::reaches_head(changes, &walk) {
+        if self.reaches_head(changes, &walk) {
             Mark::Reviewed
         } else if !walk.edges.is_empty() || changes.iter().any(|c| self.is_marked(c)) {
             Mark::Partial
