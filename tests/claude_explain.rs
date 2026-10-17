@@ -57,6 +57,7 @@ fn request(fx: &Fixture, target: ExplainTarget) -> ExplainRequest {
         head: fx.git(&["rev-parse", "feature"]).trim().to_string(),
         language: "ru".into(),
         pull_request: None,
+        settings: Default::default(),
         target,
     }
 }
