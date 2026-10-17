@@ -452,8 +452,13 @@ impl Session {
             )));
         }
         let commits = repo.commits(&range.base, &range.head)?;
-        let files = repo.changed_files(&range.base, &range.head)?;
-        let commit_changes = reload::changes_per_commit(&repo, &range, &commits)?;
+        // Independent questions to git: ask them side by side.
+        let (files, commit_changes) = std::thread::scope(|scope| {
+            let per_commit = scope.spawn(|| reload::changes_per_commit(&repo, &range, &commits));
+            let files = repo.changed_files(&range.base, &range.head);
+            (files, per_commit.join().expect("git worker panicked"))
+        });
+        let (files, commit_changes) = (files?, commit_changes?);
         // A Review belongs to the branch name, or to the explicit range string.
         let review_name = match explicit_range {
             Some(text) => format!("range {text}"),

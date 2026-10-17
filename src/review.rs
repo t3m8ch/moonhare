@@ -41,11 +41,52 @@ pub fn file_changes(repo: &Repo, base: &str, head: &str) -> Result<Vec<FileChang
         base,
         head,
     ])?;
+    Ok(parse_raw(&raw).into_iter().flat_map(|(_, c)| c).collect())
+}
+
+/// The file changes of many `(base, head)` pairs from a single git process,
+/// in the order of `pairs`. The heads must differ from one another.
+pub fn file_changes_of_pairs(
+    repo: &Repo,
+    pairs: &[(&str, &str)],
+) -> Result<Vec<Vec<FileChange>>, GitError> {
+    if pairs.is_empty() {
+        return Ok(Vec::new());
+    }
+    let input: String = pairs.iter().map(|(b, h)| format!("{h} {b}\n")).collect();
+    let raw = repo.run_bytes_stdin(
+        &[
+            "diff-tree",
+            "-r",
+            "-M",
+            "--raw",
+            "--no-abbrev",
+            "-z",
+            "--stdin",
+        ],
+        input.as_bytes(),
+    )?;
+    // Each pair with changes is announced by the id of its head (a stdin line is `<commit> <parent>`).
+    let mut by_head: HashMap<String, Vec<FileChange>> = parse_raw(&raw).into_iter().collect();
+    Ok(pairs
+        .iter()
+        .map(|(_, head)| by_head.remove(*head).unwrap_or_default())
+        .collect())
+}
+
+/// Parse `diff-tree --raw -z` output: runs of changes, each run led by the
+/// id git prints before it (empty when git printed none).
+fn parse_raw(raw: &[u8]) -> Vec<(String, Vec<FileChange>)> {
     let text = |b: &[u8]| String::from_utf8_lossy(b).into_owned();
     let mut parts = raw.split(|&b| b == 0).filter(|p| !p.is_empty());
-    let mut changes = Vec::new();
-    while let (Some(meta), Some(path)) = (parts.next(), parts.next()) {
-        let meta = text(meta);
+    let mut runs: Vec<(String, Vec<FileChange>)> = vec![(String::new(), Vec::new())];
+    while let Some(part) = parts.next() {
+        if part[0] != b':' {
+            runs.push((text(part), Vec::new()));
+            continue;
+        }
+        let Some(path) = parts.next() else { break };
+        let meta = text(part);
         // ":<mode> <mode> <old blob> <new blob> <status>"
         let fields: Vec<&str> = meta.trim_start_matches(':').split(' ').collect();
         let (Some(old), Some(new), Some(status)) = (fields.get(2), fields.get(3), fields.get(4))
@@ -60,14 +101,16 @@ pub fn file_changes(repo: &Repo, base: &str, head: &str) -> Result<Vec<FileChang
         } else {
             (text(path), None)
         };
-        changes.push(FileChange {
-            path,
-            old_path,
-            old_blob: old.to_string(),
-            new_blob: new.to_string(),
-        });
+        if let Some((_, changes)) = runs.last_mut() {
+            changes.push(FileChange {
+                path,
+                old_path,
+                old_blob: old.to_string(),
+                new_blob: new.to_string(),
+            });
+        }
     }
-    Ok(changes)
+    runs
 }
 
 /// The blobs of a change worth keeping alive.
