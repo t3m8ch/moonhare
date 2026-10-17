@@ -227,6 +227,7 @@ mod mechanical_view;
 mod mouse;
 mod nav;
 mod overlay;
+mod overlay_mouse;
 mod prompt;
 mod reload;
 mod rounds;
@@ -883,6 +884,9 @@ impl Session {
         if self.pending != waiting || self.pending.is_none() {
             self.pending_for = std::time::Duration::ZERO;
         }
+        if !self.overlay_open() {
+            self.mouse.text = None;
+        }
         self.sync_view();
         self.reveal_with_comments();
     }
@@ -1162,14 +1166,17 @@ impl Session {
         if !self.mouse_enabled() {
             return;
         }
-        if self.help.is_some()
-            || self.editor.is_some()
-            || self.confirm_clear
-            || self.prompt_view.is_some()
-        {
+        if self.editor.is_some() || self.confirm_clear {
             return;
         }
-        if self.picker_mouse(mouse) || self.diff_mouse(mouse) || self.list_mouse(mouse) {
+        if self.overlay_mouse(mouse) {
+            return;
+        }
+        if self.file_picker_mouse(mouse)
+            || self.picker_mouse(mouse)
+            || self.diff_mouse(mouse)
+            || self.list_mouse(mouse)
+        {
             return;
         }
         let at = |area: Rect| area.contains((mouse.column, mouse.row).into());
@@ -1221,6 +1228,12 @@ impl Session {
     }
 
     fn render_screen(&self, buf: &mut Buffer) {
+        self.render_base(buf);
+        self.render_overlay_selection(buf);
+    }
+
+    /// Everything but the highlight of text selected in an overlay.
+    fn render_base(&self, buf: &mut Buffer) {
         buf.set_style(buf.area, Style::new().fg(FG));
         if self.too_small() {
             let msg = format!(

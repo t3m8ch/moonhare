@@ -631,6 +631,7 @@ impl Session {
             'x' => self.set_comment_state(State::Closed),
             'o' => self.set_comment_state(State::Open),
             'v' => {
+                self.mouse.selection = None;
                 self.visual = match self.visual {
                     Some(_) => None,
                     None => Some(self.vp.cursor),

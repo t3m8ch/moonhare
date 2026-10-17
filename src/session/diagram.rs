@@ -61,6 +61,10 @@ impl Default for Diagrams {
 }
 
 impl Session {
+    pub(super) fn diagram_open(&self) -> bool {
+        self.diagrams.open.is_some()
+    }
+
     /// `:diagram`. Returns whether `command` was one of the diagram's.
     pub(super) fn diagram_command(&mut self, command: &str) -> bool {
         let (here, group) = match command {

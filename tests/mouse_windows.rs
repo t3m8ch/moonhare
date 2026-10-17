@@ -78,3 +78,70 @@ fn the_commit_picker_takes_clicks_and_the_wheel() {
     h.keys("<CR>");
     assert!(h.screen().contains("scope:3"), "{}", h.screen());
 }
+
+#[test]
+fn the_file_picker_takes_clicks_and_the_wheel() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("<Space>f");
+    let (x, y) = last_row_of(&mut h, "src/b.rs");
+    h.click(x, y);
+    assert!(h.screen().contains("file 3/3"), "{}", h.screen());
+    assert!(!h.screen().contains("Pick a file"), "{}", h.screen());
+
+    h.keys("<Space>f");
+    let (x, y) = last_row_of(&mut h, "src/a.rs");
+    h.wheel_up(x, y);
+    h.keys("<CR>");
+    assert!(h.screen().contains("file 2/3"), "{}", h.screen());
+    h.keys("<Space>f");
+    h.wheel_up(x, y);
+    h.wheel_down(x, y);
+    h.wheel_down(x, y);
+    h.keys("<CR>");
+    assert!(h.screen().contains("file 3/3"), "{}", h.screen());
+}
+
+#[test]
+fn dragging_over_an_overlay_copies_its_text() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("?");
+    let (x, y) = row_of(&mut h, "hjkl везде");
+    h.drag((x, y), (x + 80, y + 1));
+    assert_eq!(
+        h.copied(),
+        vec!["hjkl везде обычные движения и окон не переключают;\nокна переключаются через Ctrl-w и Tab.".to_string()]
+    );
+    // A double click picks a word there too.
+    h.wait(1000);
+    h.click(x + 1, y).click(x + 1, y);
+    assert_eq!(h.copied(), vec!["hjkl".to_string()]);
+}
+
+#[test]
+fn the_selection_in_an_overlay_goes_with_the_overlay() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("?");
+    let (x, y) = row_of(&mut h, "hjkl везде");
+    let plain = h.frame().bg_at(x + 1, y);
+    h.drag((x, y), (x + 20, y));
+    assert_ne!(h.frame().bg_at(x + 1, y), plain);
+    h.keys("<Esc>?");
+    assert_eq!(h.frame().bg_at(x + 1, y), plain);
+}
+
+#[test]
+fn the_wheel_scrolls_the_help() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("?");
+    assert!(h.screen().contains("hjkl везде"), "{}", h.screen());
+    h.wheel_down(50, 10);
+    h.wheel_down(50, 10);
+    assert!(!h.screen().contains("hjkl везде"), "{}", h.screen());
+    h.wheel_up(50, 10);
+    h.wheel_up(50, 10);
+    assert!(h.screen().contains("hjkl везде"), "{}", h.screen());
+}

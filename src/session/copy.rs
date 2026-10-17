@@ -37,7 +37,10 @@ pub(super) fn format(lines: &[CopyLine], notes: &[Note]) -> String {
             };
             let mut out = format!("{prefix}{}", l.text);
             // Comments on the line follow it, quoted.
-            for note in notes.iter().filter(|n| (n.side, n.line) == (l.side, l.line)) {
+            for note in notes
+                .iter()
+                .filter(|n| (n.side, n.line) == (l.side, l.line))
+            {
                 for text_line in note.text.lines() {
                     out.push_str(&format!("\n> {text_line}"));
                 }
@@ -133,4 +136,37 @@ impl Session {
             }
         }
     }
+}
+
+/// The cell columns `from..to` of the word at cell column `col` of `text`:
+/// a run of letters, digits and `_`, of blanks, or one other character.
+pub(super) fn word_span(text: &str, col: usize) -> Option<(usize, usize)> {
+    let mut cells = Vec::new();
+    let mut cell = 0;
+    for c in text.chars() {
+        let width = if c == '\t' { TAB_WIDTH } else { 1 };
+        cells.push((c, cell, cell + width));
+        cell += width;
+    }
+    let at = cells
+        .iter()
+        .position(|&(_, from, to)| from <= col && col < to)?;
+    let class = |c: char| match c {
+        c if c.is_alphanumeric() || c == '_' => 0,
+        c if c.is_whitespace() => 1,
+        _ => 2,
+    };
+    let kind = class(cells[at].0);
+    if kind == 2 {
+        return Some((cells[at].1, cells[at].2));
+    }
+    let mut first = at;
+    while first > 0 && class(cells[first - 1].0) == kind {
+        first -= 1;
+    }
+    let mut last = at;
+    while last + 1 < cells.len() && class(cells[last + 1].0) == kind {
+        last += 1;
+    }
+    Some((cells[first].1, cells[last].2))
 }

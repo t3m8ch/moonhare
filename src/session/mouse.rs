@@ -3,7 +3,7 @@
 
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
-use super::copy::{cut, format, CopyLine, Mark};
+use super::copy::{cut, format, word_span, CopyLine, Mark};
 use super::*;
 
 /// A place in the diff: a view item and a cell column in its code.
@@ -37,7 +37,7 @@ struct Click {
     count: u8,
 }
 
-const SELECTION_BG: Color = Color::Indexed(24);
+pub(super) const SELECTION_BG: Color = Color::Indexed(24);
 
 /// Clicks closer in time than this chain into a double or triple click.
 const MULTI_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
@@ -50,6 +50,9 @@ pub(super) struct Mouse {
     clock: std::time::Duration,
     last_click: Option<Click>,
     press: Option<Press>,
+    /// Text selected in an overlay, and whether its button is held.
+    pub(super) text: Option<super::overlay_mouse::TextSelection>,
+    pub(super) text_press: bool,
     pub(super) selection: Option<Selection>,
 }
 
@@ -58,6 +61,10 @@ impl Session {
     pub(super) fn diff_mouse(&mut self, mouse: MouseEvent) -> bool {
         let area = self.diff_area();
         let inside = area.contains((mouse.column, mouse.row).into()) && !self.picker;
+        // A click anywhere drops the selection; one in the diff may start a new one.
+        if let MouseEventKind::Down(MouseButton::Left) = mouse.kind {
+            self.mouse.selection = None;
+        }
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) if inside => {
                 let Some(item) = self.item_at_row(mouse.row) else {
@@ -80,6 +87,7 @@ impl Session {
                 if let (Some(press), Some(item)) =
                     (self.mouse.press, self.item_at_or_above(mouse.row))
                 {
+                    self.vp.cursor = item;
                     self.mouse.selection = Some(Selection {
                         anchor: press.anchor,
                         head: self.pos_at(item, mouse.column, press.half),
@@ -197,7 +205,7 @@ impl Session {
     }
 
     /// Register a click and say how many in a row it is: 1, 2 or 3.
-    fn count_click(&mut self, column: u16, row: u16) -> u8 {
+    pub(super) fn count_click(&mut self, column: u16, row: u16) -> u8 {
         let now = self.mouse.clock;
         let count = match self.mouse.last_click {
             Some(c) if c.at == (column, row) && now - c.time <= MULTI_CLICK => c.count % 3 + 1,
@@ -324,7 +332,11 @@ impl Session {
         (from.item..=to.item)
             .map(|item| {
                 let start = if item == from.item { from.col } else { 0 };
-                let end = if item == to.item { to.col + 1 } else { usize::MAX };
+                let end = if item == to.item {
+                    to.col + 1
+                } else {
+                    usize::MAX
+                };
                 (item, start, end)
             })
             .collect()
@@ -362,7 +374,11 @@ impl Session {
                 continue;
             };
             let (code_x, limit) = self.code_columns(selection.half);
-            let text_end = line.text.chars().map(|c| if c == '\t' { TAB_WIDTH } else { 1 }).sum();
+            let text_end = line
+                .text
+                .chars()
+                .map(|c| if c == '\t' { TAB_WIDTH } else { 1 })
+                .sum();
             let (start, end) = (start.max(self.hscroll), end.min(text_end));
             for col in start..end {
                 let x = code_x + col - self.hscroll;
@@ -394,8 +410,12 @@ impl Session {
             line: index,
             text: loaded.lines(side)[index].clone(),
         };
-        let old_changed = row.old.is_some_and(|l| loaded.line_changed(Side::Old, l, row.new));
-        let new_changed = row.new.is_some_and(|l| loaded.line_changed(Side::New, l, row.old));
+        let old_changed = row
+            .old
+            .is_some_and(|l| loaded.line_changed(Side::Old, l, row.new));
+        let new_changed = row
+            .new
+            .is_some_and(|l| loaded.line_changed(Side::New, l, row.old));
         if !old_changed && !new_changed {
             let (side, index) = match (row.new, row.old) {
                 (Some(n), _) => (Side::New, n),
@@ -453,35 +473,4 @@ impl Session {
             text: loaded.lines(side)[index].clone(),
         })
     }
-}
-
-/// The cell columns `from..to` of the word at cell column `col` of `text`:
-/// a run of letters, digits and `_`, of blanks, or one other character.
-fn word_span(text: &str, col: usize) -> Option<(usize, usize)> {
-    let mut cells = Vec::new();
-    let mut cell = 0;
-    for c in text.chars() {
-        let width = if c == '\t' { TAB_WIDTH } else { 1 };
-        cells.push((c, cell, cell + width));
-        cell += width;
-    }
-    let at = cells.iter().position(|&(_, from, to)| from <= col && col < to)?;
-    let class = |c: char| match c {
-        c if c.is_alphanumeric() || c == '_' => 0,
-        c if c.is_whitespace() => 1,
-        _ => 2,
-    };
-    let kind = class(cells[at].0);
-    if kind == 2 {
-        return Some((cells[at].1, cells[at].2));
-    }
-    let mut first = at;
-    while first > 0 && class(cells[first - 1].0) == kind {
-        first -= 1;
-    }
-    let mut last = at;
-    while last + 1 < cells.len() && class(cells[last + 1].0) == kind {
-        last += 1;
-    }
-    Some((cells[first].1, cells[last].2))
 }

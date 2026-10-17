@@ -223,8 +223,11 @@ fn copied_code_cannot_smuggle_escape_sequences_or_direction_marks() {
     let fx = Fixture::new();
     fx.write("a.txt", "one\n").commit("initial");
     fx.branch("feature");
-    fx.write("a.txt", "one\nevil \u{1b}]52;c;AAAA\u{7} \u{202e}rtl\u{200f}\n")
-        .commit("change");
+    fx.write(
+        "a.txt",
+        "one\nevil \u{1b}]52;c;AAAA\u{7} \u{202e}rtl\u{200f}\n",
+    )
+    .commit("change");
     let mut h = Harness::open(&fx, 100, 24);
     let (x, y) = h.frame().find("evil").unwrap();
     h.click(x, y).wait(1000);
@@ -236,5 +239,32 @@ fn copied_code_cannot_smuggle_escape_sequences_or_direction_marks() {
     assert!(!copied[0].contains('\u{202e}'), "{:?}", copied[0]);
     assert!(!copied[0].contains('\u{200f}'), "{:?}", copied[0]);
     assert!(copied[0].starts_with("evil "), "{:?}", copied[0]);
+}
+
+#[test]
+fn a_click_in_another_window_drops_the_selection() {
+    let fx = changed_file();
+    let mut h = Harness::open(&fx, 100, 24);
+    let (ex, ey) = h.frame().find("extra").unwrap();
+    let (kx, ky) = h.frame().find("keep_me").unwrap();
+    let plain = h.frame().bg_at(ex + 2, ey);
+    h.drag((ex, ey), (kx + 9, ky));
+    assert_ne!(h.frame().bg_at(ex + 2, ey), plain);
+    let (fx_, fy) = h.frame().find("src/lib.rs").unwrap();
+    h.click(fx_, fy);
+    assert_eq!(h.frame().bg_at(ex + 2, ey), plain);
+}
+
+#[test]
+fn visual_after_a_mouse_selection_copies_the_visual_lines() {
+    let fx = changed_file();
+    let mut h = Harness::open(&fx, 100, 24);
+    let (ex, ey) = h.frame().find("extra").unwrap();
+    let (kx, ky) = h.frame().find("keep_me").unwrap();
+    h.drag((ex, ey), (kx + 9, ky));
+    h.copied();
+    h.keys("vy");
+    // The cursor stands on `keep_me`, where the mouse left it.
+    assert_eq!(h.copied(), vec!["    keep_me();".to_string()]);
 }
 // END
