@@ -119,7 +119,9 @@ impl Session {
         let target = if forward {
             hits.iter().position(|&i| i + 1 > cursor).or(Some(0))
         } else {
-            hits.iter().rposition(|&i| i + 1 < cursor).or(hits.len().checked_sub(1))
+            hits.iter()
+                .rposition(|&i| i + 1 < cursor)
+                .or(hits.len().checked_sub(1))
         };
         let Some(k) = target.filter(|_| !hits.is_empty()) else {
             self.message = Some(format!("No match: {query}"));
@@ -226,7 +228,11 @@ impl Session {
             return;
         }
         let Some(span) = (self.commit_cursor > 0)
-            .then(|| spans.iter().find(|s| (s.start..s.end).contains(&(self.commit_cursor - 1))))
+            .then(|| {
+                spans
+                    .iter()
+                    .find(|s| (s.start..s.end).contains(&(self.commit_cursor - 1)))
+            })
             .flatten()
         else {
             self.message = Some("Put the cursor on a commit to fold its Round".into());

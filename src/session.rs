@@ -1284,32 +1284,31 @@ impl Session {
             .commit_anchor
             .map(|a| (a.min(self.commit_cursor), a.max(self.commit_cursor)));
         let rows = std::iter::once((0, "▣ Весь Range".to_string(), self.scope == Scope::All))
-            .chain(shown.pinned.map(|span| (HEADER, format!("── {}", span.title), false)))
             .chain(
                 shown
-                    .rows
-                    .into_iter()
-                    .map(|row| match row {
-                        rounds::ListRow::Header(title) => (HEADER, format!("── {title}"), false),
-                        rounds::ListRow::Folded { title, start, end } => {
-                            let position = match self.commit_cursor {
-                                n if (start + 1..=end).contains(&n) => n,
-                                _ => start + 1,
-                            };
-                            let in_scope = (start..end).any(|i| self.in_scope(i));
-                            (position, format!("▸ {title}"), in_scope)
-                        }
-                        rounds::ListRow::Commit(i) => {
-                            let c = &self.commits[i];
-                            let sha = &c.sha[..7.min(c.sha.len())];
-                            (
-                                i + 1,
-                                format!("{:>2} {sha} {}", i + 1, c.subject),
-                                self.in_scope(i),
-                            )
-                        }
-                    }),
-            );
+                    .pinned
+                    .map(|span| (HEADER, format!("── {}", span.title), false)),
+            )
+            .chain(shown.rows.into_iter().map(|row| match row {
+                rounds::ListRow::Header(title) => (HEADER, format!("── {title}"), false),
+                rounds::ListRow::Folded { title, start, end } => {
+                    let position = match self.commit_cursor {
+                        n if (start + 1..=end).contains(&n) => n,
+                        _ => start + 1,
+                    };
+                    let in_scope = (start..end).any(|i| self.in_scope(i));
+                    (position, format!("▸ {title}"), in_scope)
+                }
+                rounds::ListRow::Commit(i) => {
+                    let c = &self.commits[i];
+                    let sha = &c.sha[..7.min(c.sha.len())];
+                    (
+                        i + 1,
+                        format!("{:>2} {sha} {}", i + 1, c.subject),
+                        self.in_scope(i),
+                    )
+                }
+            }));
         for (row, (position, text, in_scope)) in rows.enumerate() {
             let cursor = show_cursor && position == self.commit_cursor;
             let mark = if in_scope { '●' } else { ' ' };

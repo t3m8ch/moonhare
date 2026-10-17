@@ -34,10 +34,7 @@ fn add_commits(fx: &Fixture, from: usize, to: usize, subject: impl Fn(usize) -> 
         if n == from {
             stream += "from refs/heads/feature^0\n";
         }
-        stream += &format!(
-            "M 100644 inline f{n}.rs\ndata {}\n{body}\n",
-            body.len()
-        );
+        stream += &format!("M 100644 inline f{n}.rs\ndata {}\n{body}\n", body.len());
     }
     let mut child = Command::new("git")
         .args(["fast-import", "--quiet", "--force"])
@@ -265,10 +262,18 @@ fn motions_treat_a_folded_round_as_one_stop_and_enter_still_applies_a_commit() {
     let fx = two_rounds();
     let mut h = Harness::open(&fx, 160, 60);
     h.keys("<Tab>:scope 7<CR>zc");
-    assert_eq!(title(&h.screen()), "Commits 1/120", "cursor on the folded row");
+    assert_eq!(
+        title(&h.screen()),
+        "Commits 1/120",
+        "cursor on the folded row"
+    );
 
     h.keys("j");
-    assert_eq!(title(&h.screen()), "Commits 61/120", "j skips the hidden commits");
+    assert_eq!(
+        title(&h.screen()),
+        "Commits 61/120",
+        "j skips the hidden commits"
+    );
     h.keys("k");
     assert_eq!(title(&h.screen()), "Commits 1/120");
     h.keys("k");
@@ -343,4 +348,20 @@ fn hundreds_of_commits_survive_every_key_click_and_size_without_panics_or_lag() 
         "frames for 300 commits are slow: {:?}",
         started.elapsed()
     );
+}
+
+#[test]
+fn the_hint_line_and_the_help_teach_search_steps_and_folding() {
+    let fx = long_branch(20);
+    let mut h = Harness::open(&fx, 200, 40);
+    h.keys("<Tab>");
+    let screen = h.screen();
+    assert!(screen.contains("/: поиск"), "{screen}");
+    h.keys("?");
+    let screen = h.screen();
+    assert!(screen.contains("поиск по номеру, sha и тексту"), "{screen}");
+    h.keys("<Esc>z");
+    h.session().elapse(moonhare::hints::WHICH_KEY_DELAY);
+    let screen = h.screen();
+    assert!(screen.contains("свернуть/развернуть раунд"), "{screen}");
 }

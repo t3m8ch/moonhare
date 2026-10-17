@@ -79,7 +79,11 @@ impl Session {
             if self.list.is_folded(span.number) {
                 let n = span.end - span.start;
                 rows.push(ListRow::Folded {
-                    title: format!("Round {}, {n} commit{}", span.number, if n == 1 { "" } else { "s" }),
+                    title: format!(
+                        "Round {}, {n} commit{}",
+                        span.number,
+                        if n == 1 { "" } else { "s" }
+                    ),
                     start: span.start,
                     end: span.end,
                 });
