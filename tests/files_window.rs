@@ -1,5 +1,6 @@
 //! The file list as a window of its own: it takes part in the `Tab` cycle.
 mod support;
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Color;
 use support::*;
 
@@ -76,4 +77,56 @@ fn the_hints_and_help_describe_the_files_window() {
         screen.contains("S-Tab") && screen.contains("]g"),
         "{screen}"
     );
+}
+
+fn at_file(h: &mut Harness, n: usize) -> bool {
+    file_status(h).contains(&format!("file {n}/3"))
+}
+
+#[test]
+fn arrows_move_the_file_selection_like_jk() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 30);
+    h.keys("<Tab><Tab>");
+    h.session().handle(key(KeyCode::Down));
+    assert!(at_file(&mut h, 2), "{}", h.screen());
+    h.session().handle(key(KeyCode::Down));
+    assert!(at_file(&mut h, 3));
+    h.session().handle(key(KeyCode::Up));
+    assert!(at_file(&mut h, 2));
+}
+
+fn key(code: KeyCode) -> Event {
+    Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
+}
+
+#[test]
+fn gg_big_g_and_ctrl_d_u_jump_in_the_files_window() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 30);
+    h.keys("<C-w>j");
+    assert!(at_file(&mut h, 1), "Ctrl-w j from the diff stays");
+    h.keys("<C-w>h<C-w>j");
+    h.keys("G");
+    assert!(at_file(&mut h, 3), "{}", h.screen());
+    h.keys("gg");
+    assert!(at_file(&mut h, 1));
+    h.keys("2G");
+    assert!(at_file(&mut h, 2));
+    h.keys("<C-d>");
+    assert!(at_file(&mut h, 3));
+    h.keys("<C-u>");
+    assert!(at_file(&mut h, 1));
+}
+
+#[test]
+fn groups_are_walked_with_jk_and_enter_opens_the_file() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 30);
+    h.keys("<C-w>h<C-w>j");
+    h.keys("jj<CR>");
+    assert!(at_file(&mut h, 3));
+    // The focus is in the diff now: Tab goes to the commits.
+    h.keys("<Tab>");
+    assert_ne!(border(&mut h, "Commits"), border(&mut h, "Files"));
 }

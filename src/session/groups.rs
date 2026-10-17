@@ -263,14 +263,35 @@ impl Session {
         rows
     }
 
-    /// Keys of the focused file list: `j/k` pick a file, `Enter` opens it in
-    /// the diff. Returns whether the key was used.
+    /// Keys of the focused file list: `j/k` and the arrows pick a file, `gg`/`G`
+    /// and `Ctrl-d/u` jump, `Enter` opens it in the diff. Returns whether the key was used.
     pub(super) fn files_key(&mut self, key: KeyEvent) -> bool {
-        if key.modifiers.contains(KeyModifiers::CONTROL) || self.pending.is_some() {
+        let last = self.files.len().saturating_sub(1);
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if self.pending == Some('g') && key.code == KeyCode::Char('g') && !ctrl {
+            self.pending = None;
+            let n = self.count.take().unwrap_or(1);
+            self.select((n - 1).min(last));
+            return true;
+        }
+        if ctrl && matches!(key.code, KeyCode::Char('d' | 'u')) && self.pending.is_none() {
+            self.count = None;
+            let half = (self.sidebar_capacity() / 2).max(1);
+            if key.code == KeyCode::Char('d') {
+                self.select(self.selected.saturating_add(half).min(last));
+            } else {
+                self.select(self.selected.saturating_sub(half));
+            }
+            return true;
+        }
+        if ctrl || self.pending.is_some() {
             return false;
         }
-        let last = self.files.len().saturating_sub(1);
         match key.code {
+            KeyCode::Char('G') => {
+                let n = self.count.take();
+                self.select(n.map_or(last, |n| n.saturating_sub(1).min(last)));
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 let n = self.count.take().unwrap_or(1);
                 self.select(self.selected.saturating_add(n).min(last));

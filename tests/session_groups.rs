@@ -436,3 +436,19 @@ fn square_brackets_g_jump_between_groups_in_the_files_window() {
     h.keys("[g[g");
     assert!(h.screen().contains("file 1/3"), "{}", h.screen());
 }
+
+#[test]
+fn jk_and_arrows_walk_the_files_across_groups_in_the_files_window() {
+    let fx = feature_branch();
+    let mut h = review_with(&fx, &core_then_docs());
+    h.session().wait_for_analyst();
+    // Reading order a, b, README; the cursor is on README.md.
+    h.keys("<C-w>h<C-w>jkk");
+    assert!(h.screen().contains("file 1/3"), "{}", h.screen());
+    h.keys("j");
+    assert!(h.screen().contains("file 2/3"), "{}", h.screen());
+    h.keys("jG");
+    assert!(h.screen().contains("file 3/3"), "{}", h.screen());
+    h.keys("gg<CR>");
+    assert!(h.screen().contains("file 1/3"), "{}", h.screen());
+}

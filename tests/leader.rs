@@ -116,7 +116,7 @@ fn which_key_and_help_list_the_groups_toggle() {
 #[test]
 fn which_key_and_help_list_the_analyst_explanations() {
     let fx = feature_branch();
-    let mut h = Harness::open(&fx, 100, 60);
+    let mut h = Harness::open(&fx, 100, 90);
     h.keys("<Space>").wait(350);
     assert!(h.screen().contains("объяснить хунк"), "{}", h.screen());
     h.keys("<Esc>?");
