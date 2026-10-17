@@ -25,6 +25,7 @@ use crate::special;
 use crate::viewport::Viewport;
 use diagram::clear_area;
 pub use diffs::{silence_worker_panics, DiffEngine};
+pub(crate) use forge_load::spawn_worker as spawn_forge_worker;
 use rounds::HEADER;
 
 /// Below this size the session shows a "terminal too small" screen.

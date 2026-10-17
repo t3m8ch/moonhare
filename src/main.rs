@@ -40,6 +40,8 @@ fn main() -> ExitCode {
                     // The Forge may take a while: show a loading screen that
                     // can be left, not an empty terminal.
                     let mut t = ratatui::init();
+                    // The Forge thread catches its panics; ratatui's hook must not see them.
+                    moonhare::session::silence_worker_panics();
                     let result = wait_for_opening(&mut t, opening);
                     terminal = Some(t);
                     match result {

@@ -8,6 +8,17 @@ use std::time::Duration;
 use super::*;
 use crate::forge::ForgeError;
 
+/// The name of the Forge's threads: they catch their own panics, so the
+/// panic hooks must not see them (see [`super::silence_worker_panics`]).
+pub(crate) const WORKER: &str = "moonhare-forge";
+
+/// Run `work` on a thread named [`WORKER`].
+pub(crate) fn spawn_worker(work: impl FnOnce() + Send + 'static) {
+    let _ = std::thread::Builder::new()
+        .name(WORKER.to_string())
+        .spawn(work);
+}
+
 type Answer = Result<Option<PullRequest>, ForgeError>;
 
 pub(super) struct ForgeLoad {
@@ -32,7 +43,7 @@ impl Session {
     pub(super) fn request_pull_request(&mut self, forge: Arc<dyn Forge>, branch: String) {
         self.forge_load.since = Some(self.clock());
         let sender = self.forge_load.sender.clone();
-        std::thread::spawn(move || {
+        spawn_worker(move || {
             let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 forge.pull_request_for_branch(&branch)
             }))

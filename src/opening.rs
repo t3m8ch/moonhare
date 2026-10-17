@@ -39,7 +39,7 @@ impl Opening {
         let root = Repo::open(repo_path)?.root().to_path_buf();
         let (sender, receiver) = channel();
         let fetch_root = root.clone();
-        std::thread::spawn(move || {
+        crate::session::spawn_forge_worker(move || {
             let fetched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 forge
                     .pull_request(number)

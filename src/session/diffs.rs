@@ -98,14 +98,17 @@ fn compute(repo: &Repo, job: &Job) -> Computed {
 /// The name of the worker threads.
 const WORKER: &str = "moonhare-diff";
 
-/// Keep the panic message of a diff worker (and the terminal restore that the
+/// Keep the panic message of a diff or Forge worker (and the terminal restore that the
 /// hooks installed before this one do) away from the TUI: the worker catches
 /// its own panic and the session shows it as an error. Other threads panic as
 /// before. Call it after the other hooks are set, so this one runs first.
 pub fn silence_worker_panics() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        if std::thread::current().name() != Some(WORKER) {
+        if !matches!(
+            std::thread::current().name(),
+            Some(WORKER | super::forge_load::WORKER)
+        ) {
             previous(info);
         }
     }));

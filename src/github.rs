@@ -48,23 +48,57 @@ impl GitHub {
         }
     }
 
-    fn view(&self, selector: &str) -> Result<PullRequest, ForgeError> {
-        let mut command = Command::new(&self.program);
-        command.args(["pr", "view", "--json", PR_FIELDS, "--", selector]);
-        // A `gh` that hangs must not keep the pull request awaited for ever.
-        let (sender, receiver) = std::sync::mpsc::channel();
-        std::thread::spawn(move || {
-            let _ = sender.send(command.output());
-        });
-        let out = match receiver.recv_timeout(self.timeout) {
-            Ok(out) => out.map_err(|e| self.spawn_error(&e))?,
-            Err(_) => {
-                return Err(ForgeError::Network(format!(
-                    "gh did not answer in {}s, check the network",
-                    self.timeout.as_secs()
-                )))
+    /// Run `command`; a `gh` that outlives the timeout is killed, so that a
+    /// hung one neither keeps the pull request awaited nor outlives moonhare.
+    fn run_with_timeout(&self, command: &mut Command) -> Result<std::process::Output, ForgeError> {
+        use std::io::Read;
+        use std::process::Stdio;
+        let mut child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| self.spawn_error(&e))?;
+        fn drain(pipe: Option<impl Read + Send + 'static>) -> std::thread::JoinHandle<Vec<u8>> {
+            std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                if let Some(mut pipe) = pipe {
+                    let _ = pipe.read_to_end(&mut bytes);
+                }
+                bytes
+            })
+        }
+        let stdout = drain(child.stdout.take());
+        let stderr = drain(child.stderr.take());
+        let deadline = std::time::Instant::now() + self.timeout;
+        let status = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Ok(None) => {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(ForgeError::Network(format!(
+                        "gh did not answer in {}s, check the network",
+                        self.timeout.as_secs()
+                    )));
+                }
+                Err(e) => return Err(ForgeError::Failed(format!("cannot run gh: {e}"))),
             }
         };
+        Ok(std::process::Output {
+            status,
+            stdout: stdout.join().unwrap_or_default(),
+            stderr: stderr.join().unwrap_or_default(),
+        })
+    }
+
+    fn view(&self, selector: &str) -> Result<PullRequest, ForgeError> {
+        let out = self.run_with_timeout(
+            Command::new(&self.program).args(["pr", "view", "--json", PR_FIELDS, "--", selector]),
+        )?;
         if !out.status.success() {
             return Err(classify(&String::from_utf8_lossy(&out.stderr)));
         }
