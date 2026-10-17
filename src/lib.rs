@@ -8,6 +8,7 @@ pub mod color;
 pub mod comments;
 pub mod diagram;
 pub mod diff;
+pub mod file_tree;
 pub mod fold;
 pub mod forge;
 pub mod git;
