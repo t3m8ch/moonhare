@@ -42,7 +42,7 @@ fn the_file_bar_and_the_status_line_do_not_repeat_each_other() {
             "{bar}"
         );
         assert!(bar.contains("modified"), "state in the bar: {bar}");
-        let status = rows[rows.len() - 1];
+        let status = rows[rows.len() - 2]; // the last row holds hints
         assert!(!status.contains("file 1/3"), "{status}");
         assert!(
             status.contains("main..feature") && status.contains("scope:all"),

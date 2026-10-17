@@ -171,7 +171,9 @@ fn binary_file_is_a_note_without_a_line_diff() {
     )
     .commit("add logo");
 
+    // A binary file is Mechanical, so it starts collapsed.
     let mut h = Harness::open(&fx, INLINE.0, INLINE.1);
+    h.keys("<CR>");
     let screen = h.screen();
     assert!(screen.contains("Binary file"), "{screen}");
     assert!(

@@ -184,7 +184,7 @@ fn an_analyst_failure_is_in_the_status_and_the_session_keeps_working() {
     h.keys("<Space>x");
     h.session().wait_for_analyst();
     let screen = h.screen();
-    let status = screen.lines().last().unwrap();
+    let status = screen.lines().rev().nth(1).unwrap();
     assert!(status.contains("claude /login"), "{status}");
 
     h.keys("<Esc>]f");
@@ -201,7 +201,7 @@ fn without_an_analyst_the_key_says_so_in_the_status() {
     h.keys("<Space>x");
     let screen = h.screen();
     assert!(
-        screen.lines().last().unwrap().contains("No Analyst"),
+        screen.lines().rev().nth(1).unwrap().contains("No Analyst"),
         "{screen}"
     );
 }
@@ -220,7 +220,7 @@ fn a_file_without_a_hunk_has_nothing_to_explain() {
     assert!(analyst.requests().is_empty());
     let screen = h.screen();
     assert!(
-        screen.lines().last().unwrap().contains("No hunk"),
+        screen.lines().rev().nth(1).unwrap().contains("No hunk"),
         "{screen}"
     );
 }
