@@ -55,7 +55,7 @@ impl Session {
             MouseEventKind::Down(MouseButton::Left) => {
                 let offset = (cursor + 1).saturating_sub(capacity.max(1));
                 let row = (mouse.row as usize).checked_sub(area.y as usize + 1);
-                let inside = (area.x + 1..area.x + area.width - 1).contains(&mouse.column);
+                let inside = (area.x + 1..(area.x + area.width).saturating_sub(1)).contains(&mouse.column);
                 if let Some(row) = row.filter(|&r| r < capacity && inside) {
                     if offset + row < self.files.len() {
                         self.file_picker = None;

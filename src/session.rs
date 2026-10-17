@@ -1177,7 +1177,8 @@ impl Session {
     }
 
     fn on_mouse(&mut self, mouse: MouseEvent) {
-        if !self.mouse_enabled() {
+        // Nothing is drawn on a terminal this small: there is nothing to hit.
+        if !self.mouse_enabled() || self.too_small() {
             return;
         }
         if self.editor.is_some() || self.confirm_clear {

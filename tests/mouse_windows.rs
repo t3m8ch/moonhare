@@ -159,3 +159,17 @@ fn in_an_overlay_a_one_character_word_is_copied_and_a_shaky_click_is_not() {
     h.click(dash, y).click(dash, y);
     assert_eq!(h.copied(), vec!["-".to_string()]);
 }
+
+#[test]
+fn the_mouse_never_panics_on_a_terminal_too_small_to_draw() {
+    let fx = feature_branch();
+    for (w, h_) in [(4, 10), (3, 3), (1, 1), (4, 40)] {
+        let mut h = Harness::open(&fx, w, h_);
+        h.keys("<Space>f");
+        h.click(1, 1).wheel_down(1, 1).wheel_up(0, 0).drag((0, 0), (3, 2));
+        h.keys("<Esc><Space>c");
+        h.click(1, 1).wheel_down(1, 1).drag((0, 0), (3, 2));
+        h.keys("<Esc>?");
+        h.click(1, 1).wheel_down(1, 1).drag((0, 0), (3, 2));
+    }
+}
