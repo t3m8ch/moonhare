@@ -341,6 +341,50 @@ fn visual_selection_does_not_outlive_the_file_it_was_made_in() {
     assert!(!screen.contains("new 1-"), "{screen}");
 }
 
+/// A branch adding `code.rs` with two functions that end in the same `}`.
+fn braces() -> support::Fixture {
+    let fx = support::Fixture::new();
+    fx.write("README.md", "x\n").commit("initial");
+    fx.branch("feature");
+    fx.write("code.rs", "fn a() {\n    1\n}\n\nfn b() {\n    2\n}\n")
+        .commit("add code");
+    fx
+}
+
+#[test]
+fn a_comment_on_a_common_line_is_hidden_when_its_surroundings_are_gone() {
+    let fx = braces();
+    {
+        let mut h = Harness::open(&fx, 160, 30);
+        // The `}` closing fn a, line 3.
+        h.keys("2jcishared brace<Esc><CR>");
+        assert!(h.screen().contains("new 3"), "{}", h.screen());
+    }
+    // fn a is deleted; the only `}` left closes fn b.
+    fx.write("code.rs", "fn b() {\n    2\n}\n").commit("drop a");
+    let mut h = Harness::open(&fx, 160, 30);
+    let screen = h.screen();
+    assert!(!screen.contains("shared brace"), "{screen}");
+    assert!(screen.contains("1 скрытых Comments"), "{screen}");
+}
+
+#[test]
+fn a_comment_on_a_common_line_follows_it_when_the_surroundings_move_along() {
+    let fx = braces();
+    {
+        let mut h = Harness::open(&fx, 160, 30);
+        h.keys("6jcishared brace<Esc><CR>");
+    }
+    fx.write(
+        "code.rs",
+        "// top\n// top\nfn a() {\n    1\n}\n\nfn b() {\n    2\n}\n",
+    )
+    .commit("comments");
+    let mut h = Harness::open(&fx, 160, 30);
+    let screen = h.screen();
+    assert!(screen.contains("new 9"), "{screen}");
+}
+
 /// The mode badge at the start of the status line.
 fn badge(h: &mut Harness) -> String {
     let screen = h.screen();

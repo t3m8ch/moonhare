@@ -163,7 +163,7 @@ impl Session {
             side,
             start,
             end,
-            snapshot,
+            anchor,
         } = &c.target
         else {
             return None;
@@ -174,7 +174,7 @@ impl Session {
         if *path != file.path {
             return None;
         }
-        let at = crate::comments::locate(loaded.lines(*side), *start, snapshot)?;
+        let at = crate::comments::locate(loaded.lines(*side), *start, anchor)?;
         Some((*side, at, at + (end - start)))
     }
 
@@ -335,14 +335,14 @@ impl Session {
         let (Some(file), Some(Ok(loaded))) = (self.files.get(self.selected), &self.loaded) else {
             return;
         };
-        let snapshot = loaded.lines(side)[start..=end].to_vec();
+        let anchor = crate::comments::Anchor::capture(loaded.lines(side), start, end);
         self.editor = Some(Editor {
             target: Target::Lines {
                 path: file.path.clone(),
                 side,
                 start,
                 end,
-                snapshot,
+                anchor,
             },
             text: String::new(),
             insert: false,

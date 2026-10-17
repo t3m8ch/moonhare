@@ -17,7 +17,7 @@ pub enum Target {
         side: Side,
         start: usize,
         end: usize,
-        snapshot: Vec<String>,
+        anchor: Anchor,
     },
     File {
         path: String,
@@ -50,21 +50,72 @@ pub struct Comment {
     pub state: State,
 }
 
-/// Where the code a line Comment was written on is in `lines` now: the stored
-/// place when the snapshot still sits there, else the nearest place that holds
-/// it, else nowhere.
-pub fn locate(lines: &[String], start: usize, snapshot: &[String]) -> Option<usize> {
+/// Lines of surroundings kept on each side of a snapshot.
+const CONTEXT: usize = 2;
+
+/// What a line Comment remembers of its code, to find it again after the
+/// lines moved: the code itself, its neighbours, and whether the code was the
+/// only place in the file that looked like that.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Anchor {
+    pub snapshot: Vec<String>,
+    pub before: Vec<String>,
+    pub after: Vec<String>,
+    pub unique: bool,
+}
+
+fn occurrences(lines: &[String], snapshot: &[String]) -> Vec<usize> {
     let len = snapshot.len();
     if len == 0 || len > lines.len() {
-        return None;
-    }
-    let at = |i: usize| lines[i..i + len] == *snapshot;
-    if start + len <= lines.len() && at(start) {
-        return Some(start);
+        return vec![];
     }
     (0..=lines.len() - len)
-        .filter(|&i| at(i))
-        .min_by_key(|&i| i.abs_diff(start))
+        .filter(|&i| lines[i..i + len] == *snapshot)
+        .collect()
+}
+
+impl Anchor {
+    /// The anchor of lines `start..=end` of `lines`.
+    pub fn capture(lines: &[String], start: usize, end: usize) -> Anchor {
+        let snapshot = lines[start..=end].to_vec();
+        Anchor {
+            before: lines[start.saturating_sub(CONTEXT)..start].to_vec(),
+            after: lines[end + 1..(end + 1 + CONTEXT).min(lines.len())].to_vec(),
+            unique: occurrences(lines, &snapshot).len() == 1,
+            snapshot,
+        }
+    }
+
+    fn surroundings_match(&self, lines: &[String], at: usize) -> bool {
+        let end = at + self.snapshot.len();
+        let before = &lines[at.saturating_sub(self.before.len())..at];
+        let after = &lines[end..(end + self.after.len()).min(lines.len())];
+        before == self.before && after == self.after
+    }
+}
+
+/// Where the code of a line Comment written at `start` is in `lines` now.
+/// Code that was one of a kind is found wherever it went. Code that looked
+/// like other lines (`}`, a blank) is found only where its neighbours match
+/// too, and a doubtful match counts as no match: such a Comment is hidden
+/// rather than hung under the wrong line.
+pub fn locate(lines: &[String], start: usize, anchor: &Anchor) -> Option<usize> {
+    let found = occurrences(lines, &anchor.snapshot);
+    let in_context: Vec<usize> = found
+        .iter()
+        .copied()
+        .filter(|&i| anchor.surroundings_match(lines, i))
+        .collect();
+    match in_context[..] {
+        [one] => return Some(one),
+        [_, ..] if in_context.contains(&start) => return Some(start),
+        [_, ..] => return None,
+        [] => {}
+    }
+    match found[..] {
+        [one] if anchor.unique => Some(one),
+        _ => None,
+    }
 }
 
 /// All Comments of a Review, in the order they were written, kept in the
@@ -150,23 +201,29 @@ impl Comments {
 
 impl Comment {
     fn encode(&self) -> String {
-        let (kind, path, side, start, end, snapshot) = match &self.target {
+        let none = || [String::new(), String::new(), String::new(), String::new()];
+        let (kind, path, side, start, end, anchor) = match &self.target {
             Target::Lines {
                 path,
                 side,
                 start,
                 end,
-                snapshot,
+                anchor,
             } => (
                 "L",
                 path.as_str(),
                 if *side == Side::Old { "o" } else { "n" },
                 *start,
                 *end,
-                snapshot.join("\n"),
+                [
+                    anchor.snapshot.join("\n"),
+                    anchor.before.join("\n"),
+                    anchor.after.join("\n"),
+                    if anchor.unique { "u" } else { "" }.to_string(),
+                ],
             ),
-            Target::File { path } => ("F", path.as_str(), "", 0, 0, String::new()),
-            Target::Range => ("R", "", "", 0, 0, String::new()),
+            Target::File { path } => ("F", path.as_str(), "", 0, 0, none()),
+            Target::Range => ("R", "", "", 0, 0, none()),
         };
         let clean = |t: &str| t.replace(['\0', FIELD], " ");
         [
@@ -178,14 +235,18 @@ impl Comment {
             start.to_string(),
             end.to_string(),
             clean(&self.text),
-            clean(&snapshot),
+            clean(&anchor[0]),
+            clean(&anchor[1]),
+            clean(&anchor[2]),
+            anchor[3].clone(),
         ]
         .join(&FIELD.to_string())
     }
 
     fn decode(record: &str) -> Option<Comment> {
         let f: Vec<&str> = record.split(FIELD).collect();
-        let [id, state, kind, path, side, start, end, text, snapshot] = f[..] else {
+        let [id, state, kind, path, side, start, end, text, snapshot, before, after, unique] = f[..]
+        else {
             return None;
         };
         let state = match state {
@@ -200,7 +261,21 @@ impl Comment {
                 side: if side == "o" { Side::Old } else { Side::New },
                 start: start.parse().ok()?,
                 end: end.parse().ok()?,
-                snapshot: snapshot.split('\n').map(str::to_string).collect(),
+                anchor: {
+                    let lines = |t: &str| -> Vec<String> {
+                        if t.is_empty() {
+                            vec![]
+                        } else {
+                            t.split('\n').map(str::to_string).collect()
+                        }
+                    };
+                    Anchor {
+                        snapshot: snapshot.split('\n').map(str::to_string).collect(),
+                        before: lines(before),
+                        after: lines(after),
+                        unique: unique == "u",
+                    }
+                },
             },
             "F" => Target::File {
                 path: path.to_string(),
