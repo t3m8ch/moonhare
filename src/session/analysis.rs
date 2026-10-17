@@ -127,6 +127,13 @@ impl Session {
     pub fn set_analyst(&mut self, analyst: Arc<dyn Analyst>) {
         self.analysis.analyst = Some(analyst.clone());
         self.analysis.head = self.range.head.clone();
+        // The pull request is context for the questions: wait for it.
+        if !self.forge_busy() {
+            self.start_analysis(analyst);
+        }
+    }
+
+    pub(super) fn start_analysis(&mut self, analyst: Arc<dyn Analyst>) {
         self.request_summary(false);
         self.start_grouping(analyst);
     }
@@ -333,6 +340,7 @@ impl Session {
 
     /// Collect the answers that arrived. Called by the event loop.
     pub fn tick(&mut self) {
+        self.forge_tick();
         self.take_diffs();
         self.diagram_tick();
         while let Ok(answer) = self.analysis.receiver.try_recv() {
@@ -397,6 +405,7 @@ impl Session {
 
     /// Block until every request to the Analyst has been answered.
     pub fn wait_for_analyst(&mut self) {
+        self.wait_for_forge();
         self.diagram_wait();
         while !self.analysis.pending.is_empty() {
             match self.analysis.receiver.recv() {

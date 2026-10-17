@@ -43,7 +43,7 @@ impl fmt::Display for ForgeError {
 
 impl std::error::Error for ForgeError {}
 
-pub trait Forge {
+pub trait Forge: Send + Sync {
     /// The pull request whose head is `branch`, if there is one.
     fn pull_request_for_branch(&self, branch: &str) -> Result<Option<PullRequest>, ForgeError>;
 

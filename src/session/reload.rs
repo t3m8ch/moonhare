@@ -164,13 +164,17 @@ pub(super) fn changes_per_commit(
     range: &Range,
     commits: &[Commit],
 ) -> Result<Vec<Vec<FileChange>>, GitError> {
-    let mut all = Vec::new();
-    for (i, commit) in commits.iter().enumerate() {
-        let parent = match i.checked_sub(1) {
-            Some(prev) => &commits[prev].sha,
-            None => &range.base,
-        };
-        all.push(review::file_changes(repo, parent, &commit.sha)?);
-    }
-    Ok(all)
+    let pairs: Vec<(&str, &str)> = commits
+        .iter()
+        .enumerate()
+        .map(|(i, commit)| {
+            let parent = match i.checked_sub(1) {
+                Some(prev) => &commits[prev].sha,
+                None => &range.base,
+            };
+            (parent.as_str(), commit.sha.as_str())
+        })
+        .collect();
+    // One git process for all the commits.
+    review::file_changes_of_pairs(repo, &pairs)
 }

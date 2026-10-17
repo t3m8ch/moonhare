@@ -46,8 +46,12 @@ const SNAPSHOT_DIRS: &[&str] = &["__snapshots__", "snapshots"];
 /// `head`, and move them behind the ordinary ones. A file keeps its place
 /// within its group.
 pub fn classify(repo: &Repo, base: &str, head: &str, files: &mut [ChangedFile]) {
-    let binary = binary_paths(repo, base, head);
-    let generated = generated_paths(repo, head, files);
+    // Two independent git processes: run them side by side.
+    let (binary, generated) = std::thread::scope(|scope| {
+        let binary = scope.spawn(|| binary_paths(repo, base, head));
+        let generated = generated_paths(repo, head, files);
+        (binary.join().expect("git worker panicked"), generated)
+    });
     for file in files.iter_mut() {
         file.mechanical = kind_of_path(&file.path)
             .or_else(|| binary.contains(&file.path).then_some(Kind::Binary))

@@ -148,6 +148,43 @@ impl Repo {
         }
     }
 
+    /// Like [`run_bytes`](Self::run_bytes), with `input` written to git's stdin.
+    pub(crate) fn run_bytes_stdin(&self, args: &[&str], input: &[u8]) -> Result<Vec<u8>, GitError> {
+        use std::io::Write;
+        use std::process::Stdio;
+        let mut child = Command::new("git")
+            .arg("--no-optional-locks")
+            .args(args)
+            .current_dir(&self.root)
+            .env("GIT_OPTIONAL_LOCKS", "0")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .map_err(|e| GitError(format!("cannot run git: {e}")))?;
+        // Git answers while it still reads: write on a thread of its own, or
+        // both sides could wait for the other to empty a full pipe.
+        let stdin = child.stdin.take();
+        let out = std::thread::scope(|scope| {
+            scope.spawn(move || {
+                if let Some(mut stdin) = stdin {
+                    let _ = stdin.write_all(input);
+                }
+            });
+            child.wait_with_output()
+        })
+        .map_err(|e| GitError(format!("cannot run git: {e}")))?;
+        if out.status.success() {
+            Ok(out.stdout)
+        } else {
+            Err(GitError(format!(
+                "git {} failed: {}",
+                args.join(" "),
+                String::from_utf8_lossy(&out.stderr).trim()
+            )))
+        }
+    }
+
     pub(crate) fn run(&self, args: &[&str]) -> Result<String, GitError> {
         self.run_bytes(args)
             .map(|b| String::from_utf8_lossy(&b).into_owned())

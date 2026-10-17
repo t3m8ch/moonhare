@@ -145,3 +145,41 @@ fn looks_up_a_pull_request_by_number_and_reports_an_unknown_one() {
     assert!(matches!(err, ForgeError::NotFound(_)), "{err:?}");
     assert!(err.to_string().contains("999"), "{err}");
 }
+
+#[test]
+fn a_gh_that_hangs_is_killed_and_reported_as_a_network_error() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("gh");
+    let pid_file = dir.path().join("pid");
+    fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\n[ \"$1\" = --probe ] && exit 0\necho $$ > '{}'\nexec sleep 100\n",
+            pid_file.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    while std::process::Command::new(&path)
+        .arg("--probe")
+        .status()
+        .is_err()
+    {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    let forge = GitHub::with_program(&path).with_timeout(std::time::Duration::from_millis(500));
+    let started = std::time::Instant::now();
+
+    let err = forge.pull_request_for_branch("feature").unwrap_err();
+
+    assert!(matches!(err, ForgeError::Network(_)), "{err:?}");
+    assert!(started.elapsed() < std::time::Duration::from_secs(10));
+    let pid = fs::read_to_string(&pid_file).unwrap().trim().to_string();
+    let alive = std::process::Command::new("kill")
+        .args(["-0", &pid])
+        .output()
+        .unwrap()
+        .status
+        .success();
+    assert!(!alive, "gh (pid {pid}) is still running");
+}
