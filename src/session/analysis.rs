@@ -76,7 +76,7 @@ impl Session {
     }
 
     /// Where the head of the Range is now: new commits move it.
-    fn refresh_head(&mut self) {
+    pub(super) fn refresh_head(&mut self) {
         if let Ok(head) = self.repo.commit_id(&self.analysis.head_rev) {
             self.analysis.head = head;
         }

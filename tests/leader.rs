@@ -381,7 +381,7 @@ fn help_scrolls_on_a_short_terminal() {
     let mut h = Harness::open(&fx, 100, 20);
     h.keys("?");
     assert!(!h.screen().contains("Ctrl-w w"));
-    h.keys("jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj");
+    h.keys(&"j".repeat(80));
     assert!(h.screen().contains("Ctrl-w w"));
 }
 

@@ -224,6 +224,7 @@ mod marks;
 mod mechanical_view;
 mod nav;
 mod overlay;
+mod reload;
 mod unreviewed;
 mod windows;
 
@@ -303,6 +304,7 @@ pub struct Session {
     pull_request: Option<PullRequest>,
     quit: bool,
     analysis: analysis::Analysis,
+    reload: reload::Reload,
     diagrams: diagram::Diagrams,
     groups: groups::Groups,
     explain: explain::Explain,
@@ -329,6 +331,7 @@ impl Session {
         };
         let reject_empty = *target != Target::Current;
         let mut session = Self::open_range(repo, range, reject_empty, explicit, width, height)?;
+        session.reload.target = Some(target.clone());
         session.analysis.head_rev = match target {
             Target::Current => "HEAD".to_string(),
             Target::Branch(name) => format!("refs/heads/{name}"),
@@ -411,14 +414,7 @@ impl Session {
         }
         let commits = repo.commits(&range.base, &range.head)?;
         let files = repo.changed_files(&range.base, &range.head)?;
-        let mut commit_changes = Vec::new();
-        for (i, commit) in commits.iter().enumerate() {
-            let parent = match i.checked_sub(1) {
-                Some(prev) => &commits[prev].sha,
-                None => &range.base,
-            };
-            commit_changes.push(review::file_changes(&repo, parent, &commit.sha)?);
-        }
+        let commit_changes = reload::changes_per_commit(&repo, &range, &commits)?;
         // A Review belongs to the branch name, or to the explicit range string.
         let review_name = match explicit_range {
             Some(text) => format!("range {text}"),
@@ -474,6 +470,7 @@ impl Session {
             pull_request: None,
             quit: false,
             analysis: Default::default(),
+            reload: Default::default(),
             diagrams: Default::default(),
             groups: Default::default(),
             explain: Default::default(),
@@ -485,10 +482,22 @@ impl Session {
 
     /// Time passing without input; opens the which-key window once a key
     /// prefix has been waiting long enough.
-    pub fn elapse(&mut self, elapsed: std::time::Duration) {
+    /// Returns whether what is drawn may have changed.
+    pub fn elapse(&mut self, elapsed: std::time::Duration) -> bool {
+        let mut changed = false;
         if self.pending.is_some() {
+            let before = self.pending_for;
             self.pending_for += elapsed;
+            let delay = crate::hints::WHICH_KEY_DELAY;
+            changed = before < delay && self.pending_for >= delay;
         }
+        self.poll_reload(elapsed) || changed
+    }
+
+    /// Time passing, for the watch on the branch only. The real loop calls it
+    /// also between input events, so that typing never starves the watch.
+    pub fn watch(&mut self, elapsed: std::time::Duration) -> bool {
+        self.poll_reload(elapsed)
     }
 
     /// Draw with truecolor (exact RGB) instead of the 256-colour palette.
@@ -966,6 +975,7 @@ impl Session {
             KeyCode::Char('a') if !ctrl => self.show_whole_range(),
             KeyCode::Char('m') if !ctrl => self.toggle_mark(),
             KeyCode::Char('M') if !ctrl => self.mark_and_advance(),
+            KeyCode::Char('R') if !ctrl => self.reload(),
             KeyCode::Char(c @ ('c' | 'C' | 'v' | 'x' | 'o')) if !ctrl => self.comment_key(c),
             KeyCode::Esc if self.visual.is_some() => self.visual = None,
             KeyCode::Enter if !ctrl => self.expand_mechanical(),
@@ -1094,6 +1104,7 @@ impl Session {
             "q" | "q!" | "quit" => self.quit = true,
             "" => {}
             "reset" => self.reset_review(),
+            "reload" => self.reload(),
             "comment" => self.comment_on_range(),
             "comments clear" => {
                 self.confirm_clear = true;
@@ -1659,6 +1670,7 @@ impl Session {
         };
         let text = self.groups_status(&text);
         let text = self.analysis_status(&text);
+        let text = self.reload_status(&text);
         let text = self.explain_status(&text);
         let text = match &self.warning {
             Some(w) => format!("{text}  {w}"),
