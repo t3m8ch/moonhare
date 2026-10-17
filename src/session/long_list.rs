@@ -13,6 +13,8 @@ use rounds::{ListRow, Span};
 pub(super) struct State {
     /// The list row at the top of the scrolling part when last drawn.
     top: Cell<usize>,
+    /// The last `/` search, which `n` and `N` repeat.
+    query: Option<String>,
 }
 
 /// The part of the commit list that is on screen.
@@ -32,11 +34,68 @@ impl Session {
             return false;
         }
         match key.code {
+            KeyCode::Char('/') if !ctrl => self.mode = Mode::Search(String::new()),
             KeyCode::Char('d') if ctrl => self.step_list(self.list_step() as isize),
             KeyCode::Char('u') if ctrl => self.step_list(-(self.list_step() as isize)),
             _ => return false,
         }
         true
+    }
+
+    /// Keys while a `/` search is being typed.
+    pub(super) fn search_key(&mut self, key: KeyEvent) {
+        let Mode::Search(buf) = &mut self.mode else {
+            return;
+        };
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Backspace => {
+                if buf.pop().is_none() {
+                    self.mode = Mode::Normal;
+                }
+            }
+            KeyCode::Enter => {
+                let query = std::mem::take(buf);
+                self.mode = Mode::Normal;
+                if !query.is_empty() {
+                    self.list.query = Some(query);
+                }
+                self.jump_to_match(true);
+            }
+            KeyCode::Char(c) if !key.modifiers.contains(KeyModifiers::CONTROL) => buf.push(c),
+            _ => {}
+        }
+    }
+
+    /// Whether commit `index` answers the search `query` (lower case): by its
+    /// number, or by its sha or its subject.
+    fn commit_matches(&self, index: usize, query: &str) -> bool {
+        (index + 1).to_string() == query
+    }
+
+    /// Move the cursor to the next (or previous) commit that answers the last
+    /// search, wrapping around the ends of the list.
+    pub(super) fn jump_to_match(&mut self, forward: bool) {
+        let Some(query) = self.list.query.clone() else {
+            self.message = Some("No previous search".into());
+            return;
+        };
+        let lower = query.to_lowercase();
+        let hits: Vec<usize> = (0..self.commits.len())
+            .filter(|&i| self.commit_matches(i, &lower))
+            .collect();
+        let cursor = self.commit_cursor;
+        let target = if forward {
+            hits.iter().position(|&i| i + 1 > cursor).or(Some(0))
+        } else {
+            hits.iter().rposition(|&i| i + 1 < cursor).or(hits.len().checked_sub(1))
+        };
+        let Some(k) = target.filter(|_| !hits.is_empty()) else {
+            self.message = Some(format!("No match: {query}"));
+            return;
+        };
+        self.commit_cursor = hits[k] + 1;
+        self.message = Some(format!("/{query} [{}/{}]", k + 1, hits.len()));
     }
 
     /// How many lines the scrolling part of the list has under the "Весь

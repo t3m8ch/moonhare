@@ -235,6 +235,8 @@ mod windows;
 enum Mode {
     Normal,
     Command(String),
+    /// Typing a `/` search in the commit list.
+    Search(String),
 }
 
 /// Scope ends and Comments revision, with the ids worked out for them.
@@ -885,6 +887,10 @@ impl Session {
     }
 
     fn on_key(&mut self, key: KeyEvent) {
+        if matches!(self.mode, Mode::Search(_)) {
+            self.search_key(key);
+            return;
+        }
         if let Mode::Command(buf) = &mut self.mode {
             match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,

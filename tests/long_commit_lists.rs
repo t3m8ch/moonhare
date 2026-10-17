@@ -166,3 +166,16 @@ fn clicks_under_the_pinned_header_hit_the_right_rows_and_the_header_jumps_to_its
     assert_eq!(screen.matches("Round 2").count(), 1, "{screen}");
     assert!(screen.contains("step 61"), "{screen}");
 }
+
+#[test]
+fn slash_finds_a_commit_by_its_number() {
+    let fx = long_branch(100);
+    let mut h = Harness::open(&fx, 160, 60);
+    h.keys("<Tab>/73<CR>");
+    assert_eq!(title(&h.screen()), "Commits 73/100");
+    assert!(h.screen().contains("step 73"), "{}", h.screen());
+    // Searching moves the cursor only: the Scope stays the whole Range.
+    let screen = h.screen();
+    let range = screen.lines().find(|l| l.contains("▣ Весь Range")).unwrap();
+    assert!(range.contains('●'), "{screen}");
+}
