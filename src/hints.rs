@@ -82,6 +82,13 @@ pub const BINDINGS: &[Binding] = &[
     b(Some(CTRL_W), "l", "окно справа (дифф)"),
     b(Some(CTRL_W), "w", "следующее окно (коммиты → файлы → дифф)"),
     b(Some(CTRL_W), "W", "предыдущее окно"),
+    b(
+        Some(CTRL_W),
+        "<",
+        "сайдбар уже (:sidebar N; тянуть границу мышью)",
+    ),
+    b(Some(CTRL_W), ">", "сайдбар шире"),
+    b(Some(CTRL_W), "=", "ширина сайдбара по умолчанию"),
 ];
 
 /// Keys without a prefix, listed in the help only.
@@ -222,7 +229,8 @@ pub fn hint_line(context: Context) -> String {
     match context {
         Context::Diff => {
             "j/k: строки  ]h/[h: хунки  Space: команды  Ctrl-w + h/j/k/l: окна  ?: справка  \
-                          Ctrl-d/u: прокрутка  gg/G: начало/конец  ]f/[f: файлы"
+                          Ctrl-d/u: прокрутка  gg/G: начало/конец  ]f/[f: файлы  \
+                          Ctrl-w </>/=: сайдбар"
                 .into()
         }
         Context::Commits => "j/k: коммиты  Enter: срез  v: выделение  a: весь диапазон  \
@@ -236,7 +244,9 @@ pub fn hint_line(context: Context) -> String {
             "-- VISUAL --  j/k: расширить  Enter: срез  v: снять  Esc: отмена".into()
         }
         Context::Pending(CTRL_W) => {
-            "Ctrl-w + h/j/k/l: окна  Ctrl-w + w/W: следующее/предыдущее окно  Esc: отмена".into()
+            "Ctrl-w + h/j/k/l: окна  Ctrl-w + w/W: следующее/предыдущее окно  \
+                Ctrl-w + </>: ширина сайдбара  Ctrl-w + =: сброс  Esc: отмена"
+                .into()
         }
         Context::Pending(prefix) => {
             let name = prefix_name(prefix);

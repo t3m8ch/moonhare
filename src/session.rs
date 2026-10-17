@@ -230,6 +230,7 @@ mod overlay_mouse;
 mod prompt;
 mod reload;
 mod rounds;
+mod sidebar;
 mod unreviewed;
 mod windows;
 
@@ -296,6 +297,8 @@ pub struct Session {
     layout_override: Option<DiffLayout>,
     /// The Reviewer's `Space e` choice; it beats the width-based default.
     sidebar_manual: Option<bool>,
+    /// The width the Reviewer dragged or typed; `None` is the default.
+    sidebar_custom: Option<u16>,
     /// Emit exact RGB instead of the 256-colour palette.
     truecolor: bool,
     mode: Mode,
@@ -480,6 +483,7 @@ impl Session {
             size: (width, height),
             layout_override: None,
             sidebar_manual: None,
+            sidebar_custom: None,
             truecolor: false,
             mode: Mode::Normal,
             pending: None,
@@ -578,7 +582,9 @@ impl Session {
 
     fn sidebar_width(&self) -> u16 {
         if self.sidebar_visible() {
-            SIDEBAR_WIDTH.min(self.size.0)
+            self.sidebar_custom
+                .map_or(SIDEBAR_WIDTH, |w| self.custom_sidebar_width(w))
+                .min(self.size.0)
         } else {
             0
         }
@@ -1171,6 +1177,9 @@ impl Session {
             "reset" => self.reset_review(),
             "reload" => self.reload(),
             "comment" => self.comment_on_range(),
+            other if other.split_whitespace().next() == Some("sidebar") => {
+                self.sidebar_command(other["sidebar".len()..].trim())
+            }
             "comments clear" => {
                 self.confirm_clear = true;
                 self.message = Some("Delete all Comments for good? y / n".into());
@@ -1203,6 +1212,7 @@ impl Session {
         }
         if self.file_picker_mouse(mouse)
             || self.picker_mouse(mouse)
+            || self.sidebar_mouse(mouse)
             || self.diff_mouse(mouse)
             || self.list_mouse(mouse)
         {
