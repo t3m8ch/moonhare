@@ -85,3 +85,59 @@ fn reload_without_news_says_so() {
     h.keys(":reload<CR>");
     assert!(h.screen().contains("Nothing to reload"), "{}", h.screen());
 }
+
+/// Mark every file of the Range (README.md, src/a.rs, src/b.rs) in `h`.
+fn mark_everything(h: &mut Harness) {
+    h.keys("m]fm]fm");
+    assert!(h.screen().contains("reviewed 3/3"), "{}", h.screen());
+}
+
+#[test]
+fn an_amend_that_leaves_the_content_alone_keeps_the_marks() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    mark_everything(&mut h);
+
+    fx.git(&["commit", "-q", "--amend", "-m", "reword a"]);
+    h.wait(LATER);
+    h.keys(":reload<CR>");
+
+    let screen = h.screen();
+    assert!(screen.contains("reword a"), "{screen}");
+    assert!(screen.contains("reviewed 3/3"), "{screen}");
+}
+
+#[test]
+fn squashing_the_commits_keeps_the_marks_of_files_whose_final_content_is_the_same() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    mark_everything(&mut h);
+
+    fx.git(&["reset", "-q", "--soft", "main"]);
+    fx.git(&["commit", "-q", "-m", "squashed"]);
+    h.wait(LATER);
+    h.keys(":reload<CR>");
+
+    let screen = h.screen();
+    assert!(screen.contains("squashed"), "{screen}");
+    assert!(screen.contains("Commits 1"), "{screen}");
+    assert!(screen.contains("reviewed 3/3"), "{screen}");
+}
+
+#[test]
+fn a_rebase_onto_a_moved_base_keeps_the_marks_of_untouched_files() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    mark_everything(&mut h);
+
+    fx.checkout("main");
+    fx.write("docs.md", "docs\n").commit("docs on main");
+    fx.checkout("feature");
+    fx.git(&["rebase", "-q", "main"]);
+    h.wait(LATER);
+    h.keys(":reload<CR>");
+
+    let screen = h.screen();
+    assert!(screen.contains("reviewed 3/3"), "{screen}");
+    assert!(!screen.contains("docs.md"), "{screen}");
+}

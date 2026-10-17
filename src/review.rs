@@ -4,7 +4,7 @@
 //! the blob ids it turns one version into another), not by the commit that
 //! carries it (ADR 0003).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
 use crate::git::{GitError, Repo};
@@ -80,6 +80,19 @@ pub fn blobs(change: &FileChange) -> impl Iterator<Item = &str> {
 /// What identifies a File change: its path and the blobs on both sides.
 type Key = (String, String, String);
 
+/// A mark seen as an edge of the file's history graph: the version before,
+/// the version after, and when it was made (later is larger).
+type Edge = (String, String, u64);
+
+/// What a walk along marked edges found.
+struct Walk {
+    /// Versions of the file the Reviewer has reviewed up to, starting from
+    /// the base of the Scope.
+    reached: HashSet<String>,
+    /// The marks followed, as (path, old, new).
+    edges: Vec<(String, Edge)>,
+}
+
 /// Which File changes are Reviewed, kept in a file inside the clone's `.git`
 /// so that it outlives the process and is never shared with other clones.
 #[derive(Debug)]
@@ -88,7 +101,11 @@ pub struct Review {
     id: String,
     /// `.git/moonhare/reviews/<id>`.
     dir: PathBuf,
-    marked: HashSet<Key>,
+    /// The marks and when each was made (a counter, so later is larger).
+    marked: HashMap<Key, u64>,
+    next: u64,
+    /// The same marks by path, to follow them from version to version.
+    by_path: HashMap<String, Vec<Edge>>,
 }
 
 /// 128 bits of FNV-1a over `text`, as 32 hex digits.
@@ -118,35 +135,63 @@ impl Review {
             .join("moonhare")
             .join("reviews")
             .join(&id);
-        let mut marked = HashSet::new();
-        if let Ok(saved) = std::fs::read(dir.join("marks")) {
+        let mut review = Review {
+            id,
+            dir,
+            marked: HashMap::new(),
+            next: 0,
+            by_path: HashMap::new(),
+        };
+        if let Ok(saved) = std::fs::read(review.dir.join("marks")) {
             for record in saved.split(|&b| b == 0).filter(|r| !r.is_empty()) {
                 let record = String::from_utf8_lossy(record);
                 let mut fields = record.splitn(3, ' ');
                 if let (Some(old), Some(new), Some(path)) =
                     (fields.next(), fields.next(), fields.next())
                 {
-                    marked.insert((path.to_string(), old.to_string(), new.to_string()));
+                    review.insert((path.to_string(), old.to_string(), new.to_string()));
                 }
             }
         }
-        Ok(Review { id, dir, marked })
+        Ok(review)
     }
 
     pub fn is_marked(&self, change: &FileChange) -> bool {
-        self.marked.contains(&Self::key(change))
+        self.marked.contains_key(&Self::key(change))
+    }
+
+    /// Record a mark as the latest one.
+    fn insert(&mut self, key: Key) {
+        self.remove(&key);
+        self.next += 1;
+        let (path, old, new) = key.clone();
+        self.by_path
+            .entry(path)
+            .or_default()
+            .push((old, new, self.next));
+        self.marked.insert(key, self.next);
+    }
+
+    fn remove(&mut self, key: &Key) {
+        if self.marked.remove(key).is_some() {
+            if let Some(edges) = self.by_path.get_mut(&key.0) {
+                edges.retain(|(old, new, _)| *old != key.1 || *new != key.2);
+            }
+        }
     }
 
     fn save(&self) -> Result<(), String> {
         let mut data = Vec::new();
+        // In the order the marks were made, so that it survives a restart.
         let mut records: Vec<_> = self.marked.iter().collect();
-        records.sort();
-        for (path, old, new) in records {
+        records.sort_by_key(|(_, made)| **made);
+        for ((path, old, new), _) in records {
             data.extend(format!("{old} {new} {path}").bytes());
             data.push(0);
         }
         std::fs::create_dir_all(&self.dir).map_err(|e| io_error("cannot save the Review", e))?;
-        let tmp = self.dir.join("marks.tmp");
+        // Two running instances must not write the same temporary file.
+        let tmp = self.dir.join(format!("marks.{}.tmp", std::process::id()));
         std::fs::write(&tmp, data).map_err(|e| io_error("cannot save the Review", e))?;
         std::fs::rename(&tmp, self.dir.join("marks"))
             .map_err(|e| io_error("cannot save the Review", e))
@@ -169,14 +214,27 @@ impl Review {
     /// Mark `changes` Reviewed and save, pinning their blobs first.
     pub fn mark(&mut self, repo: &Repo, changes: &[FileChange]) -> Result<(), String> {
         self.pin(repo, changes)?;
-        self.marked.extend(changes.iter().map(Self::key));
+        // Oldest first, so the newest change is the latest mark.
+        for change in changes.iter().rev() {
+            self.insert(Self::key(change));
+        }
         self.save()
     }
 
     /// Take the marks of `changes` back and save. The pins stay until a reset.
+    /// If the file still counts as Reviewed (by marks of an earlier shape of
+    /// the history), those marks go too, or the mark could not be taken back.
     pub fn unmark(&mut self, changes: &[FileChange]) -> Result<(), String> {
         for c in changes {
-            self.marked.remove(&Self::key(c));
+            self.remove(&Self::key(c));
+        }
+        while let Some(walk) = self.walk(changes).filter(|w| Self::reaches_head(changes, w)) {
+            if walk.edges.is_empty() {
+                break;
+            }
+            for (path, (old, new, _)) in walk.edges {
+                self.remove(&(path, old, new));
+            }
         }
         self.save()
     }
@@ -184,6 +242,7 @@ impl Review {
     /// Forget every mark and release every pin of the Review.
     pub fn reset(&mut self, repo: &Repo) -> Result<(), String> {
         self.marked.clear();
+        self.by_path.clear();
         match std::fs::remove_dir_all(&self.dir) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
@@ -208,12 +267,66 @@ impl Review {
         )
     }
 
-    pub fn state(&self, changes: &[FileChange]) -> Mark {
-        let done = changes.iter().filter(|c| self.is_marked(c)).count();
-        match done {
-            0 => Mark::Unreviewed,
-            n if n == changes.len() => Mark::Reviewed,
-            _ => Mark::Partial,
+    /// Follow the marks from the version at the base of `changes` (newest
+    /// first). `None` when there are no changes.
+    fn walk(&self, changes: &[FileChange]) -> Option<Walk> {
+        let base = &changes.last()?.old_blob;
+        // A renamed file was marked under each of its names.
+        let paths: HashSet<&str> = changes
+            .iter()
+            .flat_map(|c| [Some(c.path.as_str()), c.old_path.as_deref()])
+            .flatten()
+            .collect();
+        let mut reached: HashSet<String> = HashSet::from([base.clone()]);
+        let mut edges = Vec::new();
+        let mut open = vec![base.clone()];
+        while let Some(version) = open.pop() {
+            for path in &paths {
+                for edge in self.by_path.get(*path).into_iter().flatten() {
+                    if edge.0 == version {
+                        edges.push((path.to_string(), edge.clone()));
+                        if reached.insert(edge.1.clone()) {
+                            open.push(edge.1.clone());
+                        }
+                    }
+                }
+            }
         }
+        Some(Walk { reached, edges })
+    }
+
+    fn reaches_head(changes: &[FileChange], walk: &Walk) -> bool {
+        changes
+            .first()
+            .is_some_and(|newest| walk.reached.contains(&newest.new_blob))
+    }
+
+    /// `changes` (newest first) are Reviewed when the marks lead from the
+    /// version before the oldest to the version after the newest. That holds
+    /// when every change is marked, and also when the history was rewritten
+    /// (squashed, split, rebased) but the Reviewer has been through the same
+    /// versions.
+    pub fn state(&self, changes: &[FileChange]) -> Mark {
+        let Some(walk) = self.walk(changes) else {
+            return Mark::Unreviewed;
+        };
+        if Self::reaches_head(changes, &walk) {
+            Mark::Reviewed
+        } else if !walk.edges.is_empty() || changes.iter().any(|c| self.is_marked(c)) {
+            Mark::Partial
+        } else {
+            Mark::Unreviewed
+        }
+    }
+
+    /// The version of the file the Reviewer last reviewed up to, in the
+    /// scope of `changes` (newest first): the target of the latest mark on
+    /// the way from the base. `None` when the Reviewer has not got past it.
+    pub fn seen_blob(&self, changes: &[FileChange]) -> Option<String> {
+        let walk = self.walk(changes)?;
+        walk.edges
+            .into_iter()
+            .max_by_key(|(_, (_, _, made))| *made)
+            .map(|(_, (_, new, _))| new)
     }
 }
