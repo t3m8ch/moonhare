@@ -159,12 +159,15 @@ fn prompt_save_without_a_path_stays_out_of_the_working_copy() {
     let before = fx.state();
     let mut h = Harness::open(&fx, 160, 40);
     h.keys("Cifresh one<Esc><CR>:prompt save<CR>");
-    let screen = h.screen();
-    let saved = screen
-        .split_whitespace()
-        .find(|w| w.ends_with(".md") && w.starts_with('/'))
-        .unwrap_or_else(|| panic!("no path in the message:\n{screen}"));
-    assert!(std::fs::read_to_string(saved)
+    // The file sits in the Review's directory inside `.git`.
+    let reviews = fx.path().join(".git/moonhare/reviews");
+    let saved: Vec<_> = std::fs::read_dir(&reviews)
+        .unwrap()
+        .map(|d| d.unwrap().path().join("prompt-1.md"))
+        .filter(|p| p.exists())
+        .collect();
+    assert_eq!(saved.len(), 1, "{saved:?}");
+    assert!(std::fs::read_to_string(&saved[0])
         .unwrap()
         .contains("fresh one"));
     assert_eq!(fx.state(), before);
