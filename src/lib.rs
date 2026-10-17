@@ -2,6 +2,7 @@
 
 pub mod analyst;
 pub mod claude;
+pub mod clipboard;
 pub mod color;
 pub mod comments;
 pub mod diff;
@@ -11,7 +12,9 @@ pub mod git;
 pub mod github;
 pub mod hints;
 pub mod mechanical;
+pub mod prompt;
 pub mod review;
+pub mod rounds;
 pub mod session;
 pub mod special;
 pub mod viewport;

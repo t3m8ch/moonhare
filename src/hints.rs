@@ -10,6 +10,9 @@ pub const WHICH_KEY_DELAY: Duration = Duration::from_millis(300);
 /// The internal name of the `Ctrl-w` prefix.
 pub const CTRL_W: char = '\u{17}';
 
+/// The internal name of the `Space p` prefix (Prompt keys).
+pub const SPACE_P: char = '\u{10}';
+
 /// One key (or the last key of a chain).
 pub struct Binding {
     /// The prefix key that must come first, if any.
@@ -28,10 +31,15 @@ pub const BINDINGS: &[Binding] = &[
     b(Some(' '), "e", "показать/скрыть сайдбар"),
     b(Some(' '), "f", "выбор файла"),
     b(Some(' '), "g", "сайдбар: группы / дерево каталогов"),
+    b(Some(' '), "p", "промпт: копировать / показать (подменю)"),
     b(Some(' '), "s", "саммари аналитика"),
     b(Some(' '), "u", "фильтр: только непросмотренные файлы"),
     b(Some(' '), "x", "аналитик: объяснить хунк под курсором"),
     b(Some(' '), "X", "аналитик: объяснить файл под курсором"),
+    b(Some(SPACE_P), "p", "скопировать промпт из всех открытых комментариев"),
+    b(Some(SPACE_P), "f", "скопировать промпт из открытых комментариев файла"),
+    b(Some(SPACE_P), "c", "скопировать промпт из комментария под курсором"),
+    b(Some(SPACE_P), "s", "показать промпт в оверлее (ничего не отправляется)"),
     b(Some('g'), "g", "в начало файла (Ngg: к строке N)"),
     b(Some(']'), "c", "следующий коммит"),
     b(Some(']'), "f", "следующий файл"),
@@ -108,7 +116,7 @@ pub fn help_lines() -> Vec<String> {
     }
     for x in BINDINGS {
         let chain = match x.prefix {
-            Some(p @ (' ' | CTRL_W)) => format!("{} {}", prefix_name(p), x.key),
+            Some(p @ (' ' | CTRL_W | SPACE_P)) => format!("{} {}", prefix_name(p), x.key),
             Some(p) => format!("{p}{}", x.key),
             None => x.key.to_string(),
         };
@@ -172,6 +180,7 @@ pub fn prefix_name(prefix: char) -> String {
     match prefix {
         ' ' => "Space".into(),
         CTRL_W => "Ctrl-w".into(),
+        SPACE_P => "Space p".into(),
         c => c.to_string(),
     }
 }
