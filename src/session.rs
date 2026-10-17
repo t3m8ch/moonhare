@@ -138,11 +138,7 @@ impl Loaded {
             }
             by_line
         };
-        let width = |line: &String| {
-            line.chars()
-                .map(|c| if c == '\t' { TAB_WIDTH } else { 1 })
-                .sum::<usize>()
-        };
+        let width = |line: &String| line.chars().map(copy::cell_width).sum::<usize>();
         let max_width = (diff.old_lines.iter().chain(&diff.new_lines))
             .map(width)
             .max()
@@ -1857,7 +1853,16 @@ fn code_cells(
         if ch == '\t' {
             cells.extend(std::iter::repeat_n((' ', style), TAB_WIDTH));
         } else {
-            cells.push((ch, style));
+            // A wide character takes its cell and one more, which is only
+            // a placeholder; a zero-width one has no cell.
+            match copy::cell_width(ch) {
+                0 => {}
+                1 => cells.push((ch, style)),
+                n => {
+                    cells.push((ch, style));
+                    cells.extend(std::iter::repeat_n((copy::CONTINUATION, style), n - 1));
+                }
+            }
         }
     }
     cells
@@ -1877,6 +1882,9 @@ fn draw_cells(buf: &mut Buffer, x: u16, y: u16, width: usize, cells: &[(char, St
         cells.len()
     };
     for (i, (ch, style)) in cells.iter().take(shown).enumerate() {
+        if *ch == copy::CONTINUATION {
+            continue;
+        }
         buf.set_string(x + i as u16, y, ch.to_string(), *style);
     }
     if cut && width > 0 {

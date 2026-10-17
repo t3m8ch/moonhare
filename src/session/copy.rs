@@ -59,13 +59,31 @@ pub(super) struct Note {
     pub(super) text: String,
 }
 
+/// The cell that follows a wide character in a row of cells.
+pub(super) const CONTINUATION: char = '\0';
+
+/// Cells a character takes: a tab [`TAB_WIDTH`], a wide one (CJK, emoji) two,
+/// a combining mark none.
+pub(super) fn cell_width(c: char) -> usize {
+    if c == '\t' {
+        TAB_WIDTH
+    } else {
+        unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
+    }
+}
+
+/// Cells a text takes.
+pub(super) fn text_width(text: &str) -> usize {
+    text.chars().map(cell_width).sum()
+}
+
 /// The part of `text` inside the cell columns `from..to`; a tab fills
 /// [`TAB_WIDTH`] cells and is kept when any of them is inside.
 pub(super) fn cut(text: &str, from: usize, to: usize) -> String {
     let mut cell = 0;
     let mut out = String::new();
     for c in text.chars() {
-        let width = if c == '\t' { TAB_WIDTH } else { 1 };
+        let width = cell_width(c);
         if cell < to && cell + width > from {
             out.push(c);
         }
@@ -148,7 +166,7 @@ pub(super) fn word_span(text: &str, col: usize) -> Option<(usize, usize)> {
     let mut cells = Vec::new();
     let mut cell = 0;
     for c in text.chars() {
-        let width = if c == '\t' { TAB_WIDTH } else { 1 };
+        let width = cell_width(c);
         cells.push((c, cell, cell + width));
         cell += width;
     }

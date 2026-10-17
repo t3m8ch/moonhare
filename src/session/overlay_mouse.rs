@@ -4,7 +4,7 @@
 
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
-use super::copy::word_span;
+use super::copy::{text_width, word_span};
 use super::mouse::SELECTION_BG;
 use super::*;
 
@@ -65,9 +65,17 @@ impl Session {
         self.render_base(&mut buf);
         (rect.y..rect.y + rect.height)
             .map(|y| {
-                (rect.x..rect.x + rect.width)
+                let mut row: Vec<String> = (rect.x..rect.x + rect.width)
                     .map(|x| buf[(x, y)].symbol().to_string())
-                    .collect()
+                    .collect();
+                // The cells after a wide character belong to it.
+                for i in 0..row.len() {
+                    let width = unicode_width::UnicodeWidthStr::width(row[i].as_str());
+                    for later in row.iter_mut().skip(i + 1).take(width.saturating_sub(1)) {
+                        later.clear();
+                    }
+                }
+                row
             })
             .collect()
     }
@@ -161,7 +169,7 @@ impl Session {
                 None => return,
             }
         } else {
-            (0, row.trim_end().chars().count())
+            (0, text_width(row.trim_end()))
         };
         if to <= from {
             return;
@@ -199,7 +207,7 @@ impl Session {
         let ((x0, y0), (x1, y1)) = selection.ends();
         for y in y0..=y1 {
             let row = &cells[(y - rect.y) as usize];
-            let text_end = rect.x as usize + row.concat().trim_end().chars().count();
+            let text_end = rect.x as usize + text_width(row.concat().trim_end());
             let from = if y == y0 { x0 } else { rect.x } as usize;
             let to = if y == y1 { x1 as usize + 1 } else { text_end };
             for x in from..to.min(text_end) {

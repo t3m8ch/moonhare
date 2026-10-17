@@ -394,3 +394,46 @@ fn a_drag_that_stays_in_one_cell_copies_nothing_but_a_one_character_word_still_d
     h.click(bx + 8, by).click(bx + 8, by);
     assert_eq!(h.copied(), vec!["{".to_string()]);
 }
+
+/// A line with a tab and wide characters: the tab is 4 cells, each of
+/// 日本語 is 2.
+fn wide_file() -> Fixture {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n").commit("initial");
+    fx.branch("feature");
+    fx.write("a.txt", "one\n\tfoo 日本語 bar\n")
+        .commit("change");
+    fx
+}
+
+#[test]
+fn columns_follow_tabs_and_wide_characters() {
+    let fx = wide_file();
+    let mut h = Harness::open(&fx, 100, 24);
+    let (x, y) = h.frame().find("foo").unwrap();
+    // The tab takes four cells before `foo`.
+    h.drag((x - 4, y), (x - 1, y));
+    assert_eq!(h.copied(), vec!["\t".to_string()]);
+    let (w, wy) = h.frame().find("日").unwrap();
+    // Two wide characters are four cells.
+    h.drag((w, wy), (w + 3, wy));
+    assert_eq!(h.copied(), vec!["日本".to_string()]);
+    // A cell of a wide character picks that character.
+    h.drag((w + 3, wy), (w + 5, wy));
+    assert_eq!(h.copied(), vec!["本語".to_string()]);
+}
+
+#[test]
+fn double_and_triple_clicks_measure_wide_characters_by_cells() {
+    let fx = wide_file();
+    let mut h = Harness::open(&fx, 100, 24);
+    let (w, y) = h.frame().find("日").unwrap();
+    h.click(w + 2, y).click(w + 2, y);
+    assert_eq!(h.copied(), vec!["日本語".to_string()]);
+    h.click(w + 2, y);
+    assert_eq!(h.copied(), vec!["\tfoo 日本語 bar".to_string()]);
+    // The highlight ends with the text: `bar` is the last cell it covers.
+    let (bx, by) = h.frame().find("bar").unwrap();
+    let plain = h.frame().bg_at(bx + 6, by);
+    assert_ne!(h.frame().bg_at(bx + 2, by), plain);
+}

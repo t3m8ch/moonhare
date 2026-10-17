@@ -3,7 +3,7 @@
 
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
-use super::copy::{cut, format, word_span, CopyLine, Mark};
+use super::copy::{cut, format, text_width, word_span, CopyLine, Mark};
 use super::*;
 
 /// A place in the diff: a view item and a cell column in its code.
@@ -370,11 +370,7 @@ impl Session {
                 continue;
             };
             let (code_x, limit) = self.code_columns(selection.half);
-            let text_end = line
-                .text
-                .chars()
-                .map(|c| if c == '\t' { TAB_WIDTH } else { 1 })
-                .sum();
+            let text_end = text_width(&line.text);
             let (start, end) = (start.max(self.hscroll), end.min(text_end));
             for col in start..end {
                 let x = code_x + col - self.hscroll;
