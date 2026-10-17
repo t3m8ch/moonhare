@@ -145,3 +145,24 @@ fn scrolling_keeps_the_range_row_and_the_current_round_header_on_top() {
     assert!(!screen.contains("Round 1"), "{screen}");
     assert!(screen.contains("step 120"), "{screen}");
 }
+
+#[test]
+fn clicks_under_the_pinned_header_hit_the_right_rows_and_the_header_jumps_to_its_round() {
+    let fx = two_rounds();
+    let mut h = Harness::open(&fx, 160, 60);
+    h.keys("<Tab>:scope 120<CR>");
+
+    let screen = h.screen();
+    let row = row_index(&screen, "step 118").expect("commit row") as u16;
+    h.click(8, row);
+    assert_eq!(title(&h.screen()), "Commits 118/120");
+
+    // The pinned header sits right under the Range row: a click on it goes to
+    // the first commit of Round 2 and brings the Round's own header back.
+    let range = row_index(&h.screen(), "▣ Весь Range").unwrap() as u16;
+    h.click(8, range + 1);
+    let screen = h.screen();
+    assert_eq!(title(&screen), "Commits 61/120");
+    assert_eq!(screen.matches("Round 2").count(), 1, "{screen}");
+    assert!(screen.contains("step 61"), "{screen}");
+}
