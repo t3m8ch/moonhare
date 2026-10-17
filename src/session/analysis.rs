@@ -57,6 +57,10 @@ impl Default for Analysis {
 pub const DEFAULT_LANGUAGE: &str = "ru";
 
 impl Session {
+    pub(super) fn summary_open(&self) -> bool {
+        self.analysis.overlay
+    }
+
     /// Hand the session an Analyst; it starts building the Summary at once,
     /// in the background, while the Reviewer reads the diff.
     pub fn set_analyst(&mut self, analyst: Arc<dyn Analyst>) {

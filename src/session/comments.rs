@@ -157,7 +157,7 @@ impl Session {
     }
 
     /// Where a line Comment of the displayed file is in its code now.
-    fn place_of(&self, c: &Comment) -> Option<(Side, usize, usize)> {
+    pub(super) fn place_of(&self, c: &Comment) -> Option<(Side, usize, usize)> {
         let Target::Lines {
             path,
             side,
@@ -631,6 +631,7 @@ impl Session {
             'x' => self.set_comment_state(State::Closed),
             'o' => self.set_comment_state(State::Open),
             'v' => {
+                self.mouse.selection = None;
                 self.visual = match self.visual {
                     Some(_) => None,
                     None => Some(self.vp.cursor),

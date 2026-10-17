@@ -187,9 +187,15 @@ impl Session {
     /// header goes to the first commit of its Round.
     pub(super) fn click_commits(&mut self, screen_row: u16) {
         let area = self.commits_area();
+        self.click_commit_box(area, area.height - 2, screen_row);
+    }
+
+    /// [`click_commits`](Self::click_commits) for a list box at `area` whose
+    /// rows have `inner_height` lines (the sidebar and the picker differ).
+    pub(super) fn click_commit_box(&mut self, area: Rect, inner_height: u16, screen_row: u16) {
         let row = (screen_row - area.y) as usize;
-        let frame = self.range_frame_in(area.width - 2, area.height - 2).len();
-        let capacity = self.list_capacity(area.width - 2, area.height - 2);
+        let frame = self.range_frame_in(area.width - 2, inner_height).len();
+        let capacity = self.list_capacity(area.width - 2, inner_height);
         // Row 0 is the border, row 1 the pinned "Весь Range" row, the Range
         // Comments hang under it.
         if row < 1 || row > capacity + 1 + frame {

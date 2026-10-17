@@ -63,6 +63,12 @@ fn main() -> ExitCode {
     session.set_analyst(std::sync::Arc::new(ClaudeAnalyst::new()));
 
     let mut terminal = ratatui::init();
+    // ratatui's hook restores the screen; the mouse capture is ours to release.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+        hook(info);
+    }));
     let _ = execute!(io::stdout(), EnableMouseCapture);
     let result = run(&mut terminal, &mut session);
     let _ = execute!(io::stdout(), DisableMouseCapture);
@@ -97,6 +103,7 @@ const ANALYST_POLL: Duration = Duration::from_millis(200);
 fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Result<()> {
     let mut redraw = true;
     let mut last = Instant::now();
+    let mut captured = true;
     while !session.should_quit() {
         if redraw {
             terminal.draw(|f| session.render(f.buffer_mut()))?;
@@ -126,12 +133,16 @@ fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Re
         let busy = session.analyst_busy();
         session.tick();
         redraw |= busy || session.analyst_busy();
-        if let Some(text) = session.take_clipboard() {
-            let mut out = io::stdout();
-            let _ = out.write_all(moonhare::clipboard::osc52(&text).as_bytes());
-            let _ = out.flush();
+        // `:set nomouse` hands the mouse back to the terminal.
+        if session.mouse_enabled() != captured {
+            captured = session.mouse_enabled();
+            if captured {
+                execute!(io::stdout(), EnableMouseCapture)?;
+            } else {
+                execute!(io::stdout(), DisableMouseCapture)?;
+            }
         }
-        // Prompts come as ready OSC 52 sequences.
+        // Everything copied comes as ready OSC 52 sequences.
         let sequences = session.take_terminal_output();
         if !sequences.is_empty() {
             let mut out = io::stdout();

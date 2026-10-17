@@ -138,11 +138,7 @@ impl Loaded {
             }
             by_line
         };
-        let width = |line: &String| {
-            line.chars()
-                .map(|c| if c == '\t' { TAB_WIDTH } else { 1 })
-                .sum::<usize>()
-        };
+        let width = |line: &String| line.chars().map(copy::cell_width).sum::<usize>();
         let max_width = (diff.old_lines.iter().chain(&diff.new_lines))
             .map(width)
             .max()
@@ -216,6 +212,7 @@ enum Focus {
 
 mod analysis;
 mod comments;
+mod copy;
 mod diagram;
 mod explain;
 mod file_bar;
@@ -224,8 +221,10 @@ mod groups;
 mod long_list;
 mod marks;
 mod mechanical_view;
+mod mouse;
 mod nav;
 mod overlay;
+mod overlay_mouse;
 mod prompt;
 mod reload;
 mod rounds;
@@ -321,6 +320,10 @@ pub struct Session {
     prompt_view: Option<(String, usize)>,
     /// The Prompts copied so far, which cut the commits into Rounds.
     prompts: crate::rounds::Prompts,
+    mouse: mouse::Mouse,
+    /// The file list scrolled by the wheel: the selected file it was done
+    /// for, and the first row shown.
+    sidebar_scroll: Option<(usize, usize)>,
 }
 
 impl Session {
@@ -491,6 +494,8 @@ impl Session {
             terminal_out: Vec::new(),
             prompt_view: None,
             prompts: crate::rounds::Prompts::open(&review_dir),
+            mouse: mouse::Mouse::default(),
+            sidebar_scroll: None,
         };
         session.load_selected();
         session.sync_view();
@@ -506,6 +511,7 @@ impl Session {
     /// prefix has been waiting long enough.
     /// Returns whether what is drawn may have changed.
     pub fn elapse(&mut self, elapsed: std::time::Duration) -> bool {
+        self.mouse_time(elapsed);
         let mut changed = false;
         if self.pending.is_some() {
             let before = self.pending_for;
@@ -519,6 +525,7 @@ impl Session {
     /// Time passing, for the watch on the branch only. The real loop calls it
     /// also between input events, so that typing never starves the watch.
     pub fn watch(&mut self, elapsed: std::time::Duration) -> bool {
+        self.mouse_time(elapsed);
         self.poll_reload(elapsed)
     }
 
@@ -633,6 +640,12 @@ impl Session {
     /// The first sidebar row shown: scrolled so the selected file is visible.
     fn sidebar_offset(&self) -> usize {
         let cap = self.sidebar_capacity().max(1);
+        // The wheel scrolled the list away from the selected file.
+        if let Some((selected, offset)) = self.sidebar_scroll {
+            if selected == self.selected {
+                return offset.min(self.sidebar_rows().len().saturating_sub(cap));
+            }
+        }
         let at = self
             .sidebar_rows()
             .iter()
@@ -817,6 +830,7 @@ impl Session {
         self.dirty = false;
         // View indexes mean something else in a new file, Scope or layout.
         self.visual = None;
+        self.drop_mouse_selection();
         self.view_layout = layout;
         self.inline = Vec::new();
         let mut changed = Vec::new();
@@ -876,11 +890,15 @@ impl Session {
             Event::Mouse(mouse) => self.on_mouse(mouse),
             Event::Resize(w, h) => {
                 self.size = (w, h);
+                self.drop_mouse_selection();
             }
             _ => {}
         }
         if self.pending != waiting || self.pending.is_none() {
             self.pending_for = std::time::Duration::ZERO;
+        }
+        if !self.overlay_open() {
+            self.mouse.text = None;
         }
         self.sync_view();
         self.reveal_with_comments();
@@ -983,6 +1001,12 @@ impl Session {
                     self.open_file_picker();
                     return;
                 }
+                (Some(' '), KeyCode::Char('y')) => {
+                    self.pending = None;
+                    self.count = None;
+                    self.yank(true);
+                    return;
+                }
                 (None, KeyCode::Char(' ')) => {
                     self.pending = Some(' ');
                     return;
@@ -1004,11 +1028,13 @@ impl Session {
             }
             KeyCode::Char('a') if !ctrl => self.show_whole_range(),
             KeyCode::Char('Y') if !ctrl => self.copy_prompt(),
+            KeyCode::Char('y') if !ctrl => self.yank(false),
             KeyCode::Char('m') if !ctrl => self.toggle_mark(),
             KeyCode::Char('M') if !ctrl => self.mark_and_advance(),
             KeyCode::Char('R') if !ctrl => self.reload(),
             KeyCode::Char(c @ ('c' | 'C' | 'v' | 'x' | 'o')) if !ctrl => self.comment_key(c),
             KeyCode::Esc if self.visual.is_some() => self.visual = None,
+            KeyCode::Esc if self.clear_mouse_selection() => {}
             KeyCode::Enter if !ctrl => self.expand_mechanical(),
             KeyCode::Char(':') if !ctrl => self.mode = Mode::Command(String::new()),
             _ => {}
@@ -1141,6 +1167,9 @@ impl Session {
                 self.confirm_clear = true;
                 self.message = Some("Delete all Comments for good? y / n".into());
             }
+            other if other.split_whitespace().next() == Some("set") => {
+                self.set_command(other["set".len()..].trim())
+            }
             other if self.analysis_command(other) || self.diagram_command(other) => {}
             other if self.prompt_command(other) => {}
             other if other.split_whitespace().next() == Some("scope") => {
@@ -1154,10 +1183,20 @@ impl Session {
     }
 
     fn on_mouse(&mut self, mouse: MouseEvent) {
-        if self.help.is_some()
-            || self.editor.is_some()
-            || self.confirm_clear
-            || self.prompt_view.is_some()
+        // Nothing is drawn on a terminal this small: there is nothing to hit.
+        if !self.mouse_enabled() || self.too_small() {
+            return;
+        }
+        if self.editor.is_some() || self.confirm_clear {
+            return;
+        }
+        if self.overlay_mouse(mouse) {
+            return;
+        }
+        if self.file_picker_mouse(mouse)
+            || self.picker_mouse(mouse)
+            || self.diff_mouse(mouse)
+            || self.list_mouse(mouse)
         {
             return;
         }
@@ -1208,6 +1247,12 @@ impl Session {
     }
 
     fn render_screen(&self, buf: &mut Buffer) {
+        self.render_base(buf);
+        self.render_overlay_selection(buf);
+    }
+
+    /// Everything but the highlight of text selected in an overlay.
+    fn render_base(&self, buf: &mut Buffer) {
         buf.set_style(buf.area, Style::new().fg(FG));
         if self.too_small() {
             let msg = format!(
@@ -1353,6 +1398,17 @@ impl Session {
         )
     }
 
+    /// The commit rows inside the picker box.
+    fn picker_inner(&self) -> Rect {
+        let area = self.picker_area();
+        Rect::new(
+            area.x + 1,
+            area.y + 1,
+            area.width.saturating_sub(2),
+            area.height.saturating_sub(3),
+        )
+    }
+
     fn render_picker(&self, buf: &mut Buffer) {
         let area = self.picker_area();
         let width = area.width;
@@ -1361,12 +1417,7 @@ impl Session {
             buf.set_string(area.x, y, " ".repeat(width as usize), Style::new().fg(FG));
         }
         draw_box(buf, area, " Pick a Scope ");
-        let inner = Rect::new(
-            area.x + 1,
-            area.y + 1,
-            area.width.saturating_sub(2),
-            area.height.saturating_sub(3),
-        );
+        let inner = self.picker_inner();
         self.render_commit_rows(buf, inner, true);
         let hint = "j/k move  v select  Enter apply  a whole Range  Esc close";
         let hint_w = inner.width as usize;
@@ -1495,6 +1546,7 @@ impl Session {
         self.comment_layout()
             .draw_header(buf, area.x, top, top + height as u16);
         self.render_selection(buf, area, top, height);
+        self.render_mouse_selection(buf, top, height);
     }
 
     fn render_side_by_side(
@@ -1811,7 +1863,16 @@ fn code_cells(
         if ch == '\t' {
             cells.extend(std::iter::repeat_n((' ', style), TAB_WIDTH));
         } else {
-            cells.push((ch, style));
+            // A wide character takes its cell and one more, which is only
+            // a placeholder; a zero-width one has no cell.
+            match copy::cell_width(ch) {
+                0 => {}
+                1 => cells.push((ch, style)),
+                n => {
+                    cells.push((ch, style));
+                    cells.extend(std::iter::repeat_n((copy::CONTINUATION, style), n - 1));
+                }
+            }
         }
     }
     cells
@@ -1831,6 +1892,9 @@ fn draw_cells(buf: &mut Buffer, x: u16, y: u16, width: usize, cells: &[(char, St
         cells.len()
     };
     for (i, (ch, style)) in cells.iter().take(shown).enumerate() {
+        if *ch == copy::CONTINUATION {
+            continue;
+        }
         buf.set_string(x + i as u16, y, ch.to_string(), *style);
     }
     if cut && width > 0 {

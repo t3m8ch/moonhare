@@ -49,6 +49,10 @@ impl Default for Explain {
 }
 
 impl Session {
+    pub(super) fn explain_open(&self) -> bool {
+        self.explain.overlay.is_some()
+    }
+
     /// Keys of the Explain overlay and the ones that open it; returns whether
     /// the key was used.
     pub(super) fn explain_key(&mut self, key: KeyEvent) -> bool {

@@ -192,8 +192,37 @@ impl Harness {
         self
     }
 
+    /// A left click: button down, then up, at the same cell.
     pub fn click(&mut self, column: u16, row: u16) -> &mut Self {
-        self.mouse(MouseEventKind::Down(MouseButton::Left), column, row)
+        self.mouse(MouseEventKind::Down(MouseButton::Left), column, row);
+        self.mouse(MouseEventKind::Up(MouseButton::Left), column, row)
+    }
+
+    /// Hold the left button down at one cell, move to another and release.
+    pub fn drag(&mut self, from: (u16, u16), to: (u16, u16)) -> &mut Self {
+        self.mouse(MouseEventKind::Down(MouseButton::Left), from.0, from.1);
+        self.mouse(MouseEventKind::Drag(MouseButton::Left), to.0, to.1);
+        self.mouse(MouseEventKind::Up(MouseButton::Left), to.0, to.1)
+    }
+
+    pub fn wheel_up(&mut self, column: u16, row: u16) -> &mut Self {
+        self.mouse(MouseEventKind::ScrollUp, column, row)
+    }
+
+    /// The texts the terminal was asked to put into the clipboard since the
+    /// last call (OSC 52 sequences, decoded).
+    pub fn copied(&mut self) -> Vec<String> {
+        self.session
+            .take_terminal_output()
+            .iter()
+            .map(|seq| {
+                let body = seq
+                    .strip_prefix("\x1b]52;c;")
+                    .and_then(|s| s.strip_suffix('\x07'))
+                    .unwrap_or_else(|| panic!("not a clipboard sequence: {seq:?}"));
+                unbase64(body)
+            })
+            .collect()
     }
 
     pub fn wheel_down(&mut self, column: u16, row: u16) -> &mut Self {
@@ -263,4 +292,22 @@ pub fn parse_keys(notation: &str) -> Vec<Event> {
         i += 1;
     }
     out
+}
+
+const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+fn unbase64(text: &str) -> String {
+    let mut bytes = Vec::new();
+    let (mut acc, mut bits) = (0u32, 0);
+    for c in text.bytes().filter(|&c| c != b'=') {
+        let v = B64.iter().position(|&x| x == c).expect("base64 digit") as u32;
+        acc = (acc << 6) | v;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            bytes.push((acc >> bits) as u8);
+            acc &= (1 << bits) - 1;
+        }
+    }
+    String::from_utf8(bytes).expect("utf-8 clipboard text")
 }
