@@ -157,7 +157,7 @@ impl Session {
     }
 
     /// Where a line Comment of the displayed file is in its code now.
-    fn place_of(&self, c: &Comment) -> Option<(Side, usize, usize)> {
+    pub(super) fn place_of(&self, c: &Comment) -> Option<(Side, usize, usize)> {
         let Target::Lines {
             path,
             side,

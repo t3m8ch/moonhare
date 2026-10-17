@@ -37,6 +37,8 @@ struct Click {
     count: u8,
 }
 
+const SELECTION_BG: Color = Color::Indexed(24);
+
 /// Clicks closer in time than this chain into a double or triple click.
 const MULTI_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
 
@@ -46,7 +48,7 @@ pub(super) struct Mouse {
     clock: std::time::Duration,
     last_click: Option<Click>,
     press: Option<Press>,
-    selection: Option<Selection>,
+    pub(super) selection: Option<Selection>,
 }
 
 impl Session {
@@ -86,7 +88,7 @@ impl Session {
             }
             MouseEventKind::Up(MouseButton::Left) if self.mouse.press.take().is_some() => {
                 if let Some(selection) = self.mouse.selection {
-                    let text = format(&self.selected_lines(selection));
+                    let text = format(&self.selected_lines(selection), &[]);
                     self.copy_to_clipboard(&text, "the selected code");
                 }
                 true
@@ -182,14 +184,13 @@ impl Session {
         })
     }
 
-    /// The place under column `x` in the line of `item`; side-by-side
-    /// columns count in the given half, whichever half `x` is over.
-    fn pos_at(&self, item: usize, x: u16, half: Option<Side>) -> Pos {
+    /// Screen columns where the code of the half (or of the inline view)
+    /// starts, and where it ends.
+    fn code_columns(&self, half: Option<Side>) -> (usize, usize) {
         let area = self.diff_area();
         let width = area.width as usize;
         let side_width = width.saturating_sub(1) / 2;
-        // Where the code of the half starts and ends on screen.
-        let (code_x, end) = match half {
+        match half {
             None => (area.x as usize + 2 * self.digits() + 4, usize::MAX),
             Some(Side::Old) => (
                 area.x as usize + self.digits() + 1,
@@ -199,7 +200,18 @@ impl Session {
                 area.x as usize + side_width + 1 + self.digits() + 1,
                 area.x as usize + width,
             ),
-        };
+        }
+    }
+
+    /// Drop the selection; returns whether there was one.
+    pub(super) fn clear_mouse_selection(&mut self) -> bool {
+        self.mouse.selection.take().is_some()
+    }
+
+    /// The place under column `x` in the line of `item`; side-by-side
+    /// columns count in the given half, whichever half `x` is over.
+    fn pos_at(&self, item: usize, x: u16, half: Option<Side>) -> Pos {
+        let (code_x, end) = self.code_columns(half);
         let col = if (x as usize) >= end {
             usize::MAX / 2
         } else {
@@ -208,25 +220,102 @@ impl Session {
         Pos { item, col }
     }
 
-    /// The lines a selection covers, each cut to the selected columns.
-    fn selected_lines(&self, selection: Selection) -> Vec<CopyLine> {
+    /// The cell columns selected on each item the selection touches.
+    fn selected_spans(selection: Selection) -> Vec<(usize, usize, usize)> {
         let (from, to) = if selection.anchor <= selection.head {
             (selection.anchor, selection.head)
         } else {
             (selection.head, selection.anchor)
         };
+        (from.item..=to.item)
+            .map(|item| {
+                let start = if item == from.item { from.col } else { 0 };
+                let end = if item == to.item { to.col + 1 } else { usize::MAX };
+                (item, start, end)
+            })
+            .collect()
+    }
+
+    /// The lines a selection covers, each cut to the selected columns.
+    pub(super) fn selected_lines(&self, selection: Selection) -> Vec<CopyLine> {
+        Self::selected_spans(selection)
+            .into_iter()
+            .filter_map(|(item, start, end)| {
+                let mut line = self.copy_line_at(item, selection.half)?;
+                line.text = cut(&line.text, start, end);
+                Some(line)
+            })
+            .collect()
+    }
+
+    /// Highlight the code the mouse selected.
+    pub(super) fn render_mouse_selection(&self, buf: &mut Buffer, top: u16, height: usize) {
+        let Some(selection) = self.mouse.selection else {
+            return;
+        };
+        let area = self.diff_area();
+        let layout = self.comment_layout();
+        let bottom = top + height as u16;
+        for (item, start, end) in Self::selected_spans(selection) {
+            if !self.visible_items().any(|i| i == item) {
+                continue;
+            }
+            let y = layout.y(top, self.vp.top, item);
+            if y >= bottom {
+                continue;
+            }
+            let Some(line) = self.copy_line_at(item, selection.half) else {
+                continue;
+            };
+            let (code_x, limit) = self.code_columns(selection.half);
+            let text_end = line.text.chars().map(|c| if c == '\t' { TAB_WIDTH } else { 1 }).sum();
+            let (start, end) = (start.max(self.hscroll), end.min(text_end));
+            for col in start..end {
+                let x = code_x + col - self.hscroll;
+                if x >= limit || x >= (area.x + area.width) as usize {
+                    break;
+                }
+                buf[(x as u16, y)].set_bg(SELECTION_BG);
+            }
+        }
+    }
+
+    /// The lines a view item stands for when copied whole: one in the inline
+    /// layout, and in side-by-side the removed line and the added one of a
+    /// changed row, as the inline layout would show them.
+    pub(super) fn whole_lines(&self, item: usize) -> Vec<CopyLine> {
         let Some(Ok(loaded)) = &self.loaded else {
             return Vec::new();
         };
-        let mut out = Vec::new();
-        for item in from.item..=to.item {
-            let Some(mut line) = self.copy_line_at(item, selection.half) else {
-                continue;
+        if self.view_layout == DiffLayout::Inline {
+            return self.copy_line_at(item, None).into_iter().collect();
+        }
+        let Some(&Item::Line(entry)) = self.view.items.get(item) else {
+            return Vec::new();
+        };
+        let row = loaded.diff.rows[entry];
+        let line = |side: Side, index: usize, mark: Mark| CopyLine {
+            mark,
+            side,
+            line: index,
+            text: loaded.lines(side)[index].clone(),
+        };
+        let old_changed = row.old.is_some_and(|l| loaded.line_changed(Side::Old, l, row.new));
+        let new_changed = row.new.is_some_and(|l| loaded.line_changed(Side::New, l, row.old));
+        if !old_changed && !new_changed {
+            let (side, index) = match (row.new, row.old) {
+                (Some(n), _) => (Side::New, n),
+                (None, Some(o)) => (Side::Old, o),
+                _ => return Vec::new(),
             };
-            let start = if item == from.item { from.col } else { 0 };
-            let end = if item == to.item { to.col + 1 } else { usize::MAX };
-            line.text = cut(&line.text, start, end);
-            out.push(line);
+            return vec![line(side, index, Mark::Context)];
+        }
+        let mut out = Vec::new();
+        if let Some(o) = row.old {
+            out.push(line(Side::Old, o, Mark::Removed));
+        }
+        if let Some(n) = row.new {
+            out.push(line(Side::New, n, Mark::Added));
         }
         out
     }

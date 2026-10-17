@@ -977,6 +977,12 @@ impl Session {
                     self.open_file_picker();
                     return;
                 }
+                (Some(' '), KeyCode::Char('y')) => {
+                    self.pending = None;
+                    self.count = None;
+                    self.yank(true);
+                    return;
+                }
                 (None, KeyCode::Char(' ')) => {
                     self.pending = Some(' ');
                     return;
@@ -998,11 +1004,13 @@ impl Session {
             }
             KeyCode::Char('a') if !ctrl => self.show_whole_range(),
             KeyCode::Char('Y') if !ctrl => self.copy_prompt(),
+            KeyCode::Char('y') if !ctrl => self.yank(false),
             KeyCode::Char('m') if !ctrl => self.toggle_mark(),
             KeyCode::Char('M') if !ctrl => self.mark_and_advance(),
             KeyCode::Char('R') if !ctrl => self.reload(),
             KeyCode::Char(c @ ('c' | 'C' | 'v' | 'x' | 'o')) if !ctrl => self.comment_key(c),
             KeyCode::Esc if self.visual.is_some() => self.visual = None,
+            KeyCode::Esc if self.clear_mouse_selection() => {}
             KeyCode::Enter if !ctrl => self.expand_mechanical(),
             KeyCode::Char(':') if !ctrl => self.mode = Mode::Command(String::new()),
             _ => {}
@@ -1508,6 +1516,7 @@ impl Session {
         self.comment_layout()
             .draw_header(buf, area.x, top, top + height as u16);
         self.render_selection(buf, area, top, height);
+        self.render_mouse_selection(buf, top, height);
     }
 
     fn render_side_by_side(

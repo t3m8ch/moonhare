@@ -23,7 +23,7 @@ pub(super) struct CopyLine {
 /// The text of the lines. A mix of removed and added lines is a diff, each
 /// line with its `+`, `-` or space prefix; anything else is the plain code,
 /// because a single side's code reads as it is.
-pub(super) fn format(lines: &[CopyLine]) -> String {
+pub(super) fn format(lines: &[CopyLine], notes: &[Note]) -> String {
     let mixed = lines.iter().any(|l| l.mark == Mark::Removed)
         && lines.iter().any(|l| l.mark == Mark::Added);
     lines
@@ -35,10 +35,25 @@ pub(super) fn format(lines: &[CopyLine]) -> String {
                 (true, Mark::Removed) => "-",
                 (true, Mark::Added) => "+",
             };
-            format!("{prefix}{}", l.text)
+            let mut out = format!("{prefix}{}", l.text);
+            // Comments on the line follow it, quoted.
+            for note in notes.iter().filter(|n| (n.side, n.line) == (l.side, l.line)) {
+                for text_line in note.text.lines() {
+                    out.push_str(&format!("\n> {text_line}"));
+                }
+            }
+            out
         })
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// A Comment that goes along with the code it is on.
+pub(super) struct Note {
+    pub(super) side: Side,
+    /// The last line the Comment is on.
+    pub(super) line: usize,
+    pub(super) text: String,
 }
 
 /// The part of `text` inside the cell columns `from..to`; a tab fills
@@ -57,6 +72,49 @@ pub(super) fn cut(text: &str, from: usize, to: usize) -> String {
 }
 
 impl Session {
+    /// `y` and `Space y`: copy the lines of the VISUAL selection or of the
+    /// mouse selection, with the Comments on them when asked to.
+    pub(super) fn yank(&mut self, with_comments: bool) {
+        let lines = if let Some(selection) = self.mouse.selection {
+            self.selected_lines(selection)
+        } else if let Some(anchor) = self.visual.take() {
+            let (lo, hi) = (anchor.min(self.vp.cursor), anchor.max(self.vp.cursor));
+            (lo..=hi).flat_map(|i| self.whole_lines(i)).collect()
+        } else {
+            self.message = Some("Nothing selected: v or the mouse selects code".into());
+            return;
+        };
+        let notes = if with_comments {
+            self.notes_on(&lines)
+        } else {
+            Vec::new()
+        };
+        let what = if with_comments {
+            "the code with Comments"
+        } else {
+            "the code"
+        };
+        self.copy_to_clipboard(&format(&lines, &notes), what);
+    }
+
+    /// The Comments of the displayed file that end on one of `lines`.
+    fn notes_on(&self, lines: &[CopyLine]) -> Vec<Note> {
+        let mut notes = Vec::new();
+        for c in self.comments.all() {
+            let Some((side, _, end)) = self.place_of(c) else {
+                continue;
+            };
+            if lines.iter().any(|l| (l.side, l.line) == (side, end)) {
+                notes.push(Note {
+                    side,
+                    line: end,
+                    text: c.text.clone(),
+                });
+            }
+        }
+        notes
+    }
+
     /// Put `text` on the Reviewer's clipboard, or say why it cannot be.
     /// `what` names it in the message.
     pub(super) fn copy_to_clipboard(&mut self, text: &str, what: &str) {

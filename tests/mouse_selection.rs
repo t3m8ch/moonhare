@@ -85,4 +85,114 @@ fn clicks_far_apart_in_time_are_not_a_double_click() {
     h.click(x + 2, y).wait(1000).click(x + 2, y);
     assert_eq!(h.copied(), Vec::<String>::new());
 }
+
+#[test]
+fn the_selection_is_highlighted_until_escape_or_a_click_elsewhere() {
+    let fx = changed_file();
+    let mut h = Harness::open(&fx, 100, 24);
+    let (ex, ey) = h.frame().find("extra").unwrap();
+    let (kx, ky) = h.frame().find("keep_me").unwrap();
+    let plain = h.frame().bg_at(ex + 2, ey);
+    h.drag((ex, ey), (kx + 9, ky));
+    let marked = h.frame().bg_at(ex + 2, ey);
+    assert_ne!(marked, plain);
+    // The gutter is not part of the selection.
+    assert_eq!(h.frame().bg_at(ex - 2, ey), h.frame().bg_at(ex - 2, ey - 1));
+
+    h.keys("<Esc>");
+    assert_eq!(h.frame().bg_at(ex + 2, ey), plain);
+
+    h.drag((ex, ey), (kx + 9, ky));
+    assert_ne!(h.frame().bg_at(ex + 2, ey), plain);
+    h.click(ex, ey - 1);
+    assert_eq!(h.frame().bg_at(ex + 2, ey), plain);
+}
+
+#[test]
+fn y_in_visual_copies_the_selected_lines_as_code() {
+    let fx = changed_file();
+    let mut h = Harness::open(&fx, 100, 24);
+    let (x, y) = h.frame().find("extra").unwrap();
+    h.click(x, y);
+    h.keys("vjy");
+    assert_eq!(h.copied(), vec!["    extra();\n    keep_me();".to_string()]);
+    // The selection is over.
+    assert!(!h.screen().contains("VISUAL"), "{}", h.screen());
+}
+
+/// A Comment on the `extra` line, written and saved.
+fn with_comment_on_extra(h: &mut Harness) -> (u16, u16) {
+    let (x, y) = h.frame().find("extra").unwrap();
+    h.click(x, y);
+    h.keys("cicheck this<Esc><CR>");
+    // Later clicks on the same cell must not chain into a double click.
+    h.wait(1000);
+    h.frame().find("extra").unwrap()
+}
+
+#[test]
+fn space_y_in_visual_copies_the_code_with_its_comments_and_y_without() {
+    let fx = changed_file();
+    let mut h = Harness::open(&fx, 100, 24);
+    let (x, y) = with_comment_on_extra(&mut h);
+    h.click(x, y);
+    h.keys("vj<Space>y");
+    assert_eq!(
+        h.copied(),
+        vec!["    extra();\n> check this\n    keep_me();".to_string()]
+    );
+    h.keys("kvjy");
+    assert_eq!(h.copied(), vec!["    extra();\n    keep_me();".to_string()]);
+}
+
+#[test]
+fn space_y_after_a_mouse_selection_copies_the_code_with_its_comments() {
+    let fx = changed_file();
+    let mut h = Harness::open(&fx, 100, 24);
+    let (x, y) = with_comment_on_extra(&mut h);
+    let (_, ky) = h.frame().find("keep_me").unwrap();
+    h.drag((x, y), (x + 3, ky));
+    assert_eq!(h.copied(), vec!["extra();\n    keep".to_string()]);
+    h.keys("<Space>y");
+    assert_eq!(
+        h.copied(),
+        vec!["extra();\n> check this\n    keep".to_string()]
+    );
+}
+
+#[test]
+fn copying_code_leaves_comment_states_and_rounds_alone() {
+    let fx = changed_file();
+    let mut h = Harness::open(&fx, 100, 24);
+    let (x, y) = with_comment_on_extra(&mut h);
+    let before = h.screen();
+    h.click(x, y);
+    h.keys("vj<Space>y");
+    h.keys("kvjy");
+    h.wait(1000);
+    let (_, ky) = h.frame().find("keep_me").unwrap();
+    h.drag((x, y), (x + 3, ky));
+    h.keys("<Space>y");
+    assert_eq!(h.copied().len(), 4);
+    h.keys("<Esc>");
+    let after = h.screen();
+    assert!(after.contains("Comment · open"), "{after}");
+    assert!(after.contains("round:1"), "{after}");
+    // A copied Prompt would have closed the Round and sent the Comment.
+    assert!(!after.contains("Comment · sent"), "{after}");
+    assert!(before.contains("Comment · open"), "{before}");
+}
+
+#[test]
+fn y_in_visual_side_by_side_copies_a_changed_row_as_a_diff() {
+    let fx = changed_file();
+    let mut h = Harness::open(&fx, 160, 24);
+    let (x, y) = h.frame().find("old_call").unwrap();
+    h.click(x, y);
+    h.keys("vjy");
+    assert_eq!(
+        h.copied(),
+        vec!["-    old_call(1);\n+    new_call(2);\n+    extra();".to_string()]
+    );
+}
 // END
