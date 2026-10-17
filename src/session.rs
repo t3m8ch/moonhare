@@ -263,6 +263,9 @@ pub struct Session {
     visual: Option<usize>,
     /// `:comments clear` waits for `y` / `n`.
     confirm_clear: bool,
+    /// Ids of the Comments hidden in the other files of the Scope, with the
+    /// Scope ends and Comments revision they were worked out for.
+    hidden_cache: std::cell::RefCell<Option<((String, String, u64), Vec<u64>)>>,
     selected: usize,
     loaded: Option<Result<Loaded, String>>,
     vp: Viewport,
@@ -434,6 +437,7 @@ impl Session {
             editor: None,
             visual: None,
             confirm_clear: false,
+            hidden_cache: Default::default(),
             file_picker: None,
             mechanical_open: false,
             scope_files: files.clone(),

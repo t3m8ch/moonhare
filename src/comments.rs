@@ -123,6 +123,11 @@ pub fn locate(lines: &[String], start: usize, anchor: &Anchor) -> Option<usize> 
 #[derive(Debug, Default)]
 pub struct Comments {
     items: Vec<Comment>,
+    /// Records this version cannot read (written by another version, or
+    /// damaged): kept as they are and written back with the rest.
+    unread: Vec<String>,
+    /// Changes with every added or deleted Comment, for caches.
+    revision: u64,
     file: Option<PathBuf>,
 }
 
@@ -133,16 +138,18 @@ impl Comments {
     /// The Comments saved in `dir` by an earlier run, or none.
     pub fn open(dir: &Path) -> Comments {
         let file = dir.join("comments");
-        let items = std::fs::read_to_string(&file)
-            .map(|saved| {
-                saved
-                    .split('\0')
-                    .filter_map(Comment::decode)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let saved = std::fs::read_to_string(&file).unwrap_or_default();
+        let (mut items, mut unread) = (Vec::new(), Vec::new());
+        for record in saved.split('\0').filter(|r| !r.is_empty()) {
+            match Comment::decode(record) {
+                Some(c) => items.push(c),
+                None => unread.push(record.to_string()),
+            }
+        }
         Comments {
             items,
+            unread,
+            revision: 0,
             file: Some(file),
         }
     }
@@ -156,12 +163,14 @@ impl Comments {
             text,
             state: State::Open,
         });
+        self.revision += 1;
         self.save().map(|()| id)
     }
 
     /// Delete every Comment, on disk first: if saving fails the Comments
     /// stay in memory too, so the two never disagree.
     pub fn clear(&mut self) -> Result<(), String> {
+        self.revision += 1;
         let kept = std::mem::take(&mut self.items);
         match self.save() {
             Ok(()) => Ok(()),
@@ -176,7 +185,8 @@ impl Comments {
         let Some(file) = &self.file else {
             return Ok(());
         };
-        let data: Vec<String> = self.items.iter().map(Comment::encode).collect();
+        let mut data: Vec<String> = self.items.iter().map(Comment::encode).collect();
+        data.extend(self.unread.iter().cloned());
         let io = |e: std::io::Error| format!("cannot save the Comments: {e}");
         if let Some(dir) = file.parent() {
             std::fs::create_dir_all(dir).map_err(io)?;
@@ -192,6 +202,10 @@ impl Comments {
             c.state = state;
         }
         self.save()
+    }
+
+    pub fn revision(&self) -> u64 {
+        self.revision
     }
 
     pub fn all(&self) -> &[Comment] {

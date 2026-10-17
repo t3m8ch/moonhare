@@ -385,6 +385,53 @@ fn a_comment_on_a_common_line_follows_it_when_the_surroundings_move_along() {
     assert!(screen.contains("new 9"), "{screen}");
 }
 
+/// The file the only Review of the clone keeps its Comments in.
+fn comments_file(fx: &support::Fixture) -> std::path::PathBuf {
+    let reviews = fx.path().join(".git/moonhare/reviews");
+    let dir = std::fs::read_dir(reviews).unwrap().next().unwrap().unwrap();
+    dir.path().join("comments")
+}
+
+#[test]
+fn records_that_cannot_be_read_are_kept_not_overwritten() {
+    let fx = feature_branch();
+    {
+        let mut h = Harness::open(&fx, 160, 30);
+        h.keys(":comment<CR>ifirst<Esc><CR>");
+    }
+    let file = comments_file(&fx);
+    let mut data = std::fs::read(&file).unwrap();
+    data.extend(b"\0from a newer moonhare");
+    std::fs::write(&file, data).unwrap();
+    {
+        let mut h = Harness::open(&fx, 160, 30);
+        assert!(h.screen().contains("first"), "{}", h.screen());
+        h.keys(":comment<CR>isecond<Esc><CR>");
+    }
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("from a newer moonhare"), "{saved:?}");
+    assert!(saved.contains("second") && saved.contains("first"), "{saved:?}");
+}
+
+#[test]
+fn hidden_count_includes_line_comments_in_other_files_of_the_scope() {
+    let fx = feature_branch();
+    {
+        let mut h = Harness::open(&fx, 160, 30);
+        // src/a.rs final content: "fn a() {", "    10", "}".
+        h.keys("]fj");
+        h.keys("cion a<Esc><CR>");
+    }
+    fx.write("src/a.rs", "fn a() {\n    11\n}\n").commit("rewrite a");
+    let mut h = Harness::open(&fx, 160, 30);
+    // README.md is the open file, yet the Comment in src/a.rs is counted.
+    let screen = h.screen();
+    assert!(screen.contains("README.md (line-based"), "{screen}");
+    assert!(screen.contains("1 скрытых Comments"), "{screen}");
+    h.keys("]f");
+    assert!(h.screen().contains("1 скрытых Comments"), "{}", h.screen());
+}
+
 /// The mode badge at the start of the status line.
 fn badge(h: &mut Harness) -> String {
     let screen = h.screen();

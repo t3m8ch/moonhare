@@ -440,10 +440,58 @@ impl Session {
                             .is_none()
                     } else {
                         !self.files.iter().any(|f| f.path == *path)
+                            || self.hidden_elsewhere().contains(&c.id)
                     }
                 }
             })
             .count()
+    }
+
+    /// Ids of line Comments on files of the Scope other than the open one
+    /// whose code is gone from the Scope's version of the file. Reading the
+    /// files costs, so the answer is kept until the Scope or Comments change.
+    fn hidden_elsewhere(&self) -> Vec<u64> {
+        let (base, head) = self.scope_ends();
+        let key = (base.clone(), head.clone(), self.comments.revision());
+        if let Some((k, ids)) = &*self.hidden_cache.borrow() {
+            if *k == key {
+                return ids.clone();
+            }
+        }
+        let ids: Vec<u64> = self
+            .comments
+            .all()
+            .iter()
+            .filter_map(|c| {
+                let Target::Lines {
+                    path,
+                    side,
+                    start,
+                    anchor,
+                    ..
+                } = &c.target
+                else {
+                    return None;
+                };
+                let file = self.scope_files.iter().find(|f| f.path == *path)?;
+                let blob = match side {
+                    Side::Old => self.repo.file_at(&base, file.base_path()),
+                    Side::New => self.repo.file_at(&head, &file.path),
+                };
+                let lines: Vec<String> = match blob {
+                    Ok(bytes) => String::from_utf8_lossy(&bytes)
+                        .lines()
+                        .map(str::to_string)
+                        .collect(),
+                    Err(_) => vec![],
+                };
+                crate::comments::locate(&lines, *start, anchor)
+                    .is_none()
+                    .then_some(c.id)
+            })
+            .collect();
+        *self.hidden_cache.borrow_mut() = Some((key, ids.clone()));
+        ids
     }
 
     /// `text` with the hint about hidden Comments, when there are any.
