@@ -92,7 +92,7 @@ pub fn order(paths: &[&str]) -> Vec<usize> {
 
 /// The rows left when the directories `collapsed` says are folded hide
 /// what is under them.
-pub fn visible<'a>(lines: &'a [Line], collapsed: impl Fn(&str) -> bool) -> Vec<&'a Line> {
+pub fn visible(lines: &[Line], collapsed: impl Fn(&str) -> bool) -> Vec<&Line> {
     let mut out = Vec::new();
     let mut hidden_below: Option<usize> = None;
     for line in lines {

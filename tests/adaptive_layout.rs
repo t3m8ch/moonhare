@@ -58,10 +58,11 @@ fn space_f_picks_a_file_without_a_sidebar() {
     h.keys("<Space>f");
     let screen = h.screen();
     assert!(screen.contains("Pick a file"), "{screen}");
-    for path in ["README.md", "src/a.rs", "src/b.rs"] {
-        assert!(screen.contains(path), "{path}:\n{screen}");
+    // The tree: README.md, the directory src, a.rs and b.rs under it.
+    for row in ["README.md", "src", "a.rs", "b.rs"] {
+        assert!(screen.contains(row), "{row}:\n{screen}");
     }
-    h.keys("jj");
+    h.keys("jjj");
     h.keys("<CR>");
     let screen = h.screen();
     assert!(!screen.contains("Pick a file"), "{screen}");

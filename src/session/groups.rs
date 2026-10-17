@@ -336,7 +336,14 @@ impl Session {
 
     /// The header row of Group `n`: its place in the reading order, name and
     /// progress.
-    pub(super) fn render_group_row(&self, buf: &mut Buffer, x: u16, y: u16, width: usize, n: usize) {
+    pub(super) fn render_group_row(
+        &self,
+        buf: &mut Buffer,
+        x: u16,
+        y: u16,
+        width: usize,
+        n: usize,
+    ) {
         let (done, total) = self.group_progress(n);
         let progress = format!("{done}/{total}");
         let (name, _, mechanical) = self.group_text(n);

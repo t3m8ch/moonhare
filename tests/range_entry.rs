@@ -163,7 +163,8 @@ fn a_branch_that_is_not_checked_out_opens_by_name() {
     let mut h = Harness::open_target(&fx, &Target::Branch("feature".into()), 160, 30);
 
     let screen = h.screen();
-    for file in ["README.md", "src/a.rs", "src/b.rs"] {
+    // The tree lists the files by name under their directory.
+    for file in ["README.md", "src", "a.rs", "b.rs"] {
         assert!(screen.contains(file), "sidebar lists {file}:\n{screen}");
     }
     assert!(screen.contains("main..feature"), "{screen}");

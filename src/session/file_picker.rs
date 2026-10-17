@@ -22,8 +22,7 @@ impl Session {
     pub(super) fn file_picker_area(&self) -> Rect {
         let (w, h) = (self.size.0, self.size.1.saturating_sub(BOTTOM_ROWS));
         let width = (w * 9 / 10)
-            .max(MIN_WIDTH)
-            .min(MAX_WIDTH)
+            .clamp(MIN_WIDTH, MAX_WIDTH)
             .min(w.saturating_sub(2));
         let height = (h * 9 / 10).max(h.min(10)).min(h);
         Rect::new((w - width) / 2, (h - height) / 2, width, height)
@@ -31,7 +30,9 @@ impl Session {
 
     /// Rows of the tree the picker shows at once.
     pub(super) fn picker_capacity(&self) -> usize {
-        self.file_picker_area().height.saturating_sub(CHROME_ROWS + 1) as usize
+        self.file_picker_area()
+            .height
+            .saturating_sub(CHROME_ROWS + 1) as usize
     }
 
     pub(super) fn picker_rows(&self) -> Vec<Row> {

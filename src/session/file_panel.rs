@@ -120,7 +120,9 @@ fn cursor_row(rows: &[Row], at: &At, open_file: usize) -> Option<usize> {
 
 /// What `code` does in the tree with the cursor on row `cursor`.
 fn motion(rows: &[Row], cursor: usize, code: KeyCode, n: usize, half: usize) -> Option<Motion> {
-    let stops: Vec<usize> = (0..rows.len()).filter(|&i| rows[i].at().is_some()).collect();
+    let stops: Vec<usize> = (0..rows.len())
+        .filter(|&i| rows[i].at().is_some())
+        .collect();
     let here = stops.iter().position(|&s| s >= cursor).unwrap_or(0);
     let last = stops.len().checked_sub(1)?;
     let depth = |row: &Row| match row {
@@ -129,9 +131,9 @@ fn motion(rows: &[Row], cursor: usize, code: KeyCode, n: usize, half: usize) -> 
     };
     let parent = || {
         let (group, d) = (rows[cursor].group(), depth(&rows[cursor]));
-        rows[..cursor].iter().rposition(|r| {
-            r.dir_key().is_some() && r.group() == group && depth(r) < d
-        })
+        rows[..cursor]
+            .iter()
+            .rposition(|r| r.dir_key().is_some() && r.group() == group && depth(r) < d)
     };
     Some(match (code, &rows[cursor]) {
         (KeyCode::Char('j') | KeyCode::Down, _) => Motion::Go(stops[(here + n).min(last)]),
@@ -311,7 +313,8 @@ impl Session {
 
     /// Open the first file of Group `n`.
     fn open_group(&mut self, n: usize) {
-        if let Some(i) = (0..self.files.len()).find(|&i| self.group_of(&self.files[i].path) == Some(n))
+        if let Some(i) =
+            (0..self.files.len()).find(|&i| self.group_of(&self.files[i].path) == Some(n))
         {
             self.select(i);
         }
@@ -472,6 +475,9 @@ impl Session {
         capacity: usize,
         cursor: Option<usize>,
     ) {
+        // The mark of a file is looked up once, however many rows count it.
+        let mut marks: Vec<Option<Mark>> = vec![None; self.files.len()];
+        let mut mark = |i: usize| *marks[i].get_or_insert_with(|| self.mark_of(i));
         for (n, row) in rows.iter().enumerate().skip(offset).take(capacity) {
             let y = y + (n - offset) as u16;
             let lit = cursor == Some(n);
@@ -483,25 +489,27 @@ impl Session {
             match row {
                 Row::Header(g) => self.render_group_row(buf, x, y, width, *g),
                 Row::Tree {
-                    line: Line::File {
-                        indent,
-                        name,
-                        index,
-                        ..
-                    },
+                    line:
+                        Line::File {
+                            indent,
+                            name,
+                            index,
+                            ..
+                        },
                     ..
                 } => {
                     let file = &self.files[*index];
                     if *index == self.selected {
                         style = style.add_modifier(Modifier::BOLD);
                     }
-                    let reviewed = match self.mark_of(*index) {
+                    let reviewed = match mark(*index) {
                         Mark::Reviewed => '✓',
                         Mark::Partial => '◐',
                         Mark::Unreviewed => ' ',
                     };
                     let pad_in = " ".repeat(*indent);
-                    let line = format!("{marker}{pad_in}{reviewed} {} {name}", file.status.letter());
+                    let line =
+                        format!("{marker}{pad_in}{reviewed} {} {name}", file.status.letter());
                     buf.set_stringn(x, y, pad(&line, width), width, style);
                     let color = match file.status {
                         Status::Added => Color::Indexed(114),
@@ -525,10 +533,7 @@ impl Session {
                     folded,
                     ..
                 } => {
-                    let done = files
-                        .iter()
-                        .filter(|&&i| self.mark_of(i) == Mark::Reviewed)
-                        .count();
+                    let done = files.iter().filter(|&&i| mark(i) == Mark::Reviewed).count();
                     let progress = format!("{done}/{}", files.len());
                     let fold = if *folded { '▸' } else { '▾' };
                     let head = format!("{marker}{}{fold} {label}", " ".repeat(*indent));
@@ -543,7 +548,9 @@ impl Session {
     /// The Group of the row under the cursor of the file panel or picker,
     /// when Groups are shown.
     pub(super) fn cursor_group(&self) -> Option<usize> {
-        self.grouping_shown().then_some(())?;
+        if !self.grouping_shown() {
+            return None;
+        }
         if let Some(at) = &self.file_picker {
             let rows = self.picker_rows();
             return rows.get(self.picker_cursor(&rows, at)?)?.group();
@@ -611,7 +618,10 @@ impl Session {
         let Some((n, _)) = self.panel.info else {
             return Vec::new();
         };
-        super::analysis::wrap(&self.group_text(n).1, scroll::text_cols(self.overlay_area()))
+        super::analysis::wrap(
+            &self.group_text(n).1,
+            scroll::text_cols(self.overlay_area()),
+        )
     }
 
     pub(super) fn group_info_scroll_mut(&mut self) -> Option<&mut scroll::Scroll> {
@@ -625,7 +635,11 @@ impl Session {
         let area = self.overlay_area();
         clear_area(buf, area);
         let (name, _, _) = self.group_text(*n);
-        draw_box(buf, area, &format!(" Group {} {name} (Esc закрыть) ", n + 1));
+        draw_box(
+            buf,
+            area,
+            &format!(" Group {} {name} (Esc закрыть) ", n + 1),
+        );
         scroll::render_lines(buf, area, &self.group_info_lines(), scroll);
     }
 }

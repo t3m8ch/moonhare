@@ -305,7 +305,7 @@ fn the_selection_is_dropped_when_the_file_changes_by_key() {
 #[test]
 fn the_selection_is_dropped_when_the_file_changes_by_click() {
     selection_is_dropped_by(|h, _| {
-        let (x, y) = h.frame().find("src/b.rs").unwrap();
+        let (x, y) = h.frame().find("b.rs").unwrap();
         h.click(x, y);
     });
 }

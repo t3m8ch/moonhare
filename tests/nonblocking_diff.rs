@@ -71,7 +71,11 @@ fn a_slow_diff_does_not_hold_up_the_key_and_the_placeholder_gives_way_to_the_dif
     let waiting = h.screen_now();
     assert!(waiting.contains("Computing diff"), "{waiting}");
     assert!(!waiting.contains("fn b()"), "{waiting}");
-    assert!(waiting.contains("> A src/b.rs"), "{waiting}");
+    let cursor = waiting
+        .lines()
+        .find(|l| l.starts_with("│>"))
+        .unwrap_or_default();
+    assert!(cursor.contains("A b.rs"), "{waiting}");
 
     gate.open();
     let ready = h.screen();

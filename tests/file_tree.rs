@@ -78,8 +78,14 @@ fn the_sidebar_draws_the_files_as_a_tree_with_joined_chains() {
     // Without Groups the order is the one of the plain list.
     assert!(position(&side, "README.md") < position(&side, "src/features"));
     assert!(position(&side, "reviews.ts") < position(&side, "model.ts"));
-    assert!(row_of(&side, "src/features/course").contains("0/3"), "{side}");
-    assert!(row_of(&side, "features/access/api").contains("0/2"), "{side}");
+    assert!(
+        row_of(&side, "src/features/course").contains("0/3"),
+        "{side}"
+    );
+    assert!(
+        row_of(&side, "features/access/api").contains("0/2"),
+        "{side}"
+    );
 }
 
 #[test]
@@ -174,11 +180,17 @@ fn h_l_and_enter_fold_a_directory() {
     h.keys("jh");
     let side = sidebar(&mut h, 32);
     assert!(!side.contains("index.ts"), "{side}");
-    assert!(row_of(&side, "features/access/api").starts_with("│>"), "{side}");
+    assert!(
+        row_of(&side, "features/access/api").starts_with("│>"),
+        "{side}"
+    );
     // Folding the outer one hides everything under it.
     h.keys("kh");
     let side = sidebar(&mut h, 32);
-    assert!(!side.contains("model.ts") && !side.contains("access"), "{side}");
+    assert!(
+        !side.contains("model.ts") && !side.contains("access"),
+        "{side}"
+    );
     assert!(side.contains("README.md"), "{side}");
 }
 
@@ -191,7 +203,10 @@ fn bracket_f_counts_every_file_and_opens_a_folded_directory() {
     h.keys("<Tab>]f");
     assert!(at_file(&mut h, 2, 4), "{}", h.screen());
     let side = sidebar(&mut h, 32);
-    assert!(side.contains("index.ts") && side.contains("model.ts"), "{side}");
+    assert!(
+        side.contains("index.ts") && side.contains("model.ts"),
+        "{side}"
+    );
     h.keys("]f]f");
     assert!(at_file(&mut h, 4, 4));
     assert!(file_bar(&mut h).contains("model.ts"));
@@ -203,8 +218,14 @@ fn a_directory_shows_the_progress_of_its_files() {
     let mut h = Harness::open(&fx, 160, 30);
     h.keys("]fm");
     let side = sidebar(&mut h, 32);
-    assert!(row_of(&side, "src/features/course").contains("1/3"), "{side}");
-    assert!(row_of(&side, "features/access/api").contains("1/2"), "{side}");
+    assert!(
+        row_of(&side, "src/features/course").contains("1/3"),
+        "{side}"
+    );
+    assert!(
+        row_of(&side, "features/access/api").contains("1/2"),
+        "{side}"
+    );
     assert!(row_of(&side, "index.ts").contains('✓'), "{side}");
 }
 
@@ -214,7 +235,11 @@ fn clicks_fold_a_directory_and_open_a_file() {
     let mut h = Harness::open(&fx, 160, 30);
     let (x, y) = h.frame().find("features/access/api").expect("dir row");
     h.click(x, y);
-    assert!(!sidebar(&mut h, 32).contains("reviews.ts"), "{}", h.screen());
+    assert!(
+        !sidebar(&mut h, 32).contains("reviews.ts"),
+        "{}",
+        h.screen()
+    );
     assert!(at_file(&mut h, 1, 4));
     h.click(x, y);
     let (x, y) = h.frame().find("reviews.ts").expect("file row");
@@ -253,7 +278,10 @@ fn the_file_picker_is_wide_and_draws_the_tree() {
         .count();
     assert!(rows >= 30, "{rows}:\n{}", frame.text());
     let box_ = picker(&mut h);
-    assert!(box_.contains("src/features/course/features/access/api") || box_.contains("src/features/course"));
+    assert!(
+        box_.contains("src/features/course/features/access/api")
+            || box_.contains("src/features/course")
+    );
     assert!(position(&box_, "README.md") < position(&box_, "reviews.ts"));
     assert!(column(&box_, "reviews.ts") > column(&box_, "README.md"));
 }
@@ -340,9 +368,18 @@ fn within_a_group_the_tree_keeps_the_reading_order_of_the_analyst() {
     let mut h = grouped(&fx, 160, 30);
     let side = sidebar(&mut h, 32);
     assert!(position(&side, "Access") < position(&side, "src/features"));
-    assert!(position(&side, "reviews.ts") < position(&side, "index.ts"), "{side}");
-    assert!(position(&side, "index.ts") < position(&side, "model.ts"), "{side}");
-    assert!(position(&side, "model.ts") < position(&side, "Docs"), "{side}");
+    assert!(
+        position(&side, "reviews.ts") < position(&side, "index.ts"),
+        "{side}"
+    );
+    assert!(
+        position(&side, "index.ts") < position(&side, "model.ts"),
+        "{side}"
+    );
+    assert!(
+        position(&side, "model.ts") < position(&side, "Docs"),
+        "{side}"
+    );
     // ]f walks in the order of the tree.
     h.keys("gg[f[f[f[f");
     assert!(file_bar(&mut h).contains("reviews.ts"), "{}", h.screen());
@@ -360,7 +397,10 @@ fn the_description_of_a_group_is_hidden_until_asked_for() {
     // In the files window the hint line names the Group under the cursor.
     h.keys("<Tab><Tab>gg");
     let hints = h.screen().lines().last().unwrap().to_string();
-    assert!(hints.contains("Access") && hints.contains("Access to the course"), "{hints}");
+    assert!(
+        hints.contains("Access") && hints.contains("Access to the course"),
+        "{hints}"
+    );
     assert!(hints.contains("Space i"), "{hints}");
     h.keys("G");
     let hints = h.screen().lines().last().unwrap().to_string();

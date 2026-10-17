@@ -186,5 +186,5 @@ fn tiny_terminal_asks_for_more_room() {
     h.resize(40, 10);
     assert!(h.screen().contains("Terminal too small"));
     h.resize(160, 30);
-    assert!(h.screen().contains("src/a.rs"));
+    assert!(h.screen().contains("a.rs"));
 }
