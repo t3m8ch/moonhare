@@ -259,7 +259,8 @@ impl Comment {
 
     fn decode(record: &str) -> Option<Comment> {
         let f: Vec<&str> = record.split(FIELD).collect();
-        let [id, state, kind, path, side, start, end, text, snapshot, before, after, unique] = f[..]
+        let [id, state, kind, path, side, start, end, text, snapshot, before, after, unique] =
+            f[..]
         else {
             return None;
         };

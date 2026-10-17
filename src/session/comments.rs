@@ -377,7 +377,9 @@ impl Session {
     /// Whether a click at the cell lands on the Range counter.
     pub(super) fn on_range_chip(&self, column: u16, row: u16) -> bool {
         self.range_chip().is_some_and(|(x, text)| {
-            row == self.size.1 - BOTTOM_ROWS && column >= x && column < x + text.chars().count() as u16
+            row == self.size.1 - BOTTOM_ROWS
+                && column >= x
+                && column < x + text.chars().count() as u16
         })
     }
 
@@ -421,8 +423,16 @@ impl Session {
         let saved = self.comments.set_state(&ids, state);
         match saved {
             Ok(()) => {
-                let verb = if state == State::Closed { "Closed" } else { "Reopened" };
-                let noun = if ids.len() == 1 { "Comment" } else { "Comments" };
+                let verb = if state == State::Closed {
+                    "Closed"
+                } else {
+                    "Reopened"
+                };
+                let noun = if ids.len() == 1 {
+                    "Comment"
+                } else {
+                    "Comments"
+                };
                 self.message = Some(format!("{verb} {} {noun}", ids.len()));
             }
             Err(e) => self.message = Some(e),

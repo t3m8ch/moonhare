@@ -229,6 +229,9 @@ enum Mode {
     Command(String),
 }
 
+/// Scope ends and Comments revision, with the ids worked out for them.
+type HiddenCache = ((String, String, u64), Vec<u64>);
+
 pub struct Session {
     repo: Repo,
     range: Range,
@@ -265,7 +268,7 @@ pub struct Session {
     confirm_clear: bool,
     /// Ids of the Comments hidden in the other files of the Scope, with the
     /// Scope ends and Comments revision they were worked out for.
-    hidden_cache: std::cell::RefCell<Option<((String, String, u64), Vec<u64>)>>,
+    hidden_cache: std::cell::RefCell<Option<HiddenCache>>,
     selected: usize,
     loaded: Option<Result<Loaded, String>>,
     vp: Viewport,

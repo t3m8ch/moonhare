@@ -410,7 +410,10 @@ fn records_that_cannot_be_read_are_kept_not_overwritten() {
     }
     let saved = std::fs::read_to_string(&file).unwrap();
     assert!(saved.contains("from a newer moonhare"), "{saved:?}");
-    assert!(saved.contains("second") && saved.contains("first"), "{saved:?}");
+    assert!(
+        saved.contains("second") && saved.contains("first"),
+        "{saved:?}"
+    );
 }
 
 #[test]
@@ -422,7 +425,8 @@ fn hidden_count_includes_line_comments_in_other_files_of_the_scope() {
         h.keys("]fj");
         h.keys("cion a<Esc><CR>");
     }
-    fx.write("src/a.rs", "fn a() {\n    11\n}\n").commit("rewrite a");
+    fx.write("src/a.rs", "fn a() {\n    11\n}\n")
+        .commit("rewrite a");
     let mut h = Harness::open(&fx, 160, 30);
     // README.md is the open file, yet the Comment in src/a.rs is counted.
     let screen = h.screen();
@@ -457,10 +461,37 @@ fn x_and_o_say_how_many_comments_they_changed() {
     assert!(h.screen().contains("Reopened 2 Comments"), "{}", h.screen());
 }
 
+#[test]
+fn help_lists_the_comment_keys() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 120, 120);
+    h.keys("?");
+    let screen = h.screen();
+    for (key, word) in [
+        ("c", "строк"),
+        ("C", "файл"),
+        ("v", "дифф"),
+        ("x", "закрыть"),
+        ("o", "открыт"),
+        (":comment", "диапазон"),
+        (":comments clear", "подтверждени"),
+    ] {
+        let found = screen.lines().any(|l| {
+            let row = l.trim_start_matches(['│', ' ']);
+            row.starts_with(&format!("{key} ")) && l.contains(word)
+        });
+        assert!(found, "no help row for {key} ({word}):\n{screen}");
+    }
+}
+
 /// The mode badge at the start of the status line.
 fn badge(h: &mut Harness) -> String {
     let screen = h.screen();
-    let last = screen.lines().nth(screen.lines().count() - 2).unwrap().to_string();
+    let last = screen
+        .lines()
+        .nth(screen.lines().count() - 2)
+        .unwrap()
+        .to_string();
     last.split_whitespace().next().unwrap_or("").to_string()
 }
 
