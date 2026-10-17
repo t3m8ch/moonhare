@@ -22,3 +22,29 @@ pub fn osc52(text: &str) -> String {
     out.push('\x07');
     out
 }
+
+/// `text` as it may be handed over: a terminal or an agent reading it must
+/// not meet escape sequences or text-direction tricks that came from code.
+/// Line breaks and tabs stay, `\r` goes, other control characters become U+FFFD.
+pub fn sanitize(text: &str) -> String {
+    text.chars()
+        .filter(|&c| c != '\r' && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        .map(|c| {
+            if c.is_control() && c != '\n' && c != '\t' {
+                '\u{fffd}'
+            } else {
+                c
+            }
+        })
+        .collect()
+}
+
+/// The most text one OSC 52 carries. Terminals and multiplexers drop or cut
+/// longer sequences (a payload of 100000 base64 bytes is the common ceiling),
+/// so a longer text is refused instead of arriving cut.
+pub const MAX_TEXT: usize = 74_994;
+
+/// [`osc52`], or `None` when `text` is longer than [`MAX_TEXT`] bytes.
+pub fn osc52_limited(text: &str) -> Option<String> {
+    (text.len() <= MAX_TEXT).then(|| osc52(text))
+}

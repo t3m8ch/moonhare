@@ -22,6 +22,7 @@ use crate::git::{ChangedFile, Commit, GitError, Range, Repo, Status, Target};
 use crate::review::{self, FileChange, Mark, Review};
 use crate::special;
 use crate::viewport::Viewport;
+use rounds::HEADER;
 
 /// Below this size the session shows a "terminal too small" screen.
 pub const MIN_SIZE: (u16, u16) = (60, 15);
@@ -224,7 +225,9 @@ mod marks;
 mod mechanical_view;
 mod nav;
 mod overlay;
+mod prompt;
 mod reload;
+mod rounds;
 mod unreviewed;
 mod windows;
 
@@ -308,6 +311,12 @@ pub struct Session {
     diagrams: diagram::Diagrams,
     groups: groups::Groups,
     explain: explain::Explain,
+    /// Clipboard sequences waiting to be written to the terminal.
+    terminal_out: Vec<String>,
+    /// The Prompt overlay (`Space p s`), scrolled to this line.
+    prompt_view: Option<(String, usize)>,
+    /// The Prompts copied so far, which cut the commits into Rounds.
+    prompts: crate::rounds::Prompts,
 }
 
 impl Session {
@@ -474,10 +483,18 @@ impl Session {
             diagrams: Default::default(),
             groups: Default::default(),
             explain: Default::default(),
+            terminal_out: Vec::new(),
+            prompt_view: None,
+            prompts: crate::rounds::Prompts::open(&review_dir),
         };
         session.load_selected();
         session.sync_view();
         Ok(session)
+    }
+
+    /// Sequences the terminal must be sent (clipboard copies), oldest first.
+    pub fn take_terminal_output(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.terminal_out)
     }
 
     /// Time passing without input; opens the which-key window once a key
@@ -590,7 +607,7 @@ impl Session {
         let frame = self
             .range_frame(side.width.saturating_sub(2) as usize)
             .len() as u16;
-        let wanted = self.commits.len() as u16 + 3 + frame.min(cap.saturating_sub(4));
+        let wanted = self.list_rows().len() as u16 + 3 + frame.min(cap.saturating_sub(4));
         Rect::new(side.x, side.y, side.width, wanted.min(cap))
     }
 
@@ -901,6 +918,7 @@ impl Session {
             || self.explain_key(key)
             || self.analysis_key(key)
             || self.groups_key(key)
+            || self.prompt_key(key)
         {
             return;
         }
@@ -973,6 +991,7 @@ impl Session {
                 });
             }
             KeyCode::Char('a') if !ctrl => self.show_whole_range(),
+            KeyCode::Char('Y') if !ctrl => self.copy_prompt(),
             KeyCode::Char('m') if !ctrl => self.toggle_mark(),
             KeyCode::Char('M') if !ctrl => self.mark_and_advance(),
             KeyCode::Char('R') if !ctrl => self.reload(),
@@ -1111,6 +1130,7 @@ impl Session {
                 self.message = Some("Delete all Comments for good? y / n".into());
             }
             other if self.analysis_command(other) || self.diagram_command(other) => {}
+            other if self.prompt_command(other) => {}
             other if other.split_whitespace().next() == Some("scope") => {
                 let arg = other["scope".len()..].trim();
                 if let Err(e) = self.scope_command(arg) {
@@ -1122,7 +1142,11 @@ impl Session {
     }
 
     fn on_mouse(&mut self, mouse: MouseEvent) {
-        if self.help.is_some() || self.editor.is_some() || self.confirm_clear {
+        if self.help.is_some()
+            || self.editor.is_some()
+            || self.confirm_clear
+            || self.prompt_view.is_some()
+        {
             return;
         }
         let at = |area: Rect| area.contains((mouse.column, mouse.row).into());
@@ -1145,10 +1169,16 @@ impl Session {
                 // Range Comments hang under it.
                 if row >= 1 && row <= capacity + 1 + frame {
                     self.focus = Focus::Commits;
-                    self.commit_cursor = match row {
-                        r if r <= 1 + frame => 0,
-                        r => (self.commit_offset(capacity) + r - 1 - frame).min(self.commits.len()),
-                    };
+                    match row {
+                        r if r <= 1 + frame => self.commit_cursor = 0,
+                        r => {
+                            // A Round header is not a commit: the click only focuses.
+                            let at = self.commit_offset(capacity) + r - 2 - frame;
+                            if let Some(rounds::ListRow::Commit(i)) = self.list_rows().get(at) {
+                                self.commit_cursor = i + 1;
+                            }
+                        }
+                    }
                 }
             }
             MouseEventKind::Down(_) if at(self.files_area()) && !self.picker => {
@@ -1215,6 +1245,7 @@ impl Session {
             self.render_which_key(buf, prefix);
         }
         self.render_editor_popup(buf);
+        self.render_prompt_view(buf);
     }
 
     fn render_sidebar(&self, buf: &mut Buffer) {
@@ -1243,9 +1274,13 @@ impl Session {
         }
     }
 
-    /// Index of the first commit shown when `capacity` commit rows fit.
+    /// Index of the first list row (a commit or a Round header) shown when
+    /// `capacity` rows fit.
     fn commit_offset(&self, capacity: usize) -> usize {
-        self.commit_cursor.max(1).saturating_sub(capacity)
+        let cursor = (self.list_rows().iter())
+            .position(|r| *r == rounds::ListRow::Commit(self.commit_cursor.saturating_sub(1)))
+            .unwrap_or(0);
+        (cursor + 1).saturating_sub(capacity)
     }
 
     /// Whether the commit list marks commit `index` as inside the Scope.
@@ -1267,25 +1302,28 @@ impl Session {
             .map(|a| (a.min(self.commit_cursor), a.max(self.commit_cursor)));
         let rows = std::iter::once((0, "▣ Весь Range".to_string(), self.scope == Scope::All))
             .chain(
-                self.commits
-                    .iter()
-                    .enumerate()
+                self.list_rows()
+                    .into_iter()
                     .skip(offset)
                     .take(capacity)
-                    .map(|(i, c)| {
-                        let sha = &c.sha[..7.min(c.sha.len())];
-                        (
-                            i + 1,
-                            format!("{:>2} {sha} {}", i + 1, c.subject),
-                            self.in_scope(i),
-                        )
+                    .map(|row| match row {
+                        rounds::ListRow::Header(title) => (HEADER, format!("── {title}"), false),
+                        rounds::ListRow::Commit(i) => {
+                            let c = &self.commits[i];
+                            let sha = &c.sha[..7.min(c.sha.len())];
+                            (
+                                i + 1,
+                                format!("{:>2} {sha} {}", i + 1, c.subject),
+                                self.in_scope(i),
+                            )
+                        }
                     }),
             );
         for (row, (position, text, in_scope)) in rows.enumerate() {
             let cursor = show_cursor && position == self.commit_cursor;
             let mark = if in_scope { '●' } else { ' ' };
             let line = format!("{}{mark} {text}", if cursor { '>' } else { ' ' });
-            let mut style = Style::new().fg(FG);
+            let mut style = Style::new().fg(if position == HEADER { DIM } else { FG });
             if selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&position)) {
                 style = style.bg(Color::Indexed(24));
             }
@@ -1314,7 +1352,7 @@ impl Session {
     fn render_picker(&self, buf: &mut Buffer) {
         let width = self.size.0.saturating_sub(4).min(72);
         let frame = self.range_frame(width.saturating_sub(2) as usize).len() as u16;
-        let height = (self.commits.len() as u16 + 4 + frame)
+        let height = (self.list_rows().len() as u16 + 4 + frame)
             .min(self.size.1.saturating_sub(BOTTOM_ROWS + 1));
         let area = Rect::new(
             (self.size.0 - width) / 2,
@@ -1662,10 +1700,11 @@ impl Session {
         let text = match &self.message {
             Some(m) => format!(" {m}"),
             None => format!(
-                " {}..{}  scope:{}  layout:{layout} ({how})",
+                " {}..{}  scope:{}  round:{}  layout:{layout} ({how})",
                 self.range.base_name,
                 self.range.head_name,
                 self.scope_label(),
+                self.current_round(),
             ),
         };
         let text = self.groups_status(&text);

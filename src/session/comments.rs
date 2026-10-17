@@ -94,7 +94,7 @@ impl CommentLayout {
 }
 
 /// `text` cut into lines of at most `width` characters.
-fn wrap(text: &str, width: usize) -> Vec<String> {
+pub(super) fn wrap(text: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut out = Vec::new();
     for line in text.split('\n') {
@@ -386,7 +386,7 @@ impl Session {
     /// The Comments `x` and `o` act on: the Range ones while the cursor is on
     /// the "Весь Range" row, else the line ones that cover the cursor line or,
     /// failing that, the ones on the file.
-    fn comments_at_cursor(&self) -> Vec<u64> {
+    pub(super) fn comments_at_cursor(&self) -> Vec<u64> {
         let ids = |keep: &dyn Fn(&Target) -> bool| -> Vec<u64> {
             (self.comments.all().iter())
                 .filter(|c| keep(&c.target))

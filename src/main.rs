@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -127,10 +127,18 @@ fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Re
         session.tick();
         redraw |= busy || session.analyst_busy();
         if let Some(text) = session.take_clipboard() {
-            use std::io::Write;
             let mut out = io::stdout();
             let _ = out.write_all(moonhare::clipboard::osc52(&text).as_bytes());
             let _ = out.flush();
+        }
+        // Prompts come as ready OSC 52 sequences.
+        let sequences = session.take_terminal_output();
+        if !sequences.is_empty() {
+            let mut out = io::stdout();
+            for sequence in sequences {
+                out.write_all(sequence.as_bytes())?;
+            }
+            out.flush()?;
         }
     }
     Ok(())

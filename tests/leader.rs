@@ -50,7 +50,7 @@ fn help_lists_the_reviewed_marks() {
 #[test]
 fn which_key_and_help_list_unreviewed_jumps_and_reset() {
     let fx = feature_branch();
-    let mut h = Harness::open(&fx, 100, 60);
+    let mut h = Harness::open(&fx, 100, 90);
     h.keys("]").wait(350);
     assert!(h.screen().contains("неотревьюенный"), "{}", h.screen());
     h.keys("<Esc>[").wait(350);
@@ -303,7 +303,7 @@ fn hint_line_labels_a_pending_chain() {
 #[test]
 fn question_mark_shows_help_with_all_keys_and_zellij_caveat() {
     let fx = feature_branch();
-    let mut h = Harness::open(&fx, 100, 60);
+    let mut h = Harness::open(&fx, 100, 80);
     h.keys("?");
     let screen = h.screen();
     for expected in [
