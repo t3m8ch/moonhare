@@ -105,6 +105,7 @@ impl Target {
     }
 }
 
+#[derive(Clone)]
 pub struct Repo {
     root: PathBuf,
 }
@@ -163,12 +164,16 @@ impl Repo {
             .map_err(|e| GitError(format!("cannot run git: {e}")))?;
         // Git answers while it still reads: write on a thread of its own, or
         // both sides could wait for the other to empty a full pipe.
-        if let Some(mut stdin) = child.stdin.take() {
-            let _ = stdin.write_all(input);
-        }
-        let out = child
-            .wait_with_output()
-            .map_err(|e| GitError(format!("cannot run git: {e}")))?;
+        let stdin = child.stdin.take();
+        let out = std::thread::scope(|scope| {
+            scope.spawn(move || {
+                if let Some(mut stdin) = stdin {
+                    let _ = stdin.write_all(input);
+                }
+            });
+            child.wait_with_output()
+        })
+        .map_err(|e| GitError(format!("cannot run git: {e}")))?;
         if out.status.success() {
             Ok(out.stdout)
         } else {

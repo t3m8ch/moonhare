@@ -74,7 +74,7 @@ fn help_lists_the_diagram_command_and_the_overlay_keys() {
 #[test]
 fn which_key_and_help_list_the_unreviewed_filter() {
     let fx = feature_branch();
-    let mut h = Harness::open(&fx, 100, 60);
+    let mut h = Harness::open(&fx, 100, 70);
     h.keys("<Space>").wait(350);
     let screen = h.screen();
     assert!(screen.contains("непросмотренн"), "{screen}");
@@ -96,7 +96,7 @@ fn the_visual_badge_shows_only_while_the_commit_list_has_the_focus() {
 #[test]
 fn which_key_and_help_list_the_analyst_summary() {
     let fx = feature_branch();
-    let mut h = Harness::open(&fx, 100, 60);
+    let mut h = Harness::open(&fx, 100, 70);
     h.keys("<Space>").wait(350);
     assert!(h.screen().contains("саммари"), "{}", h.screen());
     h.keys("<Esc>?");
@@ -303,7 +303,7 @@ fn hint_line_labels_a_pending_chain() {
 #[test]
 fn question_mark_shows_help_with_all_keys_and_zellij_caveat() {
     let fx = feature_branch();
-    let mut h = Harness::open(&fx, 100, 80);
+    let mut h = Harness::open(&fx, 100, 90);
     h.keys("?");
     let screen = h.screen();
     for expected in [

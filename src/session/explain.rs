@@ -22,6 +22,7 @@ struct Overlay {
     id: u64,
     title: String,
     state: State,
+    scroll: scroll::Scroll,
 }
 
 pub(super) struct Explain {
@@ -57,8 +58,16 @@ impl Session {
     /// Keys of the Explain overlay and the ones that open it; returns whether
     /// the key was used.
     pub(super) fn explain_key(&mut self, key: KeyEvent) -> bool {
-        if self.explain.overlay.is_some() {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+        if let Some(mut scroll) = self.explain.overlay.as_ref().map(|o| o.scroll) {
+            let (total, rows) = (
+                self.explain_lines().len(),
+                scroll::text_rows(self.overlay_area()),
+            );
+            if scroll.key(key, total, rows) {
+                if let Some(overlay) = &mut self.explain.overlay {
+                    overlay.scroll = scroll;
+                }
+            } else if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
                 self.explain.overlay = None;
                 self.explain.error = None;
             }
@@ -124,6 +133,7 @@ impl Session {
                 id,
                 title: format!("{}cached ", title),
                 state: State::Done(explanation.text),
+                scroll: Default::default(),
             });
             return;
         }
@@ -133,6 +143,7 @@ impl Session {
             id,
             title,
             state: State::Waiting,
+            scroll: Default::default(),
         });
         let sender = self.explain.sender.clone();
         std::thread::spawn(move || {
@@ -274,21 +285,11 @@ impl Session {
         }
     }
 
-    pub(super) fn render_explain(&self, buf: &mut Buffer) {
+    /// The text of the overlay, wrapped to its box.
+    pub(super) fn explain_lines(&self) -> Vec<String> {
         let Some(overlay) = &self.explain.overlay else {
-            return;
+            return Vec::new();
         };
-        let width = self.size.0.saturating_sub(4).min(100);
-        let height = self.size.1.saturating_sub(4);
-        let area = Rect::new(
-            (self.size.0 - width) / 2,
-            (self.size.1 - height) / 2,
-            width,
-            height,
-        );
-        clear_area(buf, area);
-        draw_box(buf, area, &overlay.title);
-        let inner_w = width.saturating_sub(4) as usize;
         let text = match &overlay.state {
             State::Waiting => format!(
                 "{} The Analyst is explaining… {}s. Esc cancels.",
@@ -298,18 +299,20 @@ impl Session {
             State::Done(text) => text.clone(),
             State::Failed(error) => format!("Analyst: {error}"),
         };
-        for (row, line) in wrap(&text, inner_w)
-            .iter()
-            .take(height.saturating_sub(2) as usize)
-            .enumerate()
-        {
-            buf.set_stringn(
-                area.x + 2,
-                area.y + 1 + row as u16,
-                line,
-                inner_w,
-                Style::new().fg(FG),
-            );
-        }
+        wrap(&text, scroll::text_cols(self.overlay_area()))
+    }
+
+    pub(super) fn explain_scroll_mut(&mut self) -> Option<&mut scroll::Scroll> {
+        self.explain.overlay.as_mut().map(|o| &mut o.scroll)
+    }
+
+    pub(super) fn render_explain(&self, buf: &mut Buffer) {
+        let Some(overlay) = &self.explain.overlay else {
+            return;
+        };
+        let area = self.overlay_area();
+        clear_area(buf, area);
+        draw_box(buf, area, &overlay.title);
+        scroll::render_lines(buf, area, &self.explain_lines(), &overlay.scroll);
     }
 }

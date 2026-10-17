@@ -21,6 +21,8 @@ pub(super) struct Editor {
     /// The draft was started from a VISUAL selection, which stays highlighted
     /// while it is open.
     selected: bool,
+    /// How far the popup of a File or Range draft is scrolled.
+    scroll: super::scroll::Scroll,
 }
 
 /// One drawn row of a Comment box.
@@ -372,6 +374,7 @@ impl Session {
             insert: false,
             confirm: false,
             selected,
+            scroll: super::scroll::Scroll::at_end(),
         });
     }
 
@@ -552,6 +555,7 @@ impl Session {
             insert: false,
             confirm: false,
             selected: false,
+            scroll: super::scroll::Scroll::at_end(),
         });
         self.visual = None;
     }
@@ -606,15 +610,17 @@ impl Session {
             insert: false,
             confirm: false,
             selected: false,
+            scroll: super::scroll::Scroll::at_end(),
         });
         self.visual = None;
     }
 
-    /// File and Range drafts have no line to hang under: a box over the screen.
-    pub(super) fn render_editor_popup(&self, buf: &mut Buffer) {
-        let Some(ed) = &self.editor else { return };
+    /// The popup of a File or Range draft: its box, title and wrapped text.
+    /// Drafts on lines are drawn under the lines instead.
+    pub(super) fn editor_popup(&self) -> Option<(Rect, String, Vec<String>)> {
+        let ed = self.editor.as_ref()?;
         let what = match &ed.target {
-            Target::Lines { .. } => return,
+            Target::Lines { .. } => return None,
             Target::File { path } => format!(" Comment on {path} "),
             Target::Range => " Comment on the whole Range ".to_string(),
         };
@@ -624,28 +630,27 @@ impl Session {
         let mut lines = wrap(&body, inner);
         lines.push(String::new());
         lines.push(editor_hint(ed.insert, ed.confirm).to_string());
-        let height = (lines.len() as u16 + 2).min(self.size.1);
+        let height = (lines.len() as u16 + 2).min(self.size.1.saturating_sub(BOTTOM_ROWS));
         let area = Rect::new(
             (self.size.0 - width) / 2,
-            (self.size.1 - height) / 2,
+            (self.size.1.saturating_sub(height)) / 2,
             width,
             height,
         );
+        Some((area, what, lines))
+    }
+
+    pub(super) fn editor_scroll_mut(&mut self) -> Option<&mut super::scroll::Scroll> {
+        self.editor.as_mut().map(|ed| &mut ed.scroll)
+    }
+
+    pub(super) fn render_editor_popup(&self, buf: &mut Buffer) {
+        let (Some((area, what, lines)), Some(ed)) = (self.editor_popup(), &self.editor) else {
+            return;
+        };
         clear_area(buf, area);
         draw_box(buf, area, &what);
-        for (k, line) in lines
-            .iter()
-            .take(height.saturating_sub(2) as usize)
-            .enumerate()
-        {
-            buf.set_stringn(
-                area.x + 2,
-                area.y + 1 + k as u16,
-                line,
-                inner,
-                Style::new().fg(FG),
-            );
-        }
+        super::scroll::render_lines(buf, area, &lines, &ed.scroll);
     }
 
     /// Keys of Normal mode that deal with Comments.
@@ -668,6 +673,9 @@ impl Session {
 
     /// Keys while the editor is open.
     pub(super) fn editor_key(&mut self, key: KeyEvent) {
+        let popup = self
+            .editor_popup()
+            .map(|(area, _, lines)| (lines.len(), super::scroll::text_rows(area)));
         let Some(ed) = self.editor.as_mut() else {
             return;
         };
@@ -682,6 +690,8 @@ impl Session {
                 _ => {}
             }
         } else if ed.insert {
+            // Typing brings the end of the draft, with the cursor, into view.
+            ed.scroll.jump_to_end();
             match key.code {
                 KeyCode::Esc => ed.insert = false,
                 KeyCode::Enter => ed.text.push('\n'),
@@ -691,6 +701,7 @@ impl Session {
                 KeyCode::Char(c) if !ctrl && !c.is_control() => ed.text.push(c),
                 _ => {}
             }
+        } else if popup.is_some_and(|(total, rows)| ed.scroll.key(key, total, rows)) {
         } else {
             match key.code {
                 KeyCode::Char('i' | 'a') if !ctrl => ed.insert = true,

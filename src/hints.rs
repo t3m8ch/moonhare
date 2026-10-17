@@ -181,6 +181,8 @@ const NOTES: &[&str] = &[
     "zellij перехватывает Ctrl-h/j/k/l (и Ctrl-w в некоторых раскладках):",
     "если алиасы не доходят, используйте Ctrl-w + h/j/k/l и Tab.",
     "Ctrl-h в большинстве терминалов приходит как Backspace и не работает.",
+    "Длинный текст в оверлеях листается: j/k, ↑/↓, Ctrl-d/u, PageUp/PageDown,",
+    "gg/G, Home/End и колесо мыши; позиция видна на нижней рамке.",
 ];
 
 /// The `?` help: notes, then every key from [`PLAIN`] and [`BINDINGS`].

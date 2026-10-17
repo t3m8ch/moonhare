@@ -14,14 +14,17 @@ enum Delivery {
 impl Session {
     /// The `Space p` keys; returns whether the key was one of them.
     pub(super) fn prompt_key(&mut self, key: KeyEvent) -> bool {
-        if let Some((text, offset)) = &mut self.prompt_view {
-            match key.code {
-                KeyCode::Esc | KeyCode::Char('q') => self.prompt_view = None,
-                KeyCode::Char('j') | KeyCode::Down => {
-                    *offset = (*offset + 1).min(text.lines().count().saturating_sub(1))
+        if let Some(mut scroll) = self.prompt_view.as_ref().map(|(_, s)| *s) {
+            let (total, rows) = (
+                self.prompt_lines().len(),
+                scroll::text_rows(self.full_overlay_area()),
+            );
+            if scroll.key(key, total, rows) {
+                if let Some((_, current)) = &mut self.prompt_view {
+                    *current = scroll;
                 }
-                KeyCode::Char('k') | KeyCode::Up => *offset = offset.saturating_sub(1),
-                _ => {}
+            } else if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+                self.prompt_view = None;
             }
             return true;
         }
@@ -85,32 +88,29 @@ impl Session {
             self.message = Some("No open Comments to show".into());
             return;
         }
-        self.prompt_view = Some((self.prompt_text(&ids), 0));
+        self.prompt_view = Some((self.prompt_text(&ids), scroll::Scroll::default()));
     }
 
     pub(super) fn render_prompt_view(&self, buf: &mut Buffer) {
-        let Some((text, offset)) = &self.prompt_view else {
+        let Some((_, scroll)) = &self.prompt_view else {
             return;
         };
         let area = self.full_overlay_area();
         clear_area(buf, area);
-        draw_box(buf, area, " Prompt (j/k scroll, Esc close) ");
-        let inner = area.width.saturating_sub(4) as usize;
-        let rows = area.height.saturating_sub(2) as usize;
-        for (i, line) in super::comments::wrap(text, inner)
-            .iter()
-            .skip(*offset)
-            .take(rows)
-            .enumerate()
-        {
-            buf.set_stringn(
-                area.x + 2,
-                area.y + 1 + i as u16,
-                line,
-                inner,
-                Style::new().fg(FG),
-            );
-        }
+        draw_box(
+            buf,
+            area,
+            " Prompt (j/k, Ctrl-d/u, gg/G, wheel scroll; Esc close) ",
+        );
+        scroll::render_lines(buf, area, &self.prompt_lines(), scroll);
+    }
+
+    /// The Prompt shown, wrapped to the width of its box.
+    pub(super) fn prompt_lines(&self) -> Vec<String> {
+        let Some((text, _)) = &self.prompt_view else {
+            return Vec::new();
+        };
+        super::comments::wrap(text, scroll::text_cols(self.full_overlay_area()))
     }
 
     fn open_comment_ids(&self) -> Vec<u64> {

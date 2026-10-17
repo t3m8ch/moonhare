@@ -34,7 +34,9 @@ impl Session {
     /// The area inside the border of the overlay that is on top, if any.
     fn overlay_text_rect(&self) -> Option<Rect> {
         let full = self.full_overlay_area();
-        let area = if self.prompt_view.is_some() || self.help.is_some() {
+        let area = if let Some((area, ..)) = self.editor_popup() {
+            area
+        } else if self.prompt_view.is_some() || self.help.is_some() {
             full
         } else if self.explain_open() || self.diagram_open() || self.summary_open() {
             self.overlay_area()
@@ -177,15 +179,65 @@ impl Session {
         });
     }
 
-    /// The wheel: one line, as `j` and `k` scroll the overlay.
+    /// The wheel: a few lines, in the overlay that is on top.
     fn scroll_overlay(&mut self, down: bool) {
-        let code = KeyCode::Char(if down { 'j' } else { 'k' });
-        if self.help.is_some() {
-            self.help_key(code);
+        // Selected cells would stay where they are and hold other text.
+        if !self.mouse.text_press {
+            self.mouse.text = None;
+        }
+        let (total, rows) = (
+            self.overlay_lines().len(),
+            scroll::text_rows(self.overlay_box()),
+        );
+        if let Some(scroll) = self.overlay_scroll() {
+            scroll.wheel(down, total, rows);
+        }
+    }
+
+    /// The box and the wrapped text of the overlay that is on top, whatever it
+    /// is: what scrolling needs to know.
+    fn overlay_box(&self) -> Rect {
+        if let Some((area, ..)) = self.editor_popup() {
+            area
+        } else if self.prompt_view.is_some() || self.help.is_some() {
+            self.full_overlay_area()
+        } else {
+            self.overlay_area()
+        }
+    }
+
+    fn overlay_lines(&self) -> Vec<String> {
+        if let Some((_, _, lines)) = self.editor_popup() {
+            lines
         } else if self.prompt_view.is_some() {
-            self.prompt_key(KeyEvent::new(code, KeyModifiers::NONE));
+            self.prompt_lines()
+        } else if self.help.is_some() {
+            self.help_lines()
+        } else if self.explain_open() {
+            self.explain_lines()
         } else if self.diagram_open() {
-            self.diagram_key(KeyEvent::new(code, KeyModifiers::NONE));
+            self.open_lines()
+        } else if self.summary_open() {
+            self.summary_view().1
+        } else {
+            Vec::new()
+        }
+    }
+
+    /// The scroll of the overlay that is on top.
+    fn overlay_scroll(&mut self) -> Option<&mut scroll::Scroll> {
+        if self.editor.is_some() {
+            self.editor_scroll_mut()
+        } else if self.prompt_view.is_some() {
+            self.prompt_view.as_mut().map(|(_, scroll)| scroll)
+        } else if self.help.is_some() {
+            self.help.as_mut()
+        } else if self.explain_open() {
+            self.explain_scroll_mut()
+        } else if self.diagram_open() {
+            self.diagram_scroll_mut()
+        } else {
+            self.summary_scroll_mut()
         }
     }
 

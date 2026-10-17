@@ -141,12 +141,11 @@ pub struct Harness {
 
 impl Harness {
     pub fn open(fx: &Fixture, width: u16, height: u16) -> Self {
-        Harness {
-            session: Session::open(fx.path(), width, height).expect("session opens"),
-        }
+        Self::from_session(Session::open(fx.path(), width, height).expect("session opens"))
     }
 
-    pub fn from_session(session: Session) -> Self {
+    pub fn from_session(mut session: Session) -> Self {
+        session.wait_for_diff();
         Harness { session }
     }
 
@@ -156,7 +155,7 @@ impl Harness {
         width: u16,
         height: u16,
     ) -> Result<Self, moonhare::session::Error> {
-        Session::open_target(fx.path(), target, width, height).map(|session| Harness { session })
+        Session::open_target(fx.path(), target, width, height).map(Self::from_session)
     }
 
     pub fn open_target(fx: &Fixture, target: &Target, width: u16, height: u16) -> Self {
@@ -168,13 +167,30 @@ impl Harness {
     pub fn keys(&mut self, notation: &str) -> &mut Self {
         for ev in parse_keys(notation) {
             self.session.handle(ev);
+            self.session.wait_for_diff();
         }
+        self
+    }
+
+    /// Like [`keys`](Self::keys), but without waiting for the diff of the
+    /// file the keys land on: what the Reviewer sees right after the key.
+    pub fn keys_now(&mut self, notation: &str) -> &mut Self {
+        for ev in parse_keys(notation) {
+            self.session.handle(ev);
+        }
+        self
+    }
+
+    /// Wait until the selected file has its diff.
+    pub fn settle(&mut self) -> &mut Self {
+        self.session.wait_for_diff();
         self
     }
 
     /// Let `ms` milliseconds pass without input.
     pub fn wait(&mut self, ms: u64) -> &mut Self {
         self.session.elapse(std::time::Duration::from_millis(ms));
+        self.session.tick();
         self
     }
 
@@ -184,6 +200,7 @@ impl Harness {
 
     pub fn resize(&mut self, width: u16, height: u16) -> &mut Self {
         self.session.handle(Event::Resize(width, height));
+        self.session.wait_for_diff();
         self
     }
 
@@ -236,10 +253,12 @@ impl Harness {
             row,
             modifiers: KeyModifiers::NONE,
         }));
+        self.session.wait_for_diff();
         self
     }
 
     pub fn frame(&mut self) -> Frame {
+        self.session.wait_for_diff();
         self.session.frame()
     }
 
@@ -248,8 +267,19 @@ impl Harness {
         self.frame().text()
     }
 
+    /// The frame as it is now, even if the selected file still waits for its
+    /// diff.
+    pub fn frame_now(&mut self) -> Frame {
+        self.session.frame()
+    }
+
+    pub fn screen_now(&mut self) -> String {
+        self.frame_now().text()
+    }
+
     /// The session under test, for calls that are not terminal events.
     pub fn session(&mut self) -> &mut Session {
+        self.session.wait_for_diff();
         &mut self.session
     }
 
@@ -275,6 +305,12 @@ pub fn parse_keys(notation: &str) -> Vec<Event> {
                     "BS" => Some(key(KeyCode::Backspace, KeyModifiers::NONE)),
                     "Space" => Some(key(KeyCode::Char(' '), KeyModifiers::NONE)),
                     "C-w" => Some(key(KeyCode::Char('w'), KeyModifiers::CONTROL)),
+                    "Up" => Some(key(KeyCode::Up, KeyModifiers::NONE)),
+                    "Down" => Some(key(KeyCode::Down, KeyModifiers::NONE)),
+                    "PageUp" => Some(key(KeyCode::PageUp, KeyModifiers::NONE)),
+                    "PageDown" => Some(key(KeyCode::PageDown, KeyModifiers::NONE)),
+                    "Home" => Some(key(KeyCode::Home, KeyModifiers::NONE)),
+                    "End" => Some(key(KeyCode::End, KeyModifiers::NONE)),
                     "lt" => Some(key(KeyCode::Char('<'), KeyModifiers::NONE)),
                     n if n.starts_with("C-") && n.chars().count() == 3 => Some(key(
                         KeyCode::Char(n.chars().nth(2).unwrap()),
