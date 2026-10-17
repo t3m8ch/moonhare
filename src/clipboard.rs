@@ -28,7 +28,15 @@ pub fn osc52(text: &str) -> String {
 /// Line breaks and tabs stay, `\r` goes, other control characters become U+FFFD.
 pub fn sanitize(text: &str) -> String {
     text.chars()
-        .filter(|&c| c != '\r' && !matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}'))
+        .filter(|&c| {
+            c != '\r'
+                && !matches!(
+                    c,
+                    '\u{200e}' | '\u{200f}' | '\u{61c}' | '\u{2028}' | '\u{2029}'
+                        | '\u{202a}'..='\u{202e}'
+                        | '\u{2066}'..='\u{2069}'
+                )
+        })
         .map(|c| {
             if c.is_control() && c != '\n' && c != '\t' {
                 '\u{fffd}'
