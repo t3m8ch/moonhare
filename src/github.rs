@@ -2,12 +2,17 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use crate::forge::{Forge, ForgeError, PullRequest};
 
 pub struct GitHub {
     program: PathBuf,
+    /// How long `gh pr view` may take before the Forge counts as unreachable.
+    timeout: Duration,
 }
+
+const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
 
 impl GitHub {
     pub fn new() -> GitHub {
@@ -18,7 +23,14 @@ impl GitHub {
     pub fn with_program(program: impl Into<PathBuf>) -> GitHub {
         GitHub {
             program: program.into(),
+            timeout: DEFAULT_TIMEOUT,
         }
+    }
+
+    /// Give up on `gh pr view` after `timeout`.
+    pub fn with_timeout(mut self, timeout: Duration) -> GitHub {
+        self.timeout = timeout;
+        self
     }
 }
 
@@ -37,10 +49,22 @@ impl GitHub {
     }
 
     fn view(&self, selector: &str) -> Result<PullRequest, ForgeError> {
-        let out = Command::new(&self.program)
-            .args(["pr", "view", "--json", PR_FIELDS, "--", selector])
-            .output()
-            .map_err(|e| self.spawn_error(&e))?;
+        let mut command = Command::new(&self.program);
+        command.args(["pr", "view", "--json", PR_FIELDS, "--", selector]);
+        // A `gh` that hangs must not keep the pull request awaited for ever.
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(command.output());
+        });
+        let out = match receiver.recv_timeout(self.timeout) {
+            Ok(out) => out.map_err(|e| self.spawn_error(&e))?,
+            Err(_) => {
+                return Err(ForgeError::Network(format!(
+                    "gh did not answer in {}s, check the network",
+                    self.timeout.as_secs()
+                )))
+            }
+        };
         if !out.status.success() {
             return Err(classify(&String::from_utf8_lossy(&out.stderr)));
         }

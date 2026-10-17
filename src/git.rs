@@ -161,7 +161,8 @@ impl Repo {
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| GitError(format!("cannot run git: {e}")))?;
-        // The questions are short; git reads them all before it answers.
+        // Git answers while it still reads: write on a thread of its own, or
+        // both sides could wait for the other to empty a full pipe.
         if let Some(mut stdin) = child.stdin.take() {
             let _ = stdin.write_all(input);
         }

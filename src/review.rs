@@ -45,13 +45,20 @@ pub fn file_changes(repo: &Repo, base: &str, head: &str) -> Result<Vec<FileChang
 }
 
 /// The file changes of many `(base, head)` pairs from a single git process,
-/// in the order of `pairs`. The heads must differ from one another.
+/// in the order of `pairs`. Pairs that share a head are asked one by one.
 pub fn file_changes_of_pairs(
     repo: &Repo,
     pairs: &[(&str, &str)],
 ) -> Result<Vec<Vec<FileChange>>, GitError> {
     if pairs.is_empty() {
         return Ok(Vec::new());
+    }
+    let distinct: HashSet<&str> = pairs.iter().map(|(_, h)| *h).collect();
+    if distinct.len() != pairs.len() {
+        return pairs
+            .iter()
+            .map(|(b, h)| file_changes(repo, b, h))
+            .collect();
     }
     let input: String = pairs.iter().map(|(b, h)| format!("{h} {b}\n")).collect();
     let raw = repo.run_bytes_stdin(

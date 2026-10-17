@@ -50,7 +50,7 @@ pub fn classify(repo: &Repo, base: &str, head: &str, files: &mut [ChangedFile]) 
     let (binary, generated) = std::thread::scope(|scope| {
         let binary = scope.spawn(|| binary_paths(repo, base, head));
         let generated = generated_paths(repo, head, files);
-        (binary.join().unwrap_or_default(), generated)
+        (binary.join().expect("git worker panicked"), generated)
     });
     for file in files.iter_mut() {
         file.mechanical = kind_of_path(&file.path)

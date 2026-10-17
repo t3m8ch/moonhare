@@ -215,3 +215,53 @@ fn a_failure_while_loading_is_reported() {
     };
     assert!(err.to_string().contains("gh is not installed"), "{err}");
 }
+
+/// A Forge whose request panics.
+struct CrashingForge;
+
+impl Forge for CrashingForge {
+    fn pull_request_for_branch(&self, _: &str) -> Result<Option<PullRequest>, ForgeError> {
+        panic!("forge crashed")
+    }
+
+    fn pull_request(&self, _: u64) -> Result<PullRequest, ForgeError> {
+        panic!("forge crashed")
+    }
+
+    fn fetch_pull_request_head(&self, _: &Path, _: u64) -> Result<String, ForgeError> {
+        panic!("forge crashed")
+    }
+}
+
+#[test]
+fn a_crashing_forge_ends_the_wait_with_a_warning() {
+    let fx = Box::leak(Box::new(feature_branch()));
+    let session = Session::open_target_with_forge(
+        fx.path(),
+        &Target::Current,
+        Arc::new(CrashingForge),
+        100,
+        30,
+    )
+    .expect("opens");
+    let mut h = Harness::from_session(session);
+    h.session().wait_for_forge();
+    assert!(!h.session().forge_busy());
+    assert!(h.screen().contains("⚠"), "{}", h.screen());
+}
+
+#[test]
+fn a_crashing_forge_fails_the_loading_screen_instead_of_spinning() {
+    let fx = Box::leak(Box::new(feature_branch()));
+    let mut opening =
+        Opening::pull_request(fx.path(), Arc::new(CrashingForge), 12, 100, 30).unwrap();
+    let started = Instant::now();
+    let err = loop {
+        if let Some(result) = opening.poll() {
+            break result.err().expect("fails");
+        }
+        assert!(started.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    assert!(!err.to_string().is_empty());
+}

@@ -33,7 +33,11 @@ impl Session {
         self.forge_load.since = Some(self.clock());
         let sender = self.forge_load.sender.clone();
         std::thread::spawn(move || {
-            let _ = sender.send(forge.pull_request_for_branch(&branch));
+            let answer = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                forge.pull_request_for_branch(&branch)
+            }))
+            .unwrap_or_else(|_| Err(ForgeError::Failed("the Forge request crashed".into())));
+            let _ = sender.send(answer);
         });
     }
 

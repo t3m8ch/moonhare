@@ -40,13 +40,16 @@ impl Opening {
         let (sender, receiver) = channel();
         let fetch_root = root.clone();
         std::thread::spawn(move || {
-            let fetched = forge
-                .pull_request(number)
-                .and_then(|pr| {
-                    let reference = forge.fetch_pull_request_head(&fetch_root, number)?;
-                    Ok((pr, reference))
-                })
-                .map_err(|e| e.to_string());
+            let fetched = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                forge
+                    .pull_request(number)
+                    .and_then(|pr| {
+                        let reference = forge.fetch_pull_request_head(&fetch_root, number)?;
+                        Ok((pr, reference))
+                    })
+                    .map_err(|e| e.to_string())
+            }))
+            .unwrap_or_else(|_| Err("the Forge request crashed".to_string()));
             let _ = sender.send(fetched);
         });
         Ok(Opening {
@@ -61,7 +64,13 @@ impl Opening {
 
     /// The session, once the Forge has answered; `None` while it has not.
     pub fn poll(&mut self) -> Option<Result<Session, Error>> {
-        let fetched = self.receiver.try_recv().ok()?;
+        let fetched = match self.receiver.try_recv() {
+            Ok(fetched) => fetched,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("the Forge request ended without an answer".to_string())
+            }
+        };
         Some(match fetched {
             Ok((pr, reference)) => Session::open_fetched_pull_request(
                 &self.repo,
