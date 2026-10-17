@@ -321,6 +321,9 @@ pub struct Session {
     /// The Prompts copied so far, which cut the commits into Rounds.
     prompts: crate::rounds::Prompts,
     mouse: mouse::Mouse,
+    /// The file list scrolled by the wheel: the selected file it was done
+    /// for, and the first row shown.
+    sidebar_scroll: Option<(usize, usize)>,
 }
 
 impl Session {
@@ -492,6 +495,7 @@ impl Session {
             prompt_view: None,
             prompts: crate::rounds::Prompts::open(&review_dir),
             mouse: mouse::Mouse::default(),
+            sidebar_scroll: None,
         };
         session.load_selected();
         session.sync_view();
@@ -636,6 +640,12 @@ impl Session {
     /// The first sidebar row shown: scrolled so the selected file is visible.
     fn sidebar_offset(&self) -> usize {
         let cap = self.sidebar_capacity().max(1);
+        // The wheel scrolled the list away from the selected file.
+        if let Some((selected, offset)) = self.sidebar_scroll {
+            if selected == self.selected {
+                return offset.min(self.sidebar_rows().len().saturating_sub(cap));
+            }
+        }
         let at = self
             .sidebar_rows()
             .iter()

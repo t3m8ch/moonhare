@@ -296,14 +296,6 @@ fn selection_is_dropped_by(action: impl FnOnce(&mut Harness, &Fixture)) {
 }
 
 #[test]
-fn the_selection_is_dropped_when_the_wheel_changes_the_file() {
-    selection_is_dropped_by(|h, _| {
-        let (x, y) = h.frame().find("src/b.rs").unwrap();
-        h.wheel_down(x, y);
-    });
-}
-
-#[test]
 fn the_selection_is_dropped_when_the_file_changes_by_key() {
     selection_is_dropped_by(|h, _| {
         h.keys("]f");

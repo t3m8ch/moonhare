@@ -133,13 +133,15 @@ impl Session {
             return true;
         }
         if self.sidebar_visible() && !self.picker && self.files_area().contains(at) {
-            let last = self.files.len().saturating_sub(1);
+            // The list scrolls under the pointer; the file stays selected.
+            let last = (self.sidebar_rows().len()).saturating_sub(self.sidebar_capacity().max(1));
+            let offset = self.sidebar_offset();
             let to = if down {
-                (self.selected + 1).min(last)
+                (offset + WHEEL_STEP).min(last)
             } else {
-                self.selected.saturating_sub(1)
+                offset.saturating_sub(WHEEL_STEP)
             };
-            self.select(to);
+            self.sidebar_scroll = Some((self.selected, to));
             return true;
         }
         false
