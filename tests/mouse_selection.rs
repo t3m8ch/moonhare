@@ -267,4 +267,82 @@ fn visual_after_a_mouse_selection_copies_the_visual_lines() {
     // The cursor stands on `keep_me`, where the mouse left it.
     assert_eq!(h.copied(), vec!["    keep_me();".to_string()]);
 }
-// END
+
+/// Two changed files; the first, `src/a.rs`, is shown.
+fn two_files() -> Fixture {
+    let fx = Fixture::new();
+    fx.write("src/a.rs", "fn a() {\n    1\n}\n")
+        .write("src/b.rs", "fn b() {\n    2\n}\n")
+        .commit("initial");
+    fx.branch("feature");
+    fx.write("src/a.rs", "fn a() {\n    10\n}\n")
+        .write("src/b.rs", "fn b() {\n    20\n}\n")
+        .commit("change");
+    fx
+}
+
+/// Select code in the first file, do `action`, and check that `y` has
+/// nothing left to copy.
+fn selection_is_dropped_by(action: impl FnOnce(&mut Harness, &Fixture)) {
+    let fx = two_files();
+    let mut h = Harness::open(&fx, 100, 24);
+    let (x, y) = h.frame().find("fn a").unwrap();
+    h.drag((x, y), (x + 3, y));
+    assert_eq!(h.copied().len(), 1);
+    h.wait(1000);
+    action(&mut h, &fx);
+    h.keys("y");
+    assert!(h.copied().is_empty(), "{}", h.screen());
+}
+
+#[test]
+fn the_selection_is_dropped_when_the_wheel_changes_the_file() {
+    selection_is_dropped_by(|h, _| {
+        let (x, y) = h.frame().find("src/b.rs").unwrap();
+        h.wheel_down(x, y);
+    });
+}
+
+#[test]
+fn the_selection_is_dropped_when_the_file_changes_by_key() {
+    selection_is_dropped_by(|h, _| {
+        h.keys("]f");
+    });
+}
+
+#[test]
+fn the_selection_is_dropped_when_the_file_changes_by_click() {
+    selection_is_dropped_by(|h, _| {
+        let (x, y) = h.frame().find("src/b.rs").unwrap();
+        h.click(x, y);
+    });
+}
+
+#[test]
+fn the_selection_is_dropped_by_a_reload() {
+    selection_is_dropped_by(|h, fx| {
+        fx.write("src/a.rs", "fn a() {\n    11\n}\n").commit("more");
+        h.keys(":reload<CR>");
+    });
+}
+
+#[test]
+fn the_selection_is_dropped_when_the_layout_changes() {
+    selection_is_dropped_by(|h, _| {
+        h.keys("s");
+    });
+}
+
+#[test]
+fn the_selection_is_dropped_by_a_resize() {
+    selection_is_dropped_by(|h, _| {
+        h.resize(120, 24);
+    });
+}
+
+#[test]
+fn the_selection_is_dropped_when_the_scope_changes() {
+    selection_is_dropped_by(|h, _| {
+        h.keys("]c");
+    });
+}

@@ -824,6 +824,7 @@ impl Session {
         self.dirty = false;
         // View indexes mean something else in a new file, Scope or layout.
         self.visual = None;
+        self.drop_mouse_selection();
         self.view_layout = layout;
         self.inline = Vec::new();
         let mut changed = Vec::new();
@@ -883,6 +884,7 @@ impl Session {
             Event::Mouse(mouse) => self.on_mouse(mouse),
             Event::Resize(w, h) => {
                 self.size = (w, h);
+                self.drop_mouse_selection();
             }
             _ => {}
         }

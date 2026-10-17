@@ -283,6 +283,13 @@ impl Session {
         }
     }
 
+    /// The view was rebuilt or resized: item indexes and columns of a
+    /// selection made before mean something else now.
+    pub(super) fn drop_mouse_selection(&mut self) {
+        self.mouse.selection = None;
+        self.mouse.press = None;
+    }
+
     /// Drop the selection; returns whether there was one.
     pub(super) fn clear_mouse_selection(&mut self) -> bool {
         self.mouse.selection.take().is_some()

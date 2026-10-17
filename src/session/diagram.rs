@@ -37,7 +37,6 @@ pub(super) struct Diagrams {
     vscroll: usize,
     /// `g` was typed and waits for a second one.
     g_typed: bool,
-    /// Text the Reviewer asked to copy, until the terminal layer takes it.
     /// Mermaid texts of Summaries, drawn once.
     drawings: HashMap<String, Result<Vec<String>, String>>,
 }
