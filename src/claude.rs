@@ -5,10 +5,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::analyst::{Analyst, AnalystError, Summary, SummaryRequest};
+use crate::analyst::{
+    Analyst, AnalystError, ExplainRequest, ExplainTarget, Explanation, Summary, SummaryRequest,
+};
 
 /// The shape the answer must have; `claude` validates it.
 const SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}"#;
+
+/// The shape of an explanation.
+const EXPLAIN_SCHEMA: &str = r#"{"type":"object","properties":{"explanation":{"type":"string"}},"required":["explanation"],"additionalProperties":false}"#;
 
 /// The only tools the Analyst gets: reading and searching files.
 const READ_ONLY_TOOLS: &str = "Read,Grep,Glob";
@@ -155,6 +160,44 @@ fn prompt(request: &SummaryRequest, tree: &Path) -> String {
     )
 }
 
+fn explain_prompt(request: &ExplainRequest, tree: &Path) -> String {
+    let (what, path, hunk) = match &request.target {
+        ExplainTarget::Hunk { path, text } => ("this hunk", path, format!("Hunk:\n{text}\n")),
+        ExplainTarget::File { path } => ("this file", path, String::new()),
+    };
+    let mut diff = git_text(
+        &request.repo,
+        &["diff", &request.base, &request.head, "--", path],
+    );
+    if diff.len() > DIFF_LIMIT {
+        let mut cut = DIFF_LIMIT;
+        while !diff.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        diff.truncate(cut);
+        diff.push_str("\n[diff truncated: read the file in the tree]\n");
+    }
+    let pull_request = request.pull_request.as_ref().map_or(String::new(), |pr| {
+        format!(
+            "Pull request #{}: {}\n\n{}\n\n",
+            pr.number, pr.title, pr.body
+        )
+    });
+    format!(
+        "You are the Analyst of a code review tool. Explain {what} of a change \
+         to a human who is reviewing it: what it does, why it is probably \
+         there, and anything surprising. The files at the head of the change \
+         are in {tree}; you may read and search them, nothing else.\n\n\
+         Language: {language}\n\n\
+         {pull_request}\
+         File: {path}\n\
+         {hunk}\
+         Diff of the file:\n{diff}",
+        language = request.language,
+        tree = tree.display(),
+    )
+}
+
 /// Variables that would switch `claude` away from the Reviewer's own login
 /// (an API key, Bedrock, Vertex) or hand it cloud credentials.
 fn is_provider_variable(name: &str) -> bool {
@@ -222,8 +265,14 @@ fn run_with_timeout(
 
 const NOT_LOGGED_IN: &str = "claude is not logged in: run `claude /login`, then :analyze";
 
-/// What `claude -p --output-format json` printed, as a summary or an error.
-fn interpret(stdout: &[u8], stderr: &[u8], success: bool) -> Result<Summary, AnalystError> {
+/// What `claude -p --output-format json` printed: the text of the `field` of
+/// the structured answer, or an error.
+fn interpret(
+    stdout: &[u8],
+    stderr: &[u8],
+    success: bool,
+    field: &str,
+) -> Result<String, AnalystError> {
     let reply: Option<serde_json::Value> = serde_json::from_slice(stdout).ok();
     let said = reply
         .as_ref()
@@ -243,31 +292,37 @@ fn interpret(stdout: &[u8], stderr: &[u8], success: bool) -> Result<Summary, Ana
     }
     reply
         .as_ref()
-        .and_then(|r| r["structured_output"]["summary"].as_str())
-        .map(|text| Summary { text: text.into() })
-        .ok_or_else(|| AnalystError::Failed("claude gave an answer without a summary".into()))
+        .and_then(|r| r["structured_output"][field].as_str())
+        .map(str::to_string)
+        .ok_or_else(|| AnalystError::Failed(format!("claude gave an answer without a {field}")))
 }
 
-impl Analyst for ClaudeAnalyst {
-    fn summarize(&self, request: &SummaryRequest) -> Result<Summary, AnalystError> {
+impl ClaudeAnalyst {
+    /// Run `claude -p` over the Range with the read-only worktree at `head`,
+    /// and return the `field` of its structured answer.
+    fn ask(
+        &self,
+        repo: &Path,
+        base: &str,
+        head: &str,
+        schema: &str,
+        field: &str,
+        prompt: impl FnOnce(&Path) -> String,
+    ) -> Result<String, AnalystError> {
         // `--` cannot end the options in front of a revision, so refuse
         // anything that git could take for one.
-        if [&request.base, &request.head]
-            .iter()
-            .any(|rev| rev.starts_with('-'))
-        {
+        if [base, head].iter().any(|rev| rev.starts_with('-')) {
             return Err(AnalystError::Failed(format!(
-                "not a revision: {}..{}",
-                request.base, request.head
+                "not a revision: {base}..{head}"
             )));
         }
-        let worktree = TempWorktree::create(&request.repo, &request.head)?;
+        let worktree = TempWorktree::create(repo, head)?;
         let sandbox = tempfile::Builder::new()
             .prefix("moonhare-cwd-")
             .tempdir()
             .map_err(|e| AnalystError::Failed(format!("cannot create a directory: {e}")))?;
         let child = Command::new(&self.program)
-            .args(["-p", "--output-format", "json", "--json-schema", SCHEMA])
+            .args(["-p", "--output-format", "json", "--json-schema", schema])
             .args([
                 "--tools",
                 READ_ONLY_TOOLS,
@@ -305,11 +360,33 @@ impl Analyst for ClaudeAnalyst {
                     AnalystError::Failed(format!("cannot run claude: {e}"))
                 }
             })?;
-        let out = run_with_timeout(
-            child,
-            prompt(request, &worktree.path).into_bytes(),
-            self.timeout,
-        )?;
-        interpret(&out.stdout, &out.stderr, out.status.success())
+        let out = run_with_timeout(child, prompt(&worktree.path).into_bytes(), self.timeout)?;
+        interpret(&out.stdout, &out.stderr, out.status.success(), field)
+    }
+}
+
+impl Analyst for ClaudeAnalyst {
+    fn summarize(&self, request: &SummaryRequest) -> Result<Summary, AnalystError> {
+        self.ask(
+            &request.repo,
+            &request.base,
+            &request.head,
+            SCHEMA,
+            "summary",
+            |tree| prompt(request, tree),
+        )
+        .map(|text| Summary { text })
+    }
+
+    fn explain(&self, request: &ExplainRequest) -> Result<Explanation, AnalystError> {
+        self.ask(
+            &request.repo,
+            &request.base,
+            &request.head,
+            EXPLAIN_SCHEMA,
+            "explanation",
+            |tree| explain_prompt(request, tree),
+        )
+        .map(|text| Explanation { text })
     }
 }
