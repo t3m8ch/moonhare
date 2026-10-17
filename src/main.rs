@@ -5,6 +5,7 @@ use std::time::{Duration, Instant};
 use moonhare::claude::ClaudeAnalyst;
 use moonhare::git::Target;
 use moonhare::github::GitHub;
+use moonhare::opening::Opening;
 use moonhare::session::Session;
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
@@ -30,17 +31,35 @@ fn main() -> ExitCode {
         usage();
         return ExitCode::FAILURE;
     };
-    let forge = GitHub::new();
+    let forge: std::sync::Arc<GitHub> = std::sync::Arc::new(GitHub::new());
+    let mut terminal = None;
     let opened = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["--pr", n] => match n.trim_start_matches('#').parse::<u64>() {
-            Ok(n) => Session::open_pull_request(&cwd, &forge, n, width, height),
+            Ok(n) => match Opening::pull_request(&cwd, forge, n, width, height) {
+                Ok(opening) => {
+                    // The Forge may take a while: show a loading screen that
+                    // can be left, not an empty terminal.
+                    let mut t = ratatui::init();
+                    let result = wait_for_opening(&mut t, opening);
+                    terminal = Some(t);
+                    match result {
+                        Ok(Some(session)) => Ok(session),
+                        Ok(None) => {
+                            ratatui::restore();
+                            return ExitCode::SUCCESS;
+                        }
+                        Err(e) => Err(moonhare::session::Error(e.to_string())),
+                    }
+                }
+                Err(e) => Err(e),
+            },
             Err(_) => Err(moonhare::session::Error(format!(
                 "not a pull request number: {n}"
             ))),
         },
         [] | [_] if !args.first().is_some_and(|a| a.starts_with("--")) => {
             let target = Target::from_arg(args.first().map(String::as_str));
-            Session::open_target_with_forge(&cwd, &target, &forge, width, height)
+            Session::open_target_with_forge(&cwd, &target, forge, width, height)
         }
         _ => {
             usage();
@@ -50,6 +69,9 @@ fn main() -> ExitCode {
     let mut session = match opened {
         Ok(s) => s,
         Err(e) => {
+            if terminal.is_some() {
+                ratatui::restore();
+            }
             eprintln!("moonhare: {e}");
             return ExitCode::FAILURE;
         }
@@ -67,6 +89,9 @@ fn main() -> ExitCode {
     .flatten()
     {
         if let Err(e) = result {
+            if terminal.is_some() {
+                ratatui::restore();
+            }
             eprintln!("moonhare: {e}");
             return ExitCode::FAILURE;
         }
@@ -76,7 +101,7 @@ fn main() -> ExitCode {
     }
     session.set_analyst(std::sync::Arc::new(ClaudeAnalyst::new()));
 
-    let mut terminal = ratatui::init();
+    let mut terminal = terminal.unwrap_or_else(ratatui::init);
     // ratatui's hook restores the screen; the mouse capture is ours to release.
     let hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
@@ -111,6 +136,34 @@ fn take_flag_value(args: &mut Vec<String>, flag: &str) -> Result<Option<String>,
     Ok(Some(value))
 }
 
+/// Show the loading screen until the pull request is open. `None` when the
+/// Reviewer left meanwhile.
+fn wait_for_opening(
+    terminal: &mut ratatui::DefaultTerminal,
+    mut opening: Opening,
+) -> Result<Option<Session>, moonhare::session::Error> {
+    let step = Duration::from_millis(100);
+    let draw = |t: &mut ratatui::DefaultTerminal, o: &Opening| {
+        let _ = t.draw(|f| o.render(f.buffer_mut()));
+    };
+    loop {
+        if let Some(result) = opening.poll() {
+            return result.map(Some);
+        }
+        draw(terminal, &opening);
+        let started = Instant::now();
+        if event::poll(step).unwrap_or(false) {
+            if let Ok(ev) = event::read() {
+                opening.handle(ev);
+            }
+        }
+        opening.elapse(started.elapsed());
+        if opening.cancelled() {
+            return Ok(None);
+        }
+    }
+}
+
 /// How often to look for the Analyst's answers while it works.
 const ANALYST_POLL: Duration = Duration::from_millis(200);
 
@@ -127,7 +180,10 @@ fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Re
         // it is time to look for new commits in the branch. An idle screen is
         // redrawn only when that look found something.
         let poll = session.next_poll_in();
-        let wake = match (session.next_tick_in(), session.analyst_busy()) {
+        let wake = match (
+            session.next_tick_in(),
+            session.analyst_busy() || session.forge_busy(),
+        ) {
             (Some(due), true) => due.min(ANALYST_POLL),
             (Some(due), false) => due,
             (None, true) => ANALYST_POLL,
@@ -144,9 +200,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Re
             session.elapse(wake.max(last.elapsed()))
         };
         last = Instant::now();
-        let busy = session.analyst_busy();
+        let busy = session.analyst_busy() || session.forge_busy();
         session.tick();
-        redraw |= busy || session.analyst_busy();
+        redraw |= busy || session.analyst_busy() || session.forge_busy();
         // `:set nomouse` hands the mouse back to the terminal.
         if session.mouse_enabled() != captured {
             captured = session.mouse_enabled();

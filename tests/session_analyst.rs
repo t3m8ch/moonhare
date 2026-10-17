@@ -119,8 +119,9 @@ impl Forge for FakeForge {
 }
 
 fn review_with_forge(fx: &Fixture, forge: FakeForge, analyst: &Arc<FakeAnalyst>) -> Harness {
-    let mut session = Session::open_target_with_forge(fx.path(), &Target::Current, &forge, 100, 30)
-        .expect("session opens");
+    let mut session =
+        Session::open_target_with_forge(fx.path(), &Target::Current, Arc::new(forge), 100, 30)
+            .expect("session opens");
     session.set_analyst(analyst.clone());
     Harness::from_session(session)
 }

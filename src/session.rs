@@ -7,6 +7,7 @@
 
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{
@@ -219,6 +220,7 @@ mod diagram;
 mod explain;
 mod file_bar;
 mod file_picker;
+mod forge_load;
 mod groups;
 mod long_list;
 mod marks;
@@ -313,6 +315,8 @@ pub struct Session {
     warning: Option<String>,
     /// The pull request behind the Range, when the Forge knows one.
     pull_request: Option<PullRequest>,
+    /// The request for that pull request, while it is on its way.
+    forge_load: forge_load::ForgeLoad,
     quit: bool,
     analysis: analysis::Analysis,
     /// The Analyst's answers kept on disk between runs.
@@ -364,28 +368,26 @@ impl Session {
     }
 
     /// Like [`Session::open_target`], and ask `forge` for the pull request of
-    /// the branch. If the Forge cannot answer, the Review opens all the same
-    /// and the reason is shown in the status line.
+    /// the branch. The Review opens at once; the answer is fetched in the
+    /// background and the status line shows that it is awaited. If the Forge
+    /// cannot answer, the reason is shown in the status line.
     pub fn open_target_with_forge(
         repo_path: &Path,
         target: &Target,
-        forge: &dyn Forge,
+        forge: Arc<dyn Forge>,
         width: u16,
         height: u16,
     ) -> Result<Session, Error> {
         let mut session = Self::open_target(repo_path, target, width, height)?;
         let branch = match target {
-            Target::Branch(name) => Some(name.as_str()),
+            Target::Branch(name) => Some(name.clone()),
             Target::Current if session.range.head_name != "HEAD" => {
-                Some(session.range.head_name.as_str())
+                Some(session.range.head_name.clone())
             }
             _ => None,
         };
         if let Some(branch) = branch {
-            match forge.pull_request_for_branch(branch) {
-                Ok(pr) => session.pull_request = pr,
-                Err(e) => session.warn(format!("⚠ {e}")),
-            }
+            session.request_pull_request(forge, branch);
         }
         Ok(session)
     }
@@ -398,7 +400,8 @@ impl Session {
     }
 
     /// Open pull request `number` as a Range: its head is fetched into a ref
-    /// of moonhare's own, with no new branch and no checkout.
+    /// of moonhare's own, with no new branch and no checkout. This waits for
+    /// the Forge; [`crate::opening::Opening`] does the waiting in the background.
     pub fn open_pull_request(
         repo_path: &Path,
         forge: &dyn Forge,
@@ -413,11 +416,24 @@ impl Session {
         let reference = forge
             .fetch_pull_request_head(repo.root(), number)
             .map_err(|e| Error(e.to_string()))?;
+        Self::open_fetched_pull_request(repo_path, pr, &reference, width, height)
+    }
+
+    /// Open a pull request whose head the Forge has already fetched into
+    /// `reference`.
+    pub fn open_fetched_pull_request(
+        repo_path: &Path,
+        pr: PullRequest,
+        reference: &str,
+        width: u16,
+        height: u16,
+    ) -> Result<Session, Error> {
+        let repo = Repo::open(repo_path)?;
         let range =
-            repo.range_for_head(&format!("#{number}"), &reference, Some(&pr.base_branch))?;
+            repo.range_for_head(&format!("#{}", pr.number), reference, Some(&pr.base_branch))?;
         let mut session = Self::open_range(repo, range, true, None, width, height)?;
         session.pull_request = Some(pr);
-        session.analysis.head_rev = reference;
+        session.analysis.head_rev = reference.to_string();
         Ok(session)
     }
 
@@ -493,6 +509,7 @@ impl Session {
             message: None,
             warning,
             pull_request: None,
+            forge_load: Default::default(),
             quit: false,
             analysis: Default::default(),
             analyst_cache: crate::analyst_cache::AnalystCache::new(&review_dir),
@@ -1783,6 +1800,7 @@ impl Session {
         let text = self.reload_status(&text);
         let text = self.explain_status(&text);
         let text = self.busy_status(&text);
+        let text = self.forge_status(&text);
         let text = match &self.warning {
             Some(w) => format!("{text}  {w}"),
             None => text,

@@ -4,6 +4,7 @@ mod support;
 
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 
 use moonhare::forge::{Forge, ForgeError, PullRequest};
 use moonhare::git::Target;
@@ -92,12 +93,14 @@ fn the_pull_request_of_a_branch_is_available_to_other_modules() {
     let session = Session::open_target_with_forge(
         fx.path(),
         &Target::Branch("pr-source".into()),
-        &forge,
+        Arc::new(forge),
         160,
         30,
     )
     .unwrap();
 
+    let mut session = session;
+    session.wait_for_forge();
     let found = session.pull_request().expect("pull request attached");
     assert_eq!(found.title, "Add a");
     assert_eq!(found.body, "Adds a.");
@@ -110,14 +113,15 @@ fn an_unavailable_forge_does_not_stop_the_review_and_the_reason_is_shown() {
         head: String::new(),
     };
 
-    let session = Session::open_target_with_forge(
+    let mut session = Session::open_target_with_forge(
         fx.path(),
         &Target::Branch("pr-source".into()),
-        &forge,
+        Arc::new(forge),
         160,
         30,
     )
     .unwrap();
+    session.wait_for_forge();
     assert!(session.pull_request().is_none());
     let screen = Harness::from_session(session).screen();
 
@@ -133,15 +137,16 @@ fn a_branch_without_a_pull_request_opens_quietly() {
         head: String::new(),
     };
 
-    let session = Session::open_target_with_forge(
+    let mut session = Session::open_target_with_forge(
         fx.path(),
         &Target::Branch("pr-source".into()),
-        &forge,
+        Arc::new(forge),
         160,
         30,
     )
     .unwrap();
 
+    session.wait_for_forge();
     assert!(session.pull_request().is_none());
     assert!(!Harness::from_session(session).screen().contains('⚠'));
 }
