@@ -353,3 +353,86 @@ fn an_analyst_that_panics_does_not_hang_the_session() {
     let side = sidebar(&mut h);
     assert!(side.contains("README.md"), "{side}");
 }
+
+/// The file picker box: the rows between its top and bottom borders.
+fn picker(h: &mut Harness) -> String {
+    let screen = h.screen();
+    let lines: Vec<&str> = screen.lines().collect();
+    let top = lines
+        .iter()
+        .position(|l| l.contains("Pick a file"))
+        .unwrap_or_else(|| panic!("no picker:\n{screen}"));
+    lines[top..].join("\n")
+}
+
+#[test]
+fn the_file_picker_shows_the_groups_with_progress_in_reading_order() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 80, 30);
+    h.session().set_analyst(core_then_docs());
+    h.session().wait_for_analyst();
+    h.keys("<Space>f");
+    let box_ = picker(&mut h);
+    for expected in ["Core", "0/2", "the modules", "Docs", "0/1", "the readme"] {
+        assert!(box_.contains(expected), "{expected}:\n{box_}");
+    }
+    assert!(position(&box_, "Core") < position(&box_, "src/a.rs"));
+    assert!(position(&box_, "src/b.rs") < position(&box_, "Docs"));
+    assert!(position(&box_, "Docs") < position(&box_, "README.md"));
+}
+
+#[test]
+fn the_file_picker_walks_the_files_across_group_headers_and_opens_one() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 80, 30);
+    h.session().set_analyst(core_then_docs());
+    h.session().wait_for_analyst();
+    // Reading order: a, b, README; the cursor starts on README.md (file 3/3).
+    h.keys("<Space>fkk<CR>");
+    let screen = h.screen();
+    assert!(!screen.contains("Pick a file"), "{screen}");
+    assert!(
+        screen.contains("src/a.rs") && screen.contains("file 1/3"),
+        "{screen}"
+    );
+}
+
+#[test]
+fn clicking_a_file_in_the_grouped_picker_opens_that_file() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 80, 30);
+    h.session().set_analyst(core_then_docs());
+    h.session().wait_for_analyst();
+    h.keys("<Space>f");
+    let (x, y) = h.frame().find("src/b.rs").expect("b.rs row");
+    h.click(x, y);
+    let screen = h.screen();
+    assert!(!screen.contains("Pick a file"), "{screen}");
+    assert!(screen.contains("file 2/3"), "{screen}");
+}
+
+#[test]
+fn without_groups_the_file_picker_is_a_flat_list() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 80, 30);
+    h.keys("<Space>f");
+    let box_ = picker(&mut h);
+    assert!(
+        box_.contains("README.md") && !box_.contains("Core"),
+        "{box_}"
+    );
+}
+
+#[test]
+fn square_brackets_g_jump_between_groups_in_the_files_window() {
+    let fx = feature_branch();
+    let mut h = review_with(&fx, &core_then_docs());
+    h.session().wait_for_analyst();
+    // On README.md (Docs, last in reading order).
+    h.keys("<Tab><Tab>[g");
+    assert!(h.screen().contains("file 1/3"), "{}", h.screen());
+    h.keys("]g");
+    assert!(h.screen().contains("file 3/3"), "{}", h.screen());
+    h.keys("[g[g");
+    assert!(h.screen().contains("file 1/3"), "{}", h.screen());
+}

@@ -271,6 +271,7 @@ pub fn parse_keys(notation: &str) -> Vec<Event> {
                     "Esc" => Some(key(KeyCode::Esc, KeyModifiers::NONE)),
                     "CR" => Some(key(KeyCode::Enter, KeyModifiers::NONE)),
                     "Tab" => Some(key(KeyCode::Tab, KeyModifiers::NONE)),
+                    "S-Tab" => Some(key(KeyCode::BackTab, KeyModifiers::SHIFT)),
                     "BS" => Some(key(KeyCode::Backspace, KeyModifiers::NONE)),
                     "Space" => Some(key(KeyCode::Char(' '), KeyModifiers::NONE)),
                     "C-w" => Some(key(KeyCode::Char('w'), KeyModifiers::CONTROL)),

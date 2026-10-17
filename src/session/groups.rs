@@ -262,6 +262,46 @@ impl Session {
         rows
     }
 
+    /// Keys of the focused file list: `j/k` pick a file, `Enter` opens it in
+    /// the diff. Returns whether the key was used.
+    pub(super) fn files_key(&mut self, key: KeyEvent) -> bool {
+        if key.modifiers.contains(KeyModifiers::CONTROL) || self.pending.is_some() {
+            return false;
+        }
+        let last = self.files.len().saturating_sub(1);
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                let n = self.count.take().unwrap_or(1);
+                self.select(self.selected.saturating_add(n).min(last));
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                let n = self.count.take().unwrap_or(1);
+                self.select(self.selected.saturating_sub(n));
+            }
+            KeyCode::Enter => self.focus = Focus::Diff,
+            _ => return false,
+        }
+        true
+    }
+
+    /// `]g` / `[g`: move `n` Groups on, to the first file of the Group.
+    /// Without Groups the whole list is one.
+    pub(super) fn jump_group(&mut self, forward: bool, n: usize) {
+        let group = |i: usize| self.group_of(&self.files[i].path);
+        let starts: Vec<usize> = (0..self.files.len())
+            .filter(|&i| i == 0 || group(i) != group(i - 1))
+            .collect();
+        let Some(current) = starts.iter().rposition(|&s| s <= self.selected) else {
+            return;
+        };
+        let target = if forward {
+            (current + n).min(starts.len() - 1)
+        } else {
+            current.saturating_sub(n)
+        };
+        self.select(starts[target]);
+    }
+
     /// `done/total` of the files of Group `n` in the Scope.
     fn group_progress(&self, n: usize) -> (usize, usize) {
         let files: Vec<_> = self
