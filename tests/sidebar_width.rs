@@ -57,6 +57,8 @@ fn the_sidebar_command_sets_the_width_and_resets_it() {
     assert_eq!(width(&mut h), 50);
     h.keys(":sidebar 1000<CR>");
     assert_eq!(width(&mut h), 160 - 40);
+    h.keys(":sidebar 99999999999<CR>");
+    assert_eq!(width(&mut h), 160 - 40);
     h.keys(":sidebar 2<CR>");
     assert!(width(&mut h) >= 16);
     h.keys(":sidebar 50<CR>:sidebar<CR>");

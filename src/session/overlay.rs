@@ -29,6 +29,7 @@ impl Session {
             (Some(prefix), ..) => hints::Context::Pending(prefix),
             (None, Focus::Commits, Some(_)) => hints::Context::CommitsVisual,
             (None, Focus::Commits, None) => hints::Context::Commits,
+            (None, Focus::Files, _) => hints::Context::Files,
             (None, Focus::Diff, _) => hints::Context::Diff,
         };
         buf.set_stringn(
@@ -52,21 +53,15 @@ impl Session {
         }
     }
 
+    /// The box of the full-screen overlays (help, prompt): all rows above the
+    /// bottom ones, edge to edge.
+    pub(super) fn full_overlay_area(&self) -> Rect {
+        Rect::new(0, 0, self.size.0, self.size.1.saturating_sub(BOTTOM_ROWS))
+    }
+
     pub(super) fn render_help(&self, buf: &mut Buffer, offset: usize) {
-        let area = Rect::new(
-            1,
-            0,
-            self.size.0.saturating_sub(2),
-            self.size.1.saturating_sub(BOTTOM_ROWS),
-        );
-        for y in area.y..area.y + area.height {
-            buf.set_string(
-                area.x,
-                y,
-                " ".repeat(area.width as usize),
-                Style::new().fg(FG),
-            );
-        }
+        let area = self.full_overlay_area();
+        clear_area(buf, area);
         draw_box(buf, area, " Справка (j/k прокрутка, Esc закрыть) ");
         let rows = area.height.saturating_sub(2) as usize;
         for (i, line) in hints::help_lines()
@@ -103,9 +98,7 @@ impl Session {
             width,
             height,
         );
-        for y in area.y..area.y + area.height {
-            buf.set_string(area.x, y, " ".repeat(width as usize), Style::new().fg(FG));
-        }
+        clear_area(buf, area);
         draw_box(buf, area, &title);
         for (i, line) in lines
             .iter()

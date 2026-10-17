@@ -508,3 +508,42 @@ fn the_status_line_names_the_editor_mode() {
     h.keys("<CR>");
     assert_eq!(badge(&mut h), "NORMAL");
 }
+
+/// The background under the first character of `needle` on the screen.
+fn bg_of(h: &mut Harness, needle: &str) -> ratatui::style::Color {
+    let (x, y) = h.frame().find(needle).unwrap();
+    h.frame().bg_at(x, y)
+}
+
+fn selection_stays_while_the_draft_is_open(width: u16) {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, width, 30);
+    let plain = bg_of(&mut h, "# demo");
+    let added = bg_of(&mut h, "more");
+    h.keys("jvj");
+    let marked = bg_of(&mut h, "more");
+    assert_ne!(marked, added);
+    assert_eq!(bg_of(&mut h, "# demo"), plain);
+
+    h.keys("c");
+    assert_eq!(bg_of(&mut h, "more"), marked, "{}", h.screen());
+    assert_eq!(bg_of(&mut h, "# demo"), plain);
+    h.keys("inote");
+    assert_eq!(bg_of(&mut h, "more"), marked, "{}", h.screen());
+
+    h.keys("<Esc><Esc>y");
+    assert_eq!(bg_of(&mut h, "more"), added, "{}", h.screen());
+
+    h.keys("jvjcinote<Esc><CR>");
+    assert_eq!(bg_of(&mut h, "more"), added, "{}", h.screen());
+}
+
+#[test]
+fn the_selection_stays_highlighted_while_a_comment_is_typed_side_by_side() {
+    selection_stays_while_the_draft_is_open(160);
+}
+
+#[test]
+fn the_selection_stays_highlighted_while_a_comment_is_typed_inline() {
+    selection_stays_while_the_draft_is_open(80);
+}

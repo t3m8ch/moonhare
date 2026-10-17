@@ -27,6 +27,7 @@ impl Session {
             KeyCode::Char('w') if ctrl => self.pending = Some(CTRL_W),
             KeyCode::Char(c @ ('h' | 'j' | 'k' | 'l')) if ctrl => self.go_window(c),
             KeyCode::Tab => self.go_window('w'),
+            KeyCode::BackTab => self.go_window('W'),
             _ => return false,
         }
         true
@@ -42,20 +43,21 @@ impl Session {
         }
     }
 
-    /// Windows are the commit list (the left column) and the diff.
+    /// Windows are the commit list and the file list (the left column, in
+    /// that order) and the diff. `w` and `W` go round them, forward and back.
     fn go_window(&mut self, direction: char) {
         if !self.sidebar_visible() {
             self.focus = Focus::Diff;
             return;
         }
-        self.focus = match direction {
-            'h' | 'k' => Focus::Commits,
-            'l' | 'j' => Focus::Diff,
-            'w' => match self.focus {
-                Focus::Diff => Focus::Commits,
-                Focus::Commits => Focus::Diff,
-            },
-            _ => self.focus,
+        self.focus = match (direction, self.focus) {
+            ('w', Focus::Diff) | ('W', Focus::Files) => Focus::Commits,
+            ('w', Focus::Commits) | ('W', Focus::Diff) => Focus::Files,
+            ('w', Focus::Files) | ('W', Focus::Commits) => Focus::Diff,
+            ('h' | 'k', Focus::Diff | Focus::Files) => Focus::Commits,
+            ('j', Focus::Commits) => Focus::Files,
+            ('l', _) => Focus::Diff,
+            (_, focus) => focus,
         };
     }
 }

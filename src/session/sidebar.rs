@@ -46,10 +46,11 @@ impl Session {
     pub(super) fn sidebar_command(&mut self, arg: &str) {
         match arg {
             "" | "reset" => self.set_sidebar_width(None),
-            n => match n.parse::<u16>() {
-                Ok(width) => self.set_sidebar_width(Some(width)),
-                Err(_) => self.message = Some("Usage: :sidebar [N | reset]".into()),
-            },
+            n if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => {
+                // A number too big for a column count is just "as wide as it gets".
+                self.set_sidebar_width(Some(n.parse().unwrap_or(u16::MAX)))
+            }
+            _ => self.message = Some("Usage: :sidebar [N | reset]".into()),
         }
     }
 

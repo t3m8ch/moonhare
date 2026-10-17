@@ -4,7 +4,7 @@
 
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-use super::analysis::wrap;
+use super::analysis::{wrap, Pending};
 use super::*;
 use crate::analyst::{AnalystError, ExplainRequest, ExplainTarget, Explanation};
 
@@ -27,7 +27,7 @@ pub(super) struct Explain {
     overlay: Option<Overlay>,
     next_id: u64,
     /// Requests whose threads have not answered yet, cancelled or not.
-    in_flight: usize,
+    in_flight: Pending<u64>,
     /// Why the last request failed, until the overlay closes.
     error: Option<String>,
     sender: Sender<Answer>,
@@ -40,7 +40,7 @@ impl Default for Explain {
         Explain {
             overlay: None,
             next_id: 0,
-            in_flight: 0,
+            in_flight: Pending::default(),
             error: None,
             sender,
             receiver,
@@ -114,7 +114,8 @@ impl Session {
         };
         let id = self.explain.next_id;
         self.explain.next_id += 1;
-        self.explain.in_flight += 1;
+        let now = self.clock();
+        self.explain.in_flight.insert(id, now);
         self.explain.error = None;
         self.explain.overlay = Some(Overlay {
             id,
@@ -183,6 +184,14 @@ impl Session {
         (!text.is_empty()).then_some(text)
     }
 
+    pub(super) fn explanations_busy(&self) -> bool {
+        !self.explain.in_flight.is_empty()
+    }
+
+    pub(super) fn explanations_work(&self) -> Option<(usize, std::time::Duration)> {
+        self.explain.in_flight.oldest()
+    }
+
     /// Collect the explanations that arrived. Called from `tick`.
     pub(super) fn take_explanations(&mut self) {
         while let Ok(answer) = self.explain.receiver.try_recv() {
@@ -192,7 +201,7 @@ impl Session {
 
     /// Block until every request for an explanation has been answered.
     pub(super) fn wait_for_explanations(&mut self) {
-        while self.explain.in_flight > 0 {
+        while !self.explain.in_flight.is_empty() {
             match self.explain.receiver.recv() {
                 Ok(answer) => self.take_explanation(answer),
                 Err(_) => break,
@@ -201,7 +210,7 @@ impl Session {
     }
 
     fn take_explanation(&mut self, (id, answer): Answer) {
-        self.explain.in_flight = self.explain.in_flight.saturating_sub(1);
+        self.explain.in_flight.remove(&id);
         let Some(overlay) = self.explain.overlay.as_mut().filter(|o| o.id == id) else {
             return;
         };
@@ -235,13 +244,15 @@ impl Session {
             width,
             height,
         );
-        for y in area.y..area.y + area.height {
-            buf.set_string(area.x, y, " ".repeat(width as usize), Style::new().fg(FG));
-        }
+        clear_area(buf, area);
         draw_box(buf, area, &overlay.title);
         let inner_w = width.saturating_sub(4) as usize;
         let text = match &overlay.state {
-            State::Waiting => "The Analyst is explaining… Esc cancels.".to_string(),
+            State::Waiting => format!(
+                "{} The Analyst is explaining… {}s. Esc cancels.",
+                super::analysis::spinner(self.clock()),
+                self.work_seconds("Explanation")
+            ),
             State::Done(text) => text.clone(),
             State::Failed(error) => format!("Analyst: {error}"),
         };

@@ -65,20 +65,23 @@ pub const BINDINGS: &[Binding] = &[
     b(Some('g'), "g", "в начало файла (Ngg: к строке N)"),
     b(Some(']'), "c", "следующий коммит"),
     b(Some(']'), "f", "следующий файл"),
+    b(Some(']'), "g", "следующая группа файлов"),
     b(Some(']'), "h", "следующий хунк"),
     b(Some(']'), "u", "следующий неотревьюенный файл"),
     b(Some('['), "c", "предыдущий коммит"),
     b(Some('['), "f", "предыдущий файл"),
+    b(Some('['), "g", "предыдущая группа файлов"),
     b(Some('['), "h", "предыдущий хунк"),
     b(Some('['), "u", "предыдущий неотревьюенный файл"),
     b(Some('z'), "a", "список коммитов: свернуть/развернуть раунд"),
     b(Some('z'), "c", "список коммитов: свернуть раунд"),
     b(Some('z'), "o", "список коммитов: развернуть раунд"),
     b(Some(CTRL_W), "h", "окно слева (коммиты)"),
-    b(Some(CTRL_W), "j", "окно ниже (дифф)"),
-    b(Some(CTRL_W), "k", "окно выше (коммиты)"),
+    b(Some(CTRL_W), "j", "окно ниже (коммиты → файлы)"),
+    b(Some(CTRL_W), "k", "окно выше (файлы → коммиты)"),
     b(Some(CTRL_W), "l", "окно справа (дифф)"),
-    b(Some(CTRL_W), "w", "следующее окно"),
+    b(Some(CTRL_W), "w", "следующее окно (коммиты → файлы → дифф)"),
+    b(Some(CTRL_W), "W", "предыдущее окно"),
     b(
         Some(CTRL_W),
         "<",
@@ -157,7 +160,12 @@ const PLAIN: &[(&str, &str)] = &[
     ),
     ("m", "файл отревьюено в срезе / снять отметку"),
     ("M", "отметить отревьюено и перейти к следующему"),
-    ("Tab", "следующее окно"),
+    ("Tab", "следующее окно: коммиты → файлы/группы → дифф"),
+    ("S-Tab", "предыдущее окно"),
+    (
+        "j/k, Enter",
+        "окно файлов: выбрать файл / открыть его в диффе",
+    ),
     (
         "Ctrl-h/j/k/l",
         "окно слева/ниже/выше/справа (алиасы Ctrl-w)",
@@ -208,6 +216,8 @@ pub fn which_key(prefix: char) -> (String, Vec<(&'static str, &'static str)>) {
 pub enum Context {
     Diff,
     Commits,
+    /// The file list (Groups, when built).
+    Files,
     /// A selection of commits is being extended.
     CommitsVisual,
     /// A prefix key is waiting for its continuation.
@@ -219,19 +229,23 @@ pub fn hint_line(context: Context) -> String {
     match context {
         Context::Diff => {
             "j/k: строки  ]h/[h: хунки  Space: команды  Ctrl-w + h/j/k/l: окна  ?: справка  \
-                          Ctrl-d/u: прокрутка  gg/G: начало/конец  ]f/[f: файлы"
+                          Ctrl-d/u: прокрутка  gg/G: начало/конец  ]f/[f: файлы  \
+                          Ctrl-w </>/=: сайдбар"
                 .into()
         }
         Context::Commits => "j/k: коммиты  Enter: срез  v: выделение  a: весь диапазон  \
                              /: поиск  n/N: совпадения  za: раунд  Ctrl-d/u: страница  \
                              Tab: окно  Space: команды  ?: справка"
             .into(),
+        Context::Files => "j/k: файлы  Enter: открыть  ]g/[g: группы  Tab: окно  \
+                           Space: команды  ?: справка"
+            .into(),
         Context::CommitsVisual => {
             "-- VISUAL --  j/k: расширить  Enter: срез  v: снять  Esc: отмена".into()
         }
         Context::Pending(CTRL_W) => {
-            "Ctrl-w + h/j/k/l: окна  Ctrl-w + w: следующее окно  Ctrl-w + </>: ширина сайдбара  \
-                Ctrl-w + =: сброс  Esc: отмена"
+            "Ctrl-w + h/j/k/l: окна  Ctrl-w + w/W: следующее/предыдущее окно  \
+                Ctrl-w + </>: ширина сайдбара  Ctrl-w + =: сброс  Esc: отмена"
                 .into()
         }
         Context::Pending(prefix) => {

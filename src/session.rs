@@ -22,6 +22,7 @@ use crate::git::{ChangedFile, Commit, GitError, Range, Repo, Status, Target};
 use crate::review::{self, FileChange, Mark, Review};
 use crate::special;
 use crate::viewport::Viewport;
+use diagram::clear_area;
 use rounds::HEADER;
 
 /// Below this size the session shows a "terminal too small" screen.
@@ -208,6 +209,7 @@ enum Scope {
 enum Focus {
     Diff,
     Commits,
+    Files,
 }
 
 mod analysis;
@@ -976,6 +978,9 @@ impl Session {
         {
             return;
         }
+        if self.focus == Focus::Files && self.sidebar_visible() && self.files_key(key) {
+            return;
+        }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         if !ctrl {
             match (self.pending, key.code) {
@@ -1225,6 +1230,7 @@ impl Session {
                 self.click_commits(mouse.row);
             }
             MouseEventKind::Down(_) if at(self.files_area()) && !self.picker => {
+                self.focus = Focus::Files;
                 let area = self.files_area();
                 // Row 0 of the sidebar is its border.
                 if mouse.row > area.y {
@@ -1304,7 +1310,12 @@ impl Session {
 
     fn render_commits(&self, buf: &mut Buffer) {
         let area = self.commits_area();
-        draw_box(buf, area, &self.commits_title());
+        draw_box_focused(
+            buf,
+            area,
+            &self.commits_title(),
+            self.window() == Focus::Commits,
+        );
         let inner = Rect::new(
             area.x + 1,
             area.y + 1,
@@ -1421,11 +1432,8 @@ impl Session {
 
     fn render_picker(&self, buf: &mut Buffer) {
         let area = self.picker_area();
-        let width = area.width;
         buf.set_style(area, Style::new().fg(FG).bg(Color::Reset));
-        for y in area.y..area.y + area.height {
-            buf.set_string(area.x, y, " ".repeat(width as usize), Style::new().fg(FG));
-        }
+        clear_area(buf, area);
         draw_box(buf, area, " Pick a Scope ");
         let inner = self.picker_inner();
         self.render_commit_rows(buf, inner, true);
@@ -1442,10 +1450,11 @@ impl Session {
 
     fn render_files(&self, buf: &mut Buffer) {
         let area = self.files_area();
-        draw_box(
+        draw_box_focused(
             buf,
             area,
             &format!(" Files ({}){} ", self.files.len(), self.groups_note()),
+            self.window() == Focus::Files,
         );
         let width = area.width as usize;
         let inner = width.saturating_sub(2);
@@ -1770,6 +1779,7 @@ impl Session {
         let text = self.analysis_status(&text);
         let text = self.reload_status(&text);
         let text = self.explain_status(&text);
+        let text = self.busy_status(&text);
         let text = match &self.warning {
             Some(w) => format!("{text}  {w}"),
             None => text,
@@ -1786,7 +1796,12 @@ impl Session {
 
 /// A bordered box with a title in the top border.
 fn draw_box(buf: &mut Buffer, area: Rect, title: &str) {
-    let border = Style::new().fg(DIM);
+    draw_box_focused(buf, area, title, false);
+}
+
+/// A box whose border is lit while its window has the focus.
+fn draw_box_focused(buf: &mut Buffer, area: Rect, title: &str, focused: bool) {
+    let border = Style::new().fg(if focused { ACCENT } else { DIM });
     let width = area.width as usize;
     let mut top = format!("┌{title}");
     while top.chars().count() < width.saturating_sub(1) {

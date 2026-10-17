@@ -192,6 +192,11 @@ impl Session {
         }
     }
 
+    /// Time since the session opened, as the events and ticks report it.
+    pub(super) fn clock(&self) -> std::time::Duration {
+        self.mouse.clock
+    }
+
     /// Time passes: double clicks are told apart by it.
     pub(super) fn mouse_time(&mut self, elapsed: std::time::Duration) {
         self.mouse.clock += elapsed;

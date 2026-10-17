@@ -18,6 +18,9 @@ pub(super) struct Editor {
     insert: bool,
     /// Asking whether to throw a non-empty draft away.
     confirm: bool,
+    /// The draft was started from a VISUAL selection, which stays highlighted
+    /// while it is open.
+    selected: bool,
 }
 
 /// One drawn row of a Comment box.
@@ -216,6 +219,7 @@ impl Session {
             text,
             insert,
             confirm,
+            ..
         }) = &self.editor
         {
             if *path == file.path {
@@ -295,6 +299,7 @@ impl Session {
             return;
         };
         let (mut start, mut end) = (line, line);
+        let selected = self.visual.is_some();
         if let Some(anchor) = self.visual.take() {
             let (lo, hi) = (anchor.min(self.vp.cursor), anchor.max(self.vp.cursor));
             let lines = (lo..=hi).filter_map(|i| match *self.view.items.get(i)? {
@@ -310,13 +315,32 @@ impl Session {
             let (first, last) = lines.fold((line, line), |(a, b), l| (a.min(l), b.max(l)));
             (start, end) = (first, last);
         }
-        self.begin_lines_comment(side, start, end);
+        self.begin_lines_comment(side, start, end, selected);
     }
 
     /// Highlight the rows of the VISUAL selection.
     pub(super) fn render_selection(&self, buf: &mut Buffer, area: Rect, top: u16, height: usize) {
-        let Some(anchor) = self.visual else { return };
-        let (lo, hi) = (anchor.min(self.vp.cursor), anchor.max(self.vp.cursor));
+        let (lo, hi) = match (&self.editor, self.visual) {
+            (
+                Some(Editor {
+                    target:
+                        Target::Lines {
+                            side, start, end, ..
+                        },
+                    selected: true,
+                    ..
+                }),
+                _,
+            ) => match (
+                self.item_of_line(*side, *start),
+                self.item_of_line(*side, *end),
+            ) {
+                (Some(a), Some(b)) => (a.min(b), a.max(b)),
+                _ => return,
+            },
+            (_, Some(anchor)) => (anchor.min(self.vp.cursor), anchor.max(self.vp.cursor)),
+            _ => return,
+        };
         let layout = self.comment_layout();
         let bottom = top + height as u16;
         for item in lo.max(self.vp.top)..=hi {
@@ -331,7 +355,7 @@ impl Session {
         }
     }
 
-    fn begin_lines_comment(&mut self, side: Side, start: usize, end: usize) {
+    fn begin_lines_comment(&mut self, side: Side, start: usize, end: usize, selected: bool) {
         let (Some(file), Some(Ok(loaded))) = (self.files.get(self.selected), &self.loaded) else {
             return;
         };
@@ -347,6 +371,7 @@ impl Session {
             text: String::new(),
             insert: false,
             confirm: false,
+            selected,
         });
     }
 
@@ -526,6 +551,7 @@ impl Session {
             text: String::new(),
             insert: false,
             confirm: false,
+            selected: false,
         });
         self.visual = None;
     }
@@ -579,6 +605,7 @@ impl Session {
             text: String::new(),
             insert: false,
             confirm: false,
+            selected: false,
         });
         self.visual = None;
     }
@@ -604,9 +631,7 @@ impl Session {
             width,
             height,
         );
-        for y in area.y..area.y + area.height {
-            buf.set_string(area.x, y, " ".repeat(width as usize), Style::new().fg(FG));
-        }
+        clear_area(buf, area);
         draw_box(buf, area, &what);
         for (k, line) in lines
             .iter()

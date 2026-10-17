@@ -116,7 +116,7 @@ fn which_key_and_help_list_the_groups_toggle() {
 #[test]
 fn which_key_and_help_list_the_analyst_explanations() {
     let fx = feature_branch();
-    let mut h = Harness::open(&fx, 100, 60);
+    let mut h = Harness::open(&fx, 100, 90);
     h.keys("<Space>").wait(350);
     assert!(h.screen().contains("объяснить хунк"), "{}", h.screen());
     h.keys("<Esc>?");
@@ -199,11 +199,11 @@ fn ctrl_w_moves_between_windows() {
 #[test]
 fn tab_and_ctrl_hjkl_aliases_move_between_windows() {
     assert_eq!(scope_after("<Tab>"), "scope:2");
-    assert_eq!(scope_after("<Tab><Tab>"), "scope:all");
+    assert_eq!(scope_after("<Tab><Tab><Tab>"), "scope:all");
     assert_eq!(scope_after("<C-h>"), "scope:2");
     assert_eq!(scope_after("<C-h><C-l>"), "scope:all");
     assert_eq!(scope_after("<C-k>"), "scope:2");
-    assert_eq!(scope_after("<C-k><C-j>"), "scope:all");
+    assert_eq!(scope_after("<C-k><C-l>"), "scope:all");
 }
 
 #[test]
@@ -380,9 +380,9 @@ fn help_scrolls_on_a_short_terminal() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 100, 20);
     h.keys("?");
-    assert!(!h.screen().contains("Ctrl-w ="));
+    assert!(!h.screen().contains("Ctrl-w W"));
     h.keys(&"j".repeat(80));
-    assert!(h.screen().contains("Ctrl-w ="));
+    assert!(h.screen().contains("Ctrl-w W"));
 }
 
 #[test]
