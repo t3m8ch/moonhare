@@ -14,7 +14,7 @@ type Answer = (Key, Result<Grouping, AnalystError>);
 
 pub(super) struct Groups {
     analyst: Option<Arc<dyn Analyst>>,
-    cache: HashMap<Key, Grouping>,
+    cache: HashMap<Key, Placed>,
     pending: HashSet<Key>,
     /// Why the last request for a key failed.
     errors: HashMap<Key, String>,
@@ -39,6 +39,25 @@ impl Default for Groups {
             sender,
             receiver,
         }
+    }
+}
+
+/// Groups with the Group of every file looked up once, when they arrive.
+struct Placed {
+    grouping: Grouping,
+    /// Group of each file: the first that lists it.
+    index: HashMap<String, usize>,
+}
+
+impl Placed {
+    fn new(grouping: Grouping) -> Placed {
+        let mut index = HashMap::new();
+        for (n, group) in grouping.groups.iter().enumerate() {
+            for file in &group.files {
+                index.entry(file.clone()).or_insert(n);
+            }
+        }
+        Placed { grouping, index }
     }
 }
 
@@ -82,7 +101,10 @@ impl Session {
         };
         let sender = self.groups.sender.clone();
         std::thread::spawn(move || {
-            let answer = analyst.group(&request);
+            // A panic in the Analyst is an answer too, or the wait never ends.
+            let answer =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| analyst.group(&request)))
+                    .unwrap_or_else(|_| Err(AnalystError::Failed("the Analyst crashed".into())));
             let _ = sender.send((key, answer));
         });
     }
@@ -94,7 +116,7 @@ impl Session {
                 self.groups.errors.remove(&key);
                 self.groups.built.retain(|k| *k != key);
                 self.groups.built.push(key.clone());
-                self.groups.cache.insert(key, grouping);
+                self.groups.cache.insert(key, Placed::new(grouping));
                 self.refilter();
             }
             Err(e) => {
@@ -127,16 +149,16 @@ impl Session {
         }
     }
 
-    fn grouping(&self) -> Option<&Grouping> {
+    fn grouping(&self) -> Option<&Placed> {
         if self.groups.tree {
             return None;
         }
-        self.groups_for_key().map(|(grouping, _)| grouping)
+        self.groups_for_key().map(|(placed, _)| placed)
     }
 
     /// The Groups of the current head, or failing that the newest ones built
     /// for another head in this language: they are stale.
-    fn groups_for_key(&self) -> Option<(&Grouping, bool)> {
+    fn groups_for_key(&self) -> Option<(&Placed, bool)> {
         let key = self.current_key();
         if let Some(grouping) = self.groups.cache.get(&key) {
             return Some((grouping, false));
@@ -175,18 +197,19 @@ impl Session {
     /// two Groups belongs to the first; one in none, or one the Analyst never
     /// saw, belongs to the Group after the last, "Other".
     fn group_of(&self, path: &str) -> Option<usize> {
-        let groups = &self.grouping()?.groups;
+        let placed = self.grouping()?;
         Some(
-            groups
-                .iter()
-                .position(|g| g.files.iter().any(|f| f == path))
-                .unwrap_or(groups.len()),
+            placed
+                .index
+                .get(path)
+                .copied()
+                .unwrap_or(placed.grouping.groups.len()),
         )
     }
 
     /// Name, description and Mechanical mark of Group `n`.
     fn group_text(&self, n: usize) -> (String, String, bool) {
-        match self.grouping().and_then(|g| g.groups.get(n)) {
+        match self.grouping().and_then(|p| p.grouping.groups.get(n)) {
             Some(g) => (g.name.clone(), g.description.clone(), g.mechanical),
             None => (
                 "Other".into(),

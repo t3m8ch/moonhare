@@ -104,6 +104,18 @@ fn which_key_and_help_list_the_groups_toggle() {
 }
 
 #[test]
+fn which_key_and_help_list_the_analyst_explanations() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 60);
+    h.keys("<Space>").wait(350);
+    assert!(h.screen().contains("объяснить хунк"), "{}", h.screen());
+    h.keys("<Esc>?");
+    let screen = h.screen();
+    assert!(screen.contains("Space x"), "{screen}");
+    assert!(screen.contains("Space X"), "{screen}");
+}
+
+#[test]
 fn help_lists_enter_for_collapsed_mechanical_files() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 120, 60);

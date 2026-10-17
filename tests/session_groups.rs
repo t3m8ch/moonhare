@@ -341,4 +341,12 @@ fn with_the_unreviewed_filter_groups_keep_counting_the_whole_scope() {
     assert!(row_of(&mut h, "Core").contains("1/2"), "{side}");
 }
 
-// MORE
+#[test]
+fn an_analyst_that_panics_does_not_hang_the_session() {
+    let fx = feature_branch();
+    let analyst = FakeAnalyst::with(|_| panic!("boom"));
+    let mut h = review_with(&fx, &analyst);
+    h.session().wait_for_analyst();
+    let side = sidebar(&mut h);
+    assert!(side.contains("README.md"), "{side}");
+}
