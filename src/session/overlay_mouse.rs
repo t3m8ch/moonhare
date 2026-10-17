@@ -33,12 +33,7 @@ impl TextSelection {
 impl Session {
     /// The area inside the border of the overlay that is on top, if any.
     fn overlay_text_rect(&self) -> Option<Rect> {
-        let full = Rect::new(
-            1,
-            0,
-            self.size.0.saturating_sub(2),
-            self.size.1.saturating_sub(BOTTOM_ROWS),
-        );
+        let full = self.full_overlay_area();
         let area = if self.prompt_view.is_some() || self.help.is_some() {
             full
         } else if self.explain_open() || self.diagram_open() || self.summary_open() {

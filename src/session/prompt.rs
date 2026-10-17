@@ -92,20 +92,8 @@ impl Session {
         let Some((text, offset)) = &self.prompt_view else {
             return;
         };
-        let area = Rect::new(
-            1,
-            0,
-            self.size.0.saturating_sub(2),
-            self.size.1.saturating_sub(BOTTOM_ROWS),
-        );
-        for y in area.y..area.y + area.height {
-            buf.set_string(
-                area.x,
-                y,
-                " ".repeat(area.width as usize),
-                Style::new().fg(FG),
-            );
-        }
+        let area = self.full_overlay_area();
+        clear_area(buf, area);
         draw_box(buf, area, " Prompt (j/k scroll, Esc close) ");
         let inner = area.width.saturating_sub(4) as usize;
         let rows = area.height.saturating_sub(2) as usize;

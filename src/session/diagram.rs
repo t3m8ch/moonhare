@@ -326,14 +326,15 @@ fn key_of(request: &DiagramRequest) -> Key {
     )
 }
 
-/// Blank the area an overlay is drawn over.
+/// Blank the area an overlay is drawn over: text and colours of whatever was
+/// drawn there before are gone.
 pub(super) fn clear_area(buf: &mut Buffer, area: Rect) {
+    let area = area.intersection(buf.area);
     for y in area.y..area.y + area.height {
-        buf.set_string(
-            area.x,
-            y,
-            " ".repeat(area.width as usize),
-            Style::new().fg(FG),
-        );
+        for x in area.x..area.x + area.width {
+            let cell = &mut buf[(x, y)];
+            cell.reset();
+            cell.set_fg(FG);
+        }
     }
 }
