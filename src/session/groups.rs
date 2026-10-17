@@ -1,10 +1,11 @@
 //! The Analyst's Groups inside the session: built in the background, shown in
 //! the sidebar in place of the plain file list.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
+use super::analysis::Pending;
 use super::*;
 use crate::analyst::{Analyst, AnalystError, DiagramSubject, GroupRequest, Grouping};
 
@@ -15,7 +16,7 @@ type Answer = (Key, Result<Grouping, AnalystError>);
 pub(super) struct Groups {
     analyst: Option<Arc<dyn Analyst>>,
     cache: HashMap<Key, Placed>,
-    pending: HashSet<Key>,
+    pending: Pending<Key>,
     /// Why the last request for a key failed.
     errors: HashMap<Key, String>,
     /// The cached keys, oldest first.
@@ -32,7 +33,7 @@ impl Default for Groups {
         Groups {
             analyst: None,
             cache: HashMap::new(),
-            pending: HashSet::new(),
+            pending: Pending::default(),
             errors: HashMap::new(),
             built: Vec::new(),
             tree: false,
@@ -86,8 +87,9 @@ impl Session {
             return;
         };
         let key = self.current_key();
+        let now = self.clock();
         if (!force && self.groups.cache.contains_key(&key))
-            || !self.groups.pending.insert(key.clone())
+            || !self.groups.pending.insert(key.clone(), now)
         {
             return;
         }
@@ -135,6 +137,14 @@ impl Session {
         }
     }
 
+    pub(super) fn groups_busy(&self) -> bool {
+        !self.groups.pending.is_empty()
+    }
+
+    pub(super) fn groups_work(&self) -> Option<(usize, std::time::Duration)> {
+        self.groups.pending.oldest()
+    }
+
     pub(super) fn collect_groupings(&mut self) {
         while let Ok(answer) = self.groups.receiver.try_recv() {
             self.take_grouping(answer);
@@ -173,11 +183,20 @@ impl Session {
         Some((&self.groups.cache[old], true))
     }
 
-    /// Note for the title of the sidebar when the Groups shown are out of date.
-    pub(super) fn groups_note(&self) -> &'static str {
-        match self.grouping() {
+    /// Note for the title of the sidebar when the Groups shown are out of date
+    /// or the Analyst is still building them.
+    pub(super) fn groups_note(&self) -> String {
+        let stale = match self.grouping() {
             Some(_) if self.groups_for_key().is_some_and(|(_, stale)| stale) => " · groups stale",
             _ => "",
+        };
+        match self.groups_busy() && !self.groups.tree {
+            true => format!(
+                "{stale} · {} grouping {}s",
+                super::analysis::spinner(self.clock()),
+                self.work_seconds("Groups")
+            ),
+            false => stale.to_string(),
         }
     }
 

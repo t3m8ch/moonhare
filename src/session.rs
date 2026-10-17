@@ -1760,6 +1760,7 @@ impl Session {
         let text = self.analysis_status(&text);
         let text = self.reload_status(&text);
         let text = self.explain_status(&text);
+        let text = self.busy_status(&text);
         let text = match &self.warning {
             Some(w) => format!("{text}  {w}"),
             None => text,

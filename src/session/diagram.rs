@@ -1,9 +1,10 @@
 //! Diagrams inside the session: `:diagram`, its background request, cache and
 //! overlay.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 
+use super::analysis::Pending;
 use super::*;
 use unicode_width::UnicodeWidthStr;
 
@@ -26,7 +27,7 @@ pub(super) struct Diagrams {
     /// Why the last request for a key failed. A failure is not cached: the
     /// next `:diagram` asks again.
     errors: HashMap<Key, String>,
-    pending: HashSet<Key>,
+    pending: Pending<Key>,
     sender: Sender<Answer>,
     receiver: Receiver<Answer>,
     /// The overlay is open on this diagram.
@@ -47,7 +48,7 @@ impl Default for Diagrams {
         Diagrams {
             cache: HashMap::new(),
             errors: HashMap::new(),
-            pending: HashSet::new(),
+            pending: Pending::default(),
             sender,
             receiver,
             open: None,
@@ -93,7 +94,9 @@ impl Session {
             _ => DiagramSubject::File { path },
         };
         let key = (self.range.head.clone(), self.language_code(), subject);
-        if !self.diagrams.cache.contains_key(&key) && self.diagrams.pending.insert(key.clone()) {
+        let now = self.clock();
+        if !self.diagrams.cache.contains_key(&key) && self.diagrams.pending.insert(key.clone(), now)
+        {
             self.diagrams.errors.remove(&key);
             let request = DiagramRequest {
                 repo: self.repo.root().to_path_buf(),
@@ -142,6 +145,14 @@ impl Session {
                 self.diagrams.errors.insert(key, e);
             }
         }
+    }
+
+    pub(super) fn diagrams_busy(&self) -> bool {
+        !self.diagrams.pending.is_empty()
+    }
+
+    pub(super) fn diagrams_work(&self) -> Option<(usize, std::time::Duration)> {
+        self.diagrams.pending.oldest()
     }
 
     /// Collect the diagrams that arrived.
