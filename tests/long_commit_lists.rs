@@ -259,3 +259,55 @@ fn za_folds_a_round_into_one_row_and_the_scope_stays_as_it_was() {
     h.keys("za");
     assert!(h.screen().contains("step 12"), "{}", h.screen());
 }
+
+#[test]
+fn motions_treat_a_folded_round_as_one_stop_and_enter_still_applies_a_commit() {
+    let fx = two_rounds();
+    let mut h = Harness::open(&fx, 160, 60);
+    h.keys("<Tab>:scope 7<CR>zc");
+    assert_eq!(title(&h.screen()), "Commits 1/120", "cursor on the folded row");
+
+    h.keys("j");
+    assert_eq!(title(&h.screen()), "Commits 61/120", "j skips the hidden commits");
+    h.keys("k");
+    assert_eq!(title(&h.screen()), "Commits 1/120");
+    h.keys("k");
+    assert_eq!(title(&h.screen()), "Commits 120", "k reaches the Range row");
+
+    // A selection across the folded Round covers its hidden commits too.
+    h.keys("jvj<CR>");
+    assert!(h.screen().contains("scope:1-61"), "{}", h.screen());
+}
+
+#[test]
+fn clicking_a_folded_round_opens_it() {
+    let fx = two_rounds();
+    let mut h = Harness::open(&fx, 160, 60);
+    h.keys("<Tab>:scope 7<CR>zc");
+    let row = row_index(&h.screen(), "Round 1, 60 commits").unwrap() as u16;
+    h.click(8, row);
+    let screen = h.screen();
+    assert!(screen.contains("step 12"), "{screen}");
+    assert!(!screen.contains("Round 1, 60 commits"), "{screen}");
+}
+
+#[test]
+fn jumping_to_a_commit_inside_a_folded_round_opens_the_round() {
+    let fx = two_rounds();
+    let mut h = Harness::open(&fx, 160, 60);
+
+    // `:scope N`
+    h.keys("<Tab>:scope 3<CR>zc:scope 4<CR>");
+    assert_eq!(title(&h.screen()), "Commits 4/120");
+    assert!(h.screen().contains("step 4"), "{}", h.screen());
+
+    // `/` search
+    h.keys("zc/step 9<CR>");
+    assert_eq!(title(&h.screen()), "Commits 9/120");
+    assert!(h.screen().contains("step 9"), "{}", h.screen());
+
+    // `]c` from the whole Range lands on the first commit
+    h.keys("zca]c");
+    assert_eq!(title(&h.screen()), "Commits 1/120");
+    assert!(h.screen().contains("step 1 "), "{}", h.screen());
+}

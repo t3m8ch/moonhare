@@ -1087,6 +1087,7 @@ impl Session {
         };
         self.commit_cursor = target;
         self.commit_anchor = None;
+        self.reveal_commit(target - 1);
         self.apply_scope(Scope::Commits {
             lo: target - 1,
             hi: target - 1,
@@ -1122,6 +1123,9 @@ impl Session {
             Scope::All => 0,
             Scope::Commits { lo, .. } => lo + 1,
         };
+        if let Scope::Commits { lo, .. } = scope {
+            self.reveal_commit(lo);
+        }
         self.commit_anchor = None;
         Ok(())
     }
