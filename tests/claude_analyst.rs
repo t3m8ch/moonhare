@@ -65,6 +65,7 @@ fn request(fx: &Fixture) -> SummaryRequest {
         head: fx.git(&["rev-parse", "feature"]).trim().to_string(),
         language: "ru".into(),
         pull_request: None,
+        settings: Default::default(),
     }
 }
 
@@ -384,6 +385,7 @@ fn diagram_request(fx: &Fixture) -> DiagramRequest {
             path: "src/a.rs".into(),
             line: 2,
         },
+        settings: Default::default(),
     }
 }
 

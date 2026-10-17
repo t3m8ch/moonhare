@@ -19,14 +19,16 @@ fn main() -> ExitCode {
     };
     let (width, height) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
     let mut args: Vec<String> = std::env::args().skip(1).collect();
-    let language = match take_flag_value(&mut args, "--lang") {
-        Ok(language) => language,
-        Err(()) => {
-            eprintln!(
-                "usage: moonhare [--lang <code>] [<branch> | <base>..<head> | --pr <number>]"
-            );
-            return ExitCode::FAILURE;
-        }
+    let usage = || {
+        eprintln!("usage: moonhare [--lang <code>] [--effort <low|medium|high|xhigh|max>] [--model <name>] [<branch> | <base>..<head> | --pr <number>]")
+    };
+    let (Ok(language), Ok(effort), Ok(model)) = (
+        take_flag_value(&mut args, "--lang"),
+        take_flag_value(&mut args, "--effort"),
+        take_flag_value(&mut args, "--model"),
+    ) else {
+        usage();
+        return ExitCode::FAILURE;
     };
     let forge = GitHub::new();
     let opened = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
@@ -41,7 +43,7 @@ fn main() -> ExitCode {
             Session::open_target_with_forge(&cwd, &target, &forge, width, height)
         }
         _ => {
-            eprintln!("usage: moonhare [<branch> | <base>..<head> | --pr <number>]");
+            usage();
             return ExitCode::FAILURE;
         }
     };
@@ -57,6 +59,18 @@ fn main() -> ExitCode {
     let forced = std::env::var("MOONHARE_TRUECOLOR").is_ok_and(|v| v == "1");
     session
         .set_truecolor(forced || moonhare::color::truecolor_from_colorterm(colorterm.as_deref()));
+    for result in [
+        effort.as_deref().map(|e| session.set_effort(e)),
+        model.as_deref().map(|m| session.set_model(m)),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if let Err(e) = result {
+            eprintln!("moonhare: {e}");
+            return ExitCode::FAILURE;
+        }
+    }
     if let Some(language) = language {
         session.set_language(&language);
     }

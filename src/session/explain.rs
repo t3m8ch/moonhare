@@ -108,6 +108,7 @@ impl Session {
             base,
             head,
             language: self.analysis.language.clone(),
+            settings: self.analysis.settings.clone(),
             pull_request: self.pull_request.clone(),
             target,
         };

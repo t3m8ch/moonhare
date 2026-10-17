@@ -57,6 +57,7 @@ fn request(fx: &Fixture) -> GroupRequest {
         head: fx.git(&["rev-parse", "feature"]).trim().to_string(),
         language: "ru".into(),
         pull_request: None,
+        settings: Default::default(),
         files: vec!["README.md".into(), "src/a.rs".into(), "src/b.rs".into()],
     }
 }
