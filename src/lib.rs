@@ -3,6 +3,7 @@
 pub mod analyst;
 pub mod claude;
 pub mod color;
+pub mod comments;
 pub mod diff;
 pub mod fold;
 pub mod forge;
