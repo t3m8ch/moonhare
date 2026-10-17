@@ -310,7 +310,7 @@ fn when_grouping_fails_the_tree_stays_and_the_reason_is_in_the_status() {
     let mut h = review_with(&fx, &analyst);
     h.session().wait_for_analyst();
     let screen = h.screen();
-    let status = screen.lines().last().unwrap();
+    let status = screen.lines().rev().nth(1).unwrap(); // the last row holds hints
     assert!(status.contains("claude gave a broken answer"), "{status}");
     let side = sidebar(&mut h);
     assert!(
