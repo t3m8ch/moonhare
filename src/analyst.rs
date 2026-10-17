@@ -56,6 +56,35 @@ pub struct Diagram {
     pub mermaid: String,
 }
 
+/// What the Reviewer wants explained.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExplainTarget {
+    /// One hunk of a file: its path and the changed lines as shown, each
+    /// prefixed with `-`, `+` or a space.
+    Hunk { path: String, text: String },
+    /// A whole file of the Range.
+    File { path: String },
+}
+
+/// The Analyst is asked to explain a hunk or a file of a Range.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExplainRequest {
+    /// The clone holding the Range.
+    pub repo: PathBuf,
+    pub base: String,
+    pub head: String,
+    /// Language of the answer, as a code: `ru`, `en`.
+    pub language: String,
+    pub pull_request: Option<PullRequest>,
+    pub target: ExplainTarget,
+}
+
+/// The Analyst's explanation of a hunk or a file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Explanation {
+    pub text: String,
+}
+
 /// Why the Analyst could not answer. The tool carries on without it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AnalystError {
@@ -87,6 +116,14 @@ pub trait Analyst: Send + Sync {
     fn diagram(&self, _request: &DiagramRequest) -> Result<Diagram, AnalystError> {
         Err(AnalystError::Failed(
             "this Analyst does not draw diagrams".into(),
+        ))
+    }
+
+    /// Explain a hunk or a file on demand. May take minutes; callers run it
+    /// in the background. An Analyst that cannot explain keeps this default.
+    fn explain(&self, _request: &ExplainRequest) -> Result<Explanation, AnalystError> {
+        Err(AnalystError::Failed(
+            "this Analyst cannot explain code".into(),
         ))
     }
 }

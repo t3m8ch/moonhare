@@ -6,7 +6,8 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::analyst::{
-    Analyst, AnalystError, Diagram, DiagramRequest, DiagramSubject, Summary, SummaryRequest,
+    Analyst, AnalystError, Diagram, DiagramRequest, DiagramSubject, ExplainRequest, ExplainTarget,
+    Explanation, Summary, SummaryRequest,
 };
 
 /// The shape the answer must have; `claude` validates it.
@@ -14,6 +15,9 @@ const SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"string
 
 /// The shape of the answer to a request for a diagram.
 const DIAGRAM_SCHEMA: &str = r#"{"type":"object","properties":{"mermaid":{"type":"string"}},"required":["mermaid"],"additionalProperties":false}"#;
+
+/// The shape of an explanation.
+const EXPLAIN_SCHEMA: &str = r#"{"type":"object","properties":{"explanation":{"type":"string"}},"required":["explanation"],"additionalProperties":false}"#;
 
 /// The only tools the Analyst gets: reading and searching files.
 const READ_ONLY_TOOLS: &str = "Read,Grep,Glob";
@@ -189,6 +193,44 @@ fn diagram_prompt(request: &DiagramRequest, tree: &Path) -> String {
     )
 }
 
+fn explain_prompt(request: &ExplainRequest, tree: &Path) -> String {
+    let (what, path, hunk) = match &request.target {
+        ExplainTarget::Hunk { path, text } => ("this hunk", path, format!("Hunk:\n{text}\n")),
+        ExplainTarget::File { path } => ("this file", path, String::new()),
+    };
+    let mut diff = git_text(
+        &request.repo,
+        &["diff", &request.base, &request.head, "--", path],
+    );
+    if diff.len() > DIFF_LIMIT {
+        let mut cut = DIFF_LIMIT;
+        while !diff.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        diff.truncate(cut);
+        diff.push_str("\n[diff truncated: read the file in the tree]\n");
+    }
+    let pull_request = request.pull_request.as_ref().map_or(String::new(), |pr| {
+        format!(
+            "Pull request #{}: {}\n\n{}\n\n",
+            pr.number, pr.title, pr.body
+        )
+    });
+    format!(
+        "You are the Analyst of a code review tool. Explain {what} of a change \
+         to a human who is reviewing it: what it does, why it is probably \
+         there, and anything surprising. The files at the head of the change \
+         are in {tree}; you may read and search them, nothing else.\n\n\
+         Language: {language}\n\n\
+         {pull_request}\
+         File: {path}\n\
+         {hunk}\
+         Diff of the file:\n{diff}",
+        language = request.language,
+        tree = tree.display(),
+    )
+}
+
 /// Variables that would switch `claude` away from the Reviewer's own login
 /// (an API key, Bedrock, Vertex) or hand it cloud credentials.
 fn is_provider_variable(name: &str) -> bool {
@@ -256,7 +298,8 @@ fn run_with_timeout(
 
 const NOT_LOGGED_IN: &str = "claude is not logged in: run `claude /login`, then :analyze";
 
-/// What `claude -p --output-format json` printed, as its structured answer or an error.
+/// What `claude -p --output-format json` printed: the structured answer, or an
+/// error.
 fn interpret(
     stdout: &[u8],
     stderr: &[u8],
@@ -284,13 +327,22 @@ fn interpret(
         .ok_or_else(|| AnalystError::Failed("claude gave an answer without structure".into()))
 }
 
+/// The text of a field of the structured answer.
+fn field(answer: &serde_json::Value, name: &str) -> Result<String, AnalystError> {
+    answer[name]
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| AnalystError::Failed(format!("claude gave an answer without a {name}")))
+}
+
 impl ClaudeAnalyst {
-    /// Ask `claude` about the head of a Range, sandboxed (ADR 0002), and return
-    /// its structured answer. `prompt` gets the path of the worktree holding
-    /// the head.
+    /// Run `claude -p` over the Range with the read-only worktree at `head`,
+    /// and return its structured answer.
     fn ask(
         &self,
-        (repo, base, head): (&Path, &str, &str),
+        repo: &Path,
+        base: &str,
+        head: &str,
         schema: &str,
         prompt: impl FnOnce(&Path) -> String,
     ) -> Result<serde_json::Value, AnalystError> {
@@ -353,30 +405,40 @@ impl ClaudeAnalyst {
 impl Analyst for ClaudeAnalyst {
     fn summarize(&self, request: &SummaryRequest) -> Result<Summary, AnalystError> {
         let answer = self.ask(
-            (&request.repo, &request.base, &request.head),
+            &request.repo,
+            &request.base,
+            &request.head,
             SCHEMA,
             |tree| prompt(request, tree),
         )?;
-        let text = answer["summary"].as_str().ok_or_else(|| {
-            AnalystError::Failed("claude gave an answer without a summary".into())
-        })?;
         Ok(Summary {
-            text: text.into(),
-            diagram: answer["diagram"].as_str().map(str::to_string),
+            text: field(&answer, "summary")?,
+            diagram: field(&answer, "diagram").ok(),
         })
     }
 
     fn diagram(&self, request: &DiagramRequest) -> Result<Diagram, AnalystError> {
         let answer = self.ask(
-            (&request.repo, &request.base, &request.head),
+            &request.repo,
+            &request.base,
+            &request.head,
             DIAGRAM_SCHEMA,
             |tree| diagram_prompt(request, tree),
         )?;
-        let mermaid = answer["mermaid"].as_str().ok_or_else(|| {
-            AnalystError::Failed("claude gave an answer without a diagram".into())
-        })?;
         Ok(Diagram {
-            mermaid: mermaid.into(),
+            mermaid: field(&answer, "mermaid")?,
         })
+    }
+
+    fn explain(&self, request: &ExplainRequest) -> Result<Explanation, AnalystError> {
+        self.ask(
+            &request.repo,
+            &request.base,
+            &request.head,
+            EXPLAIN_SCHEMA,
+            |tree| explain_prompt(request, tree),
+        )
+        .and_then(|answer| field(&answer, "explanation"))
+        .map(|text| Explanation { text })
     }
 }

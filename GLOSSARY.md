@@ -53,6 +53,11 @@ A sequence diagram or flowchart the Analyst draws, as Mermaid text, for a Group,
 _Russian_: диаграмма
 _Avoid_: picture, chart, graph
 
+**Explanation**:
+The Analyst's answer, on demand, to "what does this hunk or file do and why". Unlike the Summary it is never built in the background.
+_Russian_: объяснение
+_Avoid_: comment, annotation
+
 **Mechanical**:
 Marks a file or Group whose changes need no close reading, such as generated files, lockfiles or bulk renames.
 _Russian_: механическое

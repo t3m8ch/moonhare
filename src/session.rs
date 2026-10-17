@@ -215,6 +215,7 @@ enum Focus {
 
 mod analysis;
 mod diagram;
+mod explain;
 mod file_bar;
 mod file_picker;
 mod marks;
@@ -289,6 +290,7 @@ pub struct Session {
     quit: bool,
     analysis: analysis::Analysis,
     diagrams: diagram::Diagrams,
+    explain: explain::Explain,
 }
 
 impl Session {
@@ -452,6 +454,7 @@ impl Session {
             quit: false,
             analysis: Default::default(),
             diagrams: Default::default(),
+            explain: Default::default(),
         };
         session.load_selected();
         session.sync_view();
@@ -843,7 +846,7 @@ impl Session {
             self.help_key(key.code);
             return;
         }
-        if self.diagram_key(key) || self.analysis_key(key) {
+        if self.diagram_key(key) || self.explain_key(key) || self.analysis_key(key) {
             return;
         }
         if let Some(cursor) = self.file_picker {
@@ -1130,6 +1133,7 @@ impl Session {
         }
         self.render_summary(buf);
         self.render_diagram_overlay(buf);
+        self.render_explain(buf);
         if let Some(cursor) = self.file_picker {
             self.render_file_picker(buf, cursor);
         }
@@ -1569,6 +1573,7 @@ impl Session {
             ),
         };
         let text = self.analysis_status(&text);
+        let text = self.explain_status(&text);
         let text = match &self.warning {
             Some(w) => format!("{text}  {w}"),
             None => text,
