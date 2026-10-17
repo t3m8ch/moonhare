@@ -88,6 +88,8 @@ pub(super) struct Analysis {
     receiver: Receiver<Answer>,
     /// The `Space s` overlay is open.
     overlay: bool,
+    /// How far the text of the overlay is scrolled.
+    scroll: super::scroll::Scroll,
 }
 
 impl Default for Analysis {
@@ -107,6 +109,7 @@ impl Default for Analysis {
             sender,
             receiver,
             overlay: false,
+            scroll: Default::default(),
         }
     }
 }
@@ -408,7 +411,12 @@ impl Session {
     /// the key was used.
     pub(super) fn analysis_key(&mut self, key: KeyEvent) -> bool {
         if self.analysis.overlay {
-            if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
+            let area = self.overlay_area();
+            let (total, rows) = (self.summary_view().1.len(), scroll::text_rows(area));
+            let mut scroll = self.analysis.scroll;
+            if scroll.key(key, total, rows) {
+                self.analysis.scroll = scroll;
+            } else if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
                 self.analysis.overlay = false;
             } else {
                 self.summary_diagram_key(key.code);
@@ -420,6 +428,7 @@ impl Session {
             self.count = None;
             self.refresh_head();
             self.analysis.overlay = true;
+            self.analysis.scroll = Default::default();
             self.reset_picture_scroll();
             return true;
         }
@@ -466,13 +475,9 @@ impl Session {
         (self.analysis.head.clone(), self.analysis.language.clone())
     }
 
-    pub(super) fn render_summary(&self, buf: &mut Buffer) {
-        if !self.analysis.overlay {
-            return;
-        }
-        let area = self.overlay_area();
-        let (width, height) = (area.width, area.height);
-        clear_area(buf, area);
+    /// The title of the Summary overlay and its text, wrapped to the box.
+    pub(super) fn summary_view(&self) -> (String, Vec<String>) {
+        let inner_w = scroll::text_cols(self.overlay_area());
         let language = &self.analysis.language;
         let shown = self.current_summary();
         let title = match shown {
@@ -483,8 +488,6 @@ impl Session {
             _ if self.summary_from_cache() => format!(" Summary [{language}] cached "),
             _ => format!(" Summary [{language}] "),
         };
-        draw_box(buf, area, &title);
-        let inner_w = width.saturating_sub(4) as usize;
         let text = match shown {
             Some((summary, _)) => summary.text.clone(),
             None if self.analysis.analyst.is_none() => {
@@ -514,37 +517,54 @@ impl Session {
             lines.push(String::new());
             lines.extend(self.drawing_lines(mermaid));
         }
-        for (row, line) in lines
-            .iter()
-            .take(height.saturating_sub(2) as usize)
-            .enumerate()
-        {
-            buf.set_stringn(
-                area.x + 2,
-                area.y + 1 + row as u16,
-                line,
-                inner_w,
-                Style::new().fg(FG),
-            );
+        (title, lines)
+    }
+
+    pub(super) fn summary_scroll_mut(&mut self) -> Option<&mut scroll::Scroll> {
+        self.analysis.overlay.then_some(&mut self.analysis.scroll)
+    }
+
+    pub(super) fn render_summary(&self, buf: &mut Buffer) {
+        if !self.analysis.overlay {
+            return;
         }
+        let area = self.overlay_area();
+        clear_area(buf, area);
+        let (title, lines) = self.summary_view();
+        draw_box(buf, area, &title);
+        scroll::render_lines(buf, area, &lines, &self.analysis.scroll);
     }
 }
 
-/// Break `text` into lines of at most `width` characters, at spaces.
+/// Break `text` into lines of at most `width` characters, at spaces; a word
+/// wider than that is cut.
 pub(super) fn wrap(text: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
     let mut lines = Vec::new();
     for paragraph in text.lines() {
         let mut line = String::new();
-        for word in paragraph.split_whitespace() {
-            let needed =
-                line.chars().count() + word.chars().count() + usize::from(!line.is_empty());
-            if needed > width && !line.is_empty() {
-                lines.push(std::mem::take(&mut line));
+        for mut word in paragraph.split_whitespace() {
+            loop {
+                let len = word.chars().count();
+                let needed = line.chars().count() + len + usize::from(!line.is_empty());
+                if needed <= width {
+                    if !line.is_empty() {
+                        line.push(' ');
+                    }
+                    line.push_str(word);
+                    break;
+                }
+                if !line.is_empty() {
+                    lines.push(std::mem::take(&mut line));
+                    continue;
+                }
+                let cut = word
+                    .char_indices()
+                    .nth(width)
+                    .map_or(word.len(), |(i, _)| i);
+                lines.push(word[..cut].to_string());
+                word = &word[cut..];
             }
-            if !line.is_empty() {
-                line.push(' ');
-            }
-            line.push_str(word);
         }
         lines.push(line);
     }
