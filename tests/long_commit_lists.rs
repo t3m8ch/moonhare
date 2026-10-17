@@ -179,3 +179,13 @@ fn slash_finds_a_commit_by_its_number() {
     let range = screen.lines().find(|l| l.contains("▣ Весь Range")).unwrap();
     assert!(range.contains('●'), "{screen}");
 }
+
+#[test]
+fn slash_finds_a_commit_by_its_sha() {
+    let fx = long_branch(100);
+    let sha = fx.git(&["rev-parse", "feature~45"]);
+    let mut h = Harness::open(&fx, 160, 60);
+    h.keys(&format!("<Tab>/{}<CR>", &sha[..9]));
+    // feature~45 is the 55th of the 100 commits.
+    assert_eq!(title(&h.screen()), "Commits 55/100");
+}

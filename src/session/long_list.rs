@@ -70,7 +70,8 @@ impl Session {
     /// Whether commit `index` answers the search `query` (lower case): by its
     /// number, or by its sha or its subject.
     fn commit_matches(&self, index: usize, query: &str) -> bool {
-        (index + 1).to_string() == query
+        let commit = &self.commits[index];
+        (index + 1).to_string() == query || commit.sha.starts_with(query)
     }
 
     /// Move the cursor to the next (or previous) commit that answers the last
