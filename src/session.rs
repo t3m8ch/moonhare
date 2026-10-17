@@ -221,6 +221,7 @@ mod explain;
 mod file_bar;
 mod file_picker;
 mod groups;
+mod long_list;
 mod marks;
 mod mechanical_view;
 mod nav;
@@ -937,7 +938,10 @@ impl Session {
         if self.window_key(key.code, key.modifiers) {
             return;
         }
-        if self.focus == Focus::Commits && self.sidebar_visible() && self.commits_key(key) {
+        if self.focus == Focus::Commits
+            && self.sidebar_visible()
+            && (self.list_key(key) || self.commits_key(key))
+        {
             return;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -1018,7 +1022,9 @@ impl Session {
                 self.picker = false;
             }
             _ => {
-                self.commits_key(key);
+                if !self.list_key(key) {
+                    self.commits_key(key);
+                }
             }
         }
     }
@@ -1029,14 +1035,8 @@ impl Session {
             return false;
         }
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.commit_cursor = (self.commit_cursor + 1).min(self.commits.len());
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                // A selection holds commits only: the Range row is out of reach.
-                let floor = usize::from(self.commit_anchor.is_some());
-                self.commit_cursor = self.commit_cursor.saturating_sub(1).max(floor);
-            }
+            KeyCode::Char('j') | KeyCode::Down => self.step_list(1),
+            KeyCode::Char('k') | KeyCode::Up => self.step_list(-1),
             KeyCode::Char('v') => {
                 self.commit_anchor = match self.commit_anchor {
                     Some(_) => None,
