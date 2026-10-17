@@ -220,6 +220,7 @@ mod marks;
 mod mechanical_view;
 mod nav;
 mod overlay;
+mod reload;
 mod unreviewed;
 mod windows;
 
@@ -287,6 +288,7 @@ pub struct Session {
     pull_request: Option<PullRequest>,
     quit: bool,
     analysis: analysis::Analysis,
+    reload: reload::Reload,
 }
 
 impl Session {
@@ -310,6 +312,7 @@ impl Session {
         };
         let reject_empty = *target != Target::Current;
         let mut session = Self::open_range(repo, range, reject_empty, explicit, width, height)?;
+        session.reload.target = Some(target.clone());
         session.analysis.head_rev = match target {
             Target::Current => "HEAD".to_string(),
             Target::Branch(name) => format!("refs/heads/{name}"),
@@ -392,14 +395,7 @@ impl Session {
         }
         let commits = repo.commits(&range.base, &range.head)?;
         let files = repo.changed_files(&range.base, &range.head)?;
-        let mut commit_changes = Vec::new();
-        for (i, commit) in commits.iter().enumerate() {
-            let parent = match i.checked_sub(1) {
-                Some(prev) => &commits[prev].sha,
-                None => &range.base,
-            };
-            commit_changes.push(review::file_changes(&repo, parent, &commit.sha)?);
-        }
+        let commit_changes = reload::changes_per_commit(&repo, &range, &commits)?;
         // A Review belongs to the branch name, or to the explicit range string.
         let review_name = match explicit_range {
             Some(text) => format!("range {text}"),
@@ -449,6 +445,7 @@ impl Session {
             pull_request: None,
             quit: false,
             analysis: Default::default(),
+            reload: Default::default(),
         };
         session.load_selected();
         session.sync_view();
@@ -461,6 +458,7 @@ impl Session {
         if self.pending.is_some() {
             self.pending_for += elapsed;
         }
+        self.poll_reload(elapsed);
     }
 
     /// Draw with truecolor (exact RGB) instead of the 256-colour palette.
@@ -914,6 +912,7 @@ impl Session {
             KeyCode::Char('a') if !ctrl => self.show_whole_range(),
             KeyCode::Char('m') if !ctrl => self.toggle_mark(),
             KeyCode::Char('M') if !ctrl => self.mark_and_advance(),
+            KeyCode::Char('R') if !ctrl => self.reload(),
             KeyCode::Enter if !ctrl => self.expand_mechanical(),
             KeyCode::Char(':') if !ctrl => self.mode = Mode::Command(String::new()),
             _ => {}
@@ -1040,6 +1039,7 @@ impl Session {
             "q" | "q!" | "quit" => self.quit = true,
             "" => {}
             "reset" => self.reset_review(),
+            "reload" => self.reload(),
             other if self.analysis_command(other) => {}
             other if other.split_whitespace().next() == Some("scope") => {
                 let arg = other["scope".len()..].trim();
@@ -1565,6 +1565,7 @@ impl Session {
             ),
         };
         let text = self.analysis_status(&text);
+        let text = self.reload_status(&text);
         let text = match &self.warning {
             Some(w) => format!("{text}  {w}"),
             None => text,
