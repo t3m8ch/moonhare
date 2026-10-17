@@ -244,7 +244,10 @@ fn interpret(stdout: &[u8], stderr: &[u8], success: bool) -> Result<Summary, Ana
     reply
         .as_ref()
         .and_then(|r| r["structured_output"]["summary"].as_str())
-        .map(|text| Summary { text: text.into(), ..Summary::default() })
+        .map(|text| Summary {
+            text: text.into(),
+            ..Summary::default()
+        })
         .ok_or_else(|| AnalystError::Failed("claude gave an answer without a summary".into()))
 }
 

@@ -134,6 +134,9 @@ impl Session {
                 self.analysis.errors.remove(&key);
                 self.analysis.built.retain(|k| *k != key);
                 self.analysis.built.push(key.clone());
+                if let Some(mermaid) = &summary.diagram {
+                    self.remember_drawing(mermaid);
+                }
                 self.analysis.cache.insert(key, summary);
             }
             Err(e) => {
@@ -181,6 +184,8 @@ impl Session {
         if self.analysis.overlay {
             if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
                 self.analysis.overlay = false;
+            } else {
+                self.summary_diagram_key(key.code);
             }
             return true;
         }
@@ -189,6 +194,7 @@ impl Session {
             self.count = None;
             self.refresh_head();
             self.analysis.overlay = true;
+            self.reset_picture_scroll();
             return true;
         }
         false
@@ -196,7 +202,7 @@ impl Session {
 
     /// The Summary the overlay shows and the head it was built for when that
     /// is not the current head (a stale one, from before new commits).
-    fn current_summary(&self) -> Option<(&Summary, Option<&str>)> {
+    pub(super) fn current_summary(&self) -> Option<(&Summary, Option<&str>)> {
         let key = self.current_key();
         if let Some(summary) = self.analysis.cache.get(&key) {
             return Some((summary, None));
@@ -265,7 +271,19 @@ impl Session {
             }
             None => "There is no Summary yet. :analyze builds it.".to_string(),
         };
-        for (row, line) in wrap(&text, inner_w)
+        let mut lines = wrap(&text, inner_w);
+        if let Some((
+            Summary {
+                diagram: Some(mermaid),
+                ..
+            },
+            _,
+        )) = shown
+        {
+            lines.push(String::new());
+            lines.extend(self.drawing_lines(mermaid));
+        }
+        for (row, line) in lines
             .iter()
             .take(height.saturating_sub(2) as usize)
             .enumerate()

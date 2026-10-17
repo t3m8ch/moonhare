@@ -22,10 +22,12 @@ struct FakeAnalyst {
 impl FakeAnalyst {
     fn answering(text: &str) -> Arc<FakeAnalyst> {
         let text = text.to_string();
-        Self::with(move |_| Ok(Summary {
+        Self::with(move |_| {
+            Ok(Summary {
                 text: text.clone(),
                 ..Summary::default()
-            }))
+            })
+        })
     }
 
     fn failing(error: AnalystError) -> Arc<FakeAnalyst> {
