@@ -32,6 +32,8 @@ pub const SIDEBAR_AUTO_MIN_WIDTH: u16 = 100;
 /// The diff pane is shown side-by-side from this width; narrower is inline.
 pub const SIDE_BY_SIDE_MIN_WIDTH: u16 = 90;
 const TAB_WIDTH: usize = 4;
+/// Rows at the bottom of the screen outside the panes.
+const BOTTOM_ROWS: u16 = 2;
 const WHEEL_STEP: usize = 3;
 /// Columns moved by one `h` / `l` press.
 const HSCROLL_STEP: usize = 8;
@@ -216,8 +218,11 @@ mod diagram;
 mod file_bar;
 mod file_picker;
 mod marks;
+mod mechanical_view;
 mod nav;
+mod overlay;
 mod unreviewed;
+mod windows;
 
 enum Mode {
     Normal,
@@ -240,6 +245,8 @@ pub struct Session {
     picker: bool,
     /// The `Space f` file picker is open, with its cursor on this file.
     file_picker: Option<usize>,
+    /// The selected Mechanical file was expanded with `Enter`.
+    mechanical_open: bool,
     files: Vec<ChangedFile>,
     /// Every file of the Scope, before the unreviewed filter.
     scope_files: Vec<ChangedFile>,
@@ -269,6 +276,10 @@ pub struct Session {
     truecolor: bool,
     mode: Mode,
     pending: Option<char>,
+    /// How long `pending` has been waiting.
+    pending_for: std::time::Duration,
+    /// The `?` help is open, scrolled to this line.
+    help: Option<usize>,
     dirty: bool,
     message: Option<String>,
     /// A standing caveat about the Range, shown until the Review closes.
@@ -414,6 +425,7 @@ impl Session {
             commit_changes,
             review,
             file_picker: None,
+            mechanical_open: false,
             scope_files: files.clone(),
             unreviewed_only: false,
             files,
@@ -431,6 +443,8 @@ impl Session {
             truecolor: false,
             mode: Mode::Normal,
             pending: None,
+            pending_for: std::time::Duration::ZERO,
+            help: None,
             dirty: true,
             message: None,
             warning,
@@ -444,9 +458,26 @@ impl Session {
         Ok(session)
     }
 
+    /// Time passing without input; opens the which-key window once a key
+    /// prefix has been waiting long enough.
+    pub fn elapse(&mut self, elapsed: std::time::Duration) {
+        if self.pending.is_some() {
+            self.pending_for += elapsed;
+        }
+    }
+
     /// Draw with truecolor (exact RGB) instead of the 256-colour palette.
     pub fn set_truecolor(&mut self, on: bool) {
         self.truecolor = on;
+    }
+
+    /// How long until a [`elapse`](Self::elapse) changes what is drawn, if any is
+    /// due: the real loop sleeps this long instead of redrawing idly.
+    pub fn next_tick_in(&self) -> Option<std::time::Duration> {
+        let waiting = self.pending.is_some() && self.help.is_none();
+        waiting
+            .then(|| crate::hints::WHICH_KEY_DELAY.checked_sub(self.pending_for))?
+            .filter(|left| !left.is_zero())
     }
 
     /// The pull request the Range belongs to: its title and description.
@@ -491,13 +522,23 @@ impl Session {
 
     /// The whole left column: commit list above, file list below.
     fn sidebar_area(&self) -> Rect {
-        Rect::new(0, 0, self.sidebar_width(), self.size.1.saturating_sub(1))
+        Rect::new(
+            0,
+            0,
+            self.sidebar_width(),
+            self.size.1.saturating_sub(BOTTOM_ROWS),
+        )
     }
 
     /// The diff pane including its header line.
     fn diff_area(&self) -> Rect {
         let x = self.sidebar_width();
-        Rect::new(x, 0, self.size.0 - x, self.size.1.saturating_sub(1))
+        Rect::new(
+            x,
+            0,
+            self.size.0 - x,
+            self.size.1.saturating_sub(BOTTOM_ROWS),
+        )
     }
 
     /// Rows available to diff lines (the pane minus its header).
@@ -563,6 +604,7 @@ impl Session {
         self.hscroll = 0;
         self.view = Folded::default();
         self.dirty = true;
+        self.mechanical_open = false;
         self.loaded = self.files.get(self.selected).map(|f| {
             let blob = |rev: &str, path: &str| {
                 self.repo
@@ -733,7 +775,11 @@ impl Session {
                 }
             }
         }
-        self.view = fold(&changed);
+        self.view = if self.collapsed() {
+            Folded::default()
+        } else {
+            fold(&changed)
+        };
         if let Some((old, new)) = anchor {
             let found = self.view.items.iter().position(|&item| {
                 let (o, n) = self.item_lines(item);
@@ -757,6 +803,7 @@ impl Session {
     // ------------------------------------------------------------ events
 
     pub fn handle(&mut self, event: Event) {
+        let waiting = self.pending;
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
             Event::Mouse(mouse) => self.on_mouse(mouse),
@@ -764,6 +811,9 @@ impl Session {
                 self.size = (w, h);
             }
             _ => {}
+        }
+        if self.pending != waiting || self.pending.is_none() {
+            self.pending_for = std::time::Duration::ZERO;
         }
         self.sync_view();
     }
@@ -789,6 +839,10 @@ impl Session {
         }
 
         self.message = None;
+        if self.help.is_some() {
+            self.help_key(key.code);
+            return;
+        }
         if self.diagram_key(key) || self.analysis_key(key) {
             return;
         }
@@ -798,6 +852,13 @@ impl Session {
         }
         if self.picker {
             self.picker_key(key);
+            return;
+        }
+        if key.code == KeyCode::Char('?') && self.pending.is_none() {
+            self.help = Some(0);
+            return;
+        }
+        if self.window_key(key.code, key.modifiers) {
             return;
         }
         if self.focus == Focus::Commits && self.sidebar_visible() && self.commits_key(key) {
@@ -856,12 +917,7 @@ impl Session {
             KeyCode::Char('a') if !ctrl => self.show_whole_range(),
             KeyCode::Char('m') if !ctrl => self.toggle_mark(),
             KeyCode::Char('M') if !ctrl => self.mark_and_advance(),
-            KeyCode::Tab => {
-                self.focus = match self.focus {
-                    Focus::Diff => Focus::Commits,
-                    Focus::Commits => Focus::Diff,
-                };
-            }
+            KeyCode::Enter if !ctrl => self.expand_mechanical(),
             KeyCode::Char(':') if !ctrl => self.mode = Mode::Command(String::new()),
             _ => {}
         }
@@ -999,6 +1055,9 @@ impl Session {
     }
 
     fn on_mouse(&mut self, mouse: MouseEvent) {
+        if self.help.is_some() {
+            return;
+        }
         let at = |area: Rect| area.contains((mouse.column, mouse.row).into());
         match mouse.kind {
             MouseEventKind::ScrollDown if at(self.diff_area()) => {
@@ -1065,6 +1124,7 @@ impl Session {
         }
         self.render_diff(buf);
         self.render_status(buf);
+        self.render_hints(buf);
         if self.picker {
             self.render_picker(buf);
         }
@@ -1072,6 +1132,12 @@ impl Session {
         self.render_diagram_overlay(buf);
         if let Some(cursor) = self.file_picker {
             self.render_file_picker(buf, cursor);
+        }
+        if let Some(offset) = self.help {
+            self.render_help(buf, offset);
+        }
+        if let Some(prefix) = self.which_key_prefix() {
+            self.render_which_key(buf, prefix);
         }
     }
 
@@ -1162,10 +1228,11 @@ impl Session {
     /// The `Space c` picker: the commit list in a box over the screen.
     fn render_picker(&self, buf: &mut Buffer) {
         let width = self.size.0.saturating_sub(4).min(72);
-        let height = (self.commits.len() as u16 + 4).min(self.size.1.saturating_sub(2));
+        let height =
+            (self.commits.len() as u16 + 4).min(self.size.1.saturating_sub(BOTTOM_ROWS + 1));
         let area = Rect::new(
             (self.size.0 - width) / 2,
-            (self.size.1 - height) / 2,
+            (self.size.1 - BOTTOM_ROWS - height) / 2,
             width,
             height,
         );
@@ -1279,6 +1346,10 @@ impl Session {
 
         let top = area.y + 1;
         let height = self.viewport_height();
+        if self.collapsed() {
+            self.render_collapsed(buf, file, area, top);
+            return;
+        }
         if d.kind == FileKind::Binary {
             buf.set_stringn(
                 area.x + 1,
@@ -1460,24 +1531,24 @@ impl Session {
     }
 
     fn render_status(&self, buf: &mut Buffer) {
-        let y = self.size.1 - 1;
+        let y = self.size.1 - BOTTOM_ROWS;
         let width = self.size.0 as usize;
         let bar = Style::new().fg(FG).bg(Color::Indexed(236));
         buf.set_style(Rect::new(0, y, self.size.0, 1), bar);
-
-        if let Mode::Command(cmd) = &self.mode {
-            buf.set_stringn(0, y, format!(":{cmd}█"), width, Style::new().fg(FG));
-            buf.set_style(
-                Rect::new(0, y, self.size.0, 1),
-                Style::new().bg(Color::Reset),
-            );
-            return;
-        }
         let badge = Style::new()
             .fg(Color::Indexed(16))
             .bg(ACCENT)
             .add_modifier(Modifier::BOLD);
-        buf.set_string(0, y, " NORMAL ", badge);
+        buf.set_string(
+            0,
+            y,
+            if self.commit_anchor.is_some() && self.window() == Focus::Commits {
+                " VISUAL "
+            } else {
+                " NORMAL "
+            },
+            badge,
+        );
 
         let layout = match self.layout() {
             DiffLayout::SideBySide => "side-by-side",

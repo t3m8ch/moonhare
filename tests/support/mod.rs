@@ -172,6 +172,16 @@ impl Harness {
         self
     }
 
+    /// Let `ms` milliseconds pass without input.
+    pub fn wait(&mut self, ms: u64) -> &mut Self {
+        self.session.elapse(std::time::Duration::from_millis(ms));
+        self
+    }
+
+    pub fn next_tick_in(&self) -> Option<std::time::Duration> {
+        self.session.next_tick_in()
+    }
+
     pub fn resize(&mut self, width: u16, height: u16) -> &mut Self {
         self.session.handle(Event::Resize(width, height));
         self
@@ -234,6 +244,7 @@ pub fn parse_keys(notation: &str) -> Vec<Event> {
                     "Tab" => Some(key(KeyCode::Tab, KeyModifiers::NONE)),
                     "BS" => Some(key(KeyCode::Backspace, KeyModifiers::NONE)),
                     "Space" => Some(key(KeyCode::Char(' '), KeyModifiers::NONE)),
+                    "C-w" => Some(key(KeyCode::Char('w'), KeyModifiers::CONTROL)),
                     "lt" => Some(key(KeyCode::Char('<'), KeyModifiers::NONE)),
                     n if n.starts_with("C-") && n.chars().count() == 3 => Some(key(
                         KeyCode::Char(n.chars().nth(2).unwrap()),

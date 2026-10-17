@@ -1,6 +1,6 @@
 use std::io;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use moonhare::claude::ClaudeAnalyst;
 use moonhare::git::Target;
@@ -91,12 +91,31 @@ fn take_flag_value(args: &mut Vec<String>, flag: &str) -> Result<Option<String>,
     Ok(Some(value))
 }
 
+/// How often to look for the Analyst's answers while it works.
+const ANALYST_POLL: Duration = Duration::from_millis(200);
+
 fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Result<()> {
     while !session.should_quit() {
         terminal.draw(|f| session.render(f.buffer_mut()))?;
-        // Wake up now and then to pick up what the Analyst has finished.
-        if event::poll(Duration::from_millis(200))? {
-            session.handle(event::read()?);
+        // Sleep until input, until a pause makes the screen change, or (while
+        // the Analyst works) until it may have answered; never redraw an idle
+        // screen.
+        let wake = match (session.next_tick_in(), session.analyst_busy()) {
+            (Some(due), true) => Some(due.min(ANALYST_POLL)),
+            (Some(due), false) => Some(due),
+            (None, true) => Some(ANALYST_POLL),
+            (None, false) => None,
+        };
+        match wake {
+            Some(wake) => {
+                let waited = Instant::now();
+                if event::poll(wake)? {
+                    session.handle(event::read()?);
+                } else {
+                    session.elapse(wake.max(waited.elapsed()));
+                }
+            }
+            None => session.handle(event::read()?),
         }
         session.tick();
         if let Some(text) = session.take_clipboard() {

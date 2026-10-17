@@ -158,7 +158,7 @@ fn when_the_analyst_fails_the_reason_is_in_the_status_and_the_rest_works() {
     let mut h = review_with(&fx, &analyst);
     h.session().wait_for_analyst();
     let screen = h.screen();
-    let status = screen.lines().last().unwrap();
+    let status = screen.lines().rev().nth(1).unwrap(); // the last row holds hints
     assert!(status.contains("claude /login"), "{status}");
     h.keys("]f");
     assert!(h.screen().contains("src/a.rs"));
@@ -276,7 +276,10 @@ fn lang_without_an_argument_names_the_current_language() {
     let mut h = review_with(&fx, &analyst);
     h.keys(":lang<CR>");
     let screen = h.screen();
-    assert!(screen.lines().last().unwrap().contains("ru"), "{screen}");
+    assert!(
+        screen.lines().rev().nth(1).unwrap().contains("ru"),
+        "{screen}"
+    );
 }
 
 #[test]
