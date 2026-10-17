@@ -48,6 +48,11 @@ The Analyst's account of what a Range changes and why.
 _Russian_: саммари
 _Avoid_: walkthrough (that is CodeRabbit's), overview
 
+**Diagram**:
+A sequence diagram or flowchart the Analyst draws, as Mermaid text, for a Group, a file or a fragment, or inside a Summary when the interaction of components changed. moonhare draws it with box-drawing characters; the Mermaid source can always be copied.
+_Russian_: диаграмма
+_Avoid_: picture, chart, graph
+
 **Mechanical**:
 Marks a file or Group whose changes need no close reading, such as generated files, lockfiles or bulk renames.
 _Russian_: механическое

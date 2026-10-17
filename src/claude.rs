@@ -5,10 +5,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::analyst::{Analyst, AnalystError, Summary, SummaryRequest};
+use crate::analyst::{
+    Analyst, AnalystError, Diagram, DiagramRequest, DiagramSubject, Summary, SummaryRequest,
+};
 
 /// The shape the answer must have; `claude` validates it.
-const SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}"#;
+const SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"string"},"diagram":{"type":"string","description":"Mermaid text, only when the interaction of components changed"}},"required":["summary"],"additionalProperties":false}"#;
+
+/// The shape of the answer to a request for a diagram.
+const DIAGRAM_SCHEMA: &str = r#"{"type":"object","properties":{"mermaid":{"type":"string"}},"required":["mermaid"],"additionalProperties":false}"#;
 
 /// The only tools the Analyst gets: reading and searching files.
 const READ_ONLY_TOOLS: &str = "Read,Grep,Glob";
@@ -146,10 +151,39 @@ fn prompt(request: &SummaryRequest, tree: &Path) -> String {
         "You are the Analyst of a code review tool. Summarize what the change \
          below does and why, for a human who is about to review it. The files at the head of the change are in \
          {tree}; you may read and search them, nothing else.\n\n\
+         If the change alters how components interact, also give `diagram`: a \
+         Mermaid sequence diagram or flowchart of that interaction, compact: at \
+         most 5-6 participants and short labels. Leave `diagram` out otherwise.\n\n\
          Language: {language}\n\n\
          {pull_request}\
          Commits:\n{commits}\n\
          Diff:\n{diff}",
+        language = request.language,
+        tree = tree.display(),
+    )
+}
+
+fn diagram_prompt(request: &DiagramRequest, tree: &Path) -> String {
+    let (path, what) = match &request.subject {
+        DiagramSubject::File { path } => (path, format!("the file {path}")),
+        DiagramSubject::Fragment { path, line } => (
+            path,
+            format!("the fragment of {path} around line {line} of its new version"),
+        ),
+    };
+    let diff = git_text(
+        &request.repo,
+        &["diff", &request.base, &request.head, "--", path],
+    );
+    format!(
+        "You are the Analyst of a code review tool. Draw {what} for a human who \
+         is about to review it: a Mermaid sequence diagram if the point is an \
+         exchange between components over time, otherwise a flowchart. Be \
+         compact: at most 5-6 participants or nodes and short labels. Answer \
+         with Mermaid text only, in `mermaid`. The files at the head of the \
+         change are in {tree}; you may read and search them, nothing else.\n\n\
+         Language: {language}\n\n\
+         Diff of the file:\n{diff}",
         language = request.language,
         tree = tree.display(),
     )
@@ -222,8 +256,12 @@ fn run_with_timeout(
 
 const NOT_LOGGED_IN: &str = "claude is not logged in: run `claude /login`, then :analyze";
 
-/// What `claude -p --output-format json` printed, as a summary or an error.
-fn interpret(stdout: &[u8], stderr: &[u8], success: bool) -> Result<Summary, AnalystError> {
+/// What `claude -p --output-format json` printed, as its structured answer or an error.
+fn interpret(
+    stdout: &[u8],
+    stderr: &[u8],
+    success: bool,
+) -> Result<serde_json::Value, AnalystError> {
     let reply: Option<serde_json::Value> = serde_json::from_slice(stdout).ok();
     let said = reply
         .as_ref()
@@ -242,35 +280,34 @@ fn interpret(stdout: &[u8], stderr: &[u8], success: bool) -> Result<Summary, Ana
         );
     }
     reply
-        .as_ref()
-        .and_then(|r| r["structured_output"]["summary"].as_str())
-        .map(|text| Summary {
-            text: text.into(),
-            ..Summary::default()
-        })
-        .ok_or_else(|| AnalystError::Failed("claude gave an answer without a summary".into()))
+        .and_then(|r| r.get("structured_output").cloned())
+        .ok_or_else(|| AnalystError::Failed("claude gave an answer without structure".into()))
 }
 
-impl Analyst for ClaudeAnalyst {
-    fn summarize(&self, request: &SummaryRequest) -> Result<Summary, AnalystError> {
+impl ClaudeAnalyst {
+    /// Ask `claude` about the head of a Range, sandboxed (ADR 0002), and return
+    /// its structured answer. `prompt` gets the path of the worktree holding
+    /// the head.
+    fn ask(
+        &self,
+        (repo, base, head): (&Path, &str, &str),
+        schema: &str,
+        prompt: impl FnOnce(&Path) -> String,
+    ) -> Result<serde_json::Value, AnalystError> {
         // `--` cannot end the options in front of a revision, so refuse
         // anything that git could take for one.
-        if [&request.base, &request.head]
-            .iter()
-            .any(|rev| rev.starts_with('-'))
-        {
+        if [base, head].iter().any(|rev| rev.starts_with('-')) {
             return Err(AnalystError::Failed(format!(
-                "not a revision: {}..{}",
-                request.base, request.head
+                "not a revision: {base}..{head}"
             )));
         }
-        let worktree = TempWorktree::create(&request.repo, &request.head)?;
+        let worktree = TempWorktree::create(repo, head)?;
         let sandbox = tempfile::Builder::new()
             .prefix("moonhare-cwd-")
             .tempdir()
             .map_err(|e| AnalystError::Failed(format!("cannot create a directory: {e}")))?;
         let child = Command::new(&self.program)
-            .args(["-p", "--output-format", "json", "--json-schema", SCHEMA])
+            .args(["-p", "--output-format", "json", "--json-schema", schema])
             .args([
                 "--tools",
                 READ_ONLY_TOOLS,
@@ -308,11 +345,38 @@ impl Analyst for ClaudeAnalyst {
                     AnalystError::Failed(format!("cannot run claude: {e}"))
                 }
             })?;
-        let out = run_with_timeout(
-            child,
-            prompt(request, &worktree.path).into_bytes(),
-            self.timeout,
-        )?;
+        let out = run_with_timeout(child, prompt(&worktree.path).into_bytes(), self.timeout)?;
         interpret(&out.stdout, &out.stderr, out.status.success())
+    }
+}
+
+impl Analyst for ClaudeAnalyst {
+    fn summarize(&self, request: &SummaryRequest) -> Result<Summary, AnalystError> {
+        let answer = self.ask(
+            (&request.repo, &request.base, &request.head),
+            SCHEMA,
+            |tree| prompt(request, tree),
+        )?;
+        let text = answer["summary"].as_str().ok_or_else(|| {
+            AnalystError::Failed("claude gave an answer without a summary".into())
+        })?;
+        Ok(Summary {
+            text: text.into(),
+            diagram: answer["diagram"].as_str().map(str::to_string),
+        })
+    }
+
+    fn diagram(&self, request: &DiagramRequest) -> Result<Diagram, AnalystError> {
+        let answer = self.ask(
+            (&request.repo, &request.base, &request.head),
+            DIAGRAM_SCHEMA,
+            |tree| diagram_prompt(request, tree),
+        )?;
+        let mermaid = answer["mermaid"].as_str().ok_or_else(|| {
+            AnalystError::Failed("claude gave an answer without a diagram".into())
+        })?;
+        Ok(Diagram {
+            mermaid: mermaid.into(),
+        })
     }
 }
