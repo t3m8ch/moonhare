@@ -6,8 +6,9 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::analyst::{
-    Analyst, AnalystError, Diagram, DiagramRequest, DiagramSubject, ExplainRequest, ExplainTarget,
-    Explanation, Group, GroupRequest, Grouping, Summary, SummaryRequest,
+    Analyst, AnalystError, AnalystSettings, Diagram, DiagramRequest, DiagramSubject,
+    ExplainRequest, ExplainTarget, Explanation, Group, GroupRequest, Grouping, Summary,
+    SummaryRequest,
 };
 
 /// The shape the answer must have; `claude` validates it.
@@ -409,8 +410,8 @@ impl ClaudeAnalyst {
         repo: &Path,
         base: &str,
         head: &str,
-        schema: &str,
-        field: &str,
+        (schema, field): (&str, &str),
+        settings: &AnalystSettings,
         prompt: impl FnOnce(&Path) -> String,
     ) -> Result<serde_json::Value, AnalystError> {
         // `--` cannot end the options in front of a revision, so refuse
@@ -434,6 +435,13 @@ impl ClaudeAnalyst {
                 READ_ONLY_TOOLS,
             ])
             .args(["--permission-mode", "dontAsk", "--no-session-persistence"])
+            .args(
+                settings
+                    .effort
+                    .iter()
+                    .flat_map(|e| ["--effort", e.as_str()]),
+            )
+            .args(settings.model.iter().flat_map(|m| ["--model", m.as_str()]))
             // The reviewed tree is somebody else's code: nothing in it may
             // configure this process. Settings come from the user only, MCP
             // servers and skills are not loaded, and the process does not
@@ -483,8 +491,8 @@ impl Analyst for ClaudeAnalyst {
             &request.repo,
             &request.base,
             &request.head,
-            SCHEMA,
-            WHOLE_ANSWER,
+            (SCHEMA, WHOLE_ANSWER),
+            &request.settings,
             |tree| prompt(request, tree),
         )
         .and_then(|answer| {
@@ -500,8 +508,8 @@ impl Analyst for ClaudeAnalyst {
             &request.repo,
             &request.base,
             &request.head,
-            DIAGRAM_SCHEMA,
-            "mermaid",
+            (DIAGRAM_SCHEMA, "mermaid"),
+            &request.settings,
             |tree| diagram_prompt(request, tree),
         )
         .and_then(|a| as_text(a, "mermaid"))
@@ -513,8 +521,8 @@ impl Analyst for ClaudeAnalyst {
             &request.repo,
             &request.base,
             &request.head,
-            EXPLAIN_SCHEMA,
-            "explanation",
+            (EXPLAIN_SCHEMA, "explanation"),
+            &request.settings,
             |tree| explain_prompt(request, tree),
         )
         .and_then(|a| as_text(a, "explanation"))
@@ -526,8 +534,8 @@ impl Analyst for ClaudeAnalyst {
             &request.repo,
             &request.base,
             &request.head,
-            GROUPS_SCHEMA,
-            "groups",
+            (GROUPS_SCHEMA, "groups"),
+            &request.settings,
             |tree| groups_prompt(request, tree),
         )?;
         parse_groups(&answer)

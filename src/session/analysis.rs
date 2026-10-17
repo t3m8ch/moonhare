@@ -7,7 +7,9 @@ use std::sync::Arc;
 
 use super::diagram::clear_area;
 use super::*;
-use crate::analyst::{Analyst, AnalystError, Summary, SummaryRequest};
+use crate::analyst::{
+    Analyst, AnalystError, AnalystSettings, Summary, SummaryRequest, EFFORT_LEVELS,
+};
 
 /// What a Summary is cached under: the head of the Range and the language.
 type Key = (String, String);
@@ -17,6 +19,8 @@ type Answer = (Key, Result<Summary, AnalystError>);
 pub(super) struct Analysis {
     pub(super) analyst: Option<Arc<dyn Analyst>>,
     pub(super) language: String,
+    /// Effort and model for the requests to come.
+    pub(super) settings: AnalystSettings,
     /// Head of the Range the Summary is built for.
     head: String,
     cache: HashMap<Key, Summary>,
@@ -40,6 +44,7 @@ impl Default for Analysis {
         Analysis {
             analyst: None,
             language: DEFAULT_LANGUAGE.to_string(),
+            settings: AnalystSettings::default(),
             head: String::new(),
             cache: HashMap::new(),
             built: Vec::new(),
@@ -102,10 +107,86 @@ impl Session {
                 self.refresh_head();
                 self.set_language(language);
             }
+            (Some("effort"), arg, None) => self.effort_command(arg),
+            (Some("model"), arg, None) => self.model_command(arg),
+            (Some("effort" | "model"), _, _) => {
+                self.message = Some("Usage: :effort <level|default>, :model <name|default>".into())
+            }
             (Some("lang"), _, _) => self.message = Some("Usage: :lang <code>, e.g. ru, en".into()),
             _ => return false,
         }
         true
+    }
+
+    /// Set the reasoning effort of the requests to come: one of
+    /// [`EFFORT_LEVELS`]. The settings do not touch a request already running.
+    pub fn set_effort(&mut self, level: &str) -> Result<(), String> {
+        if level == "default" {
+            self.analysis.settings.effort = None;
+        } else if EFFORT_LEVELS.contains(&level) {
+            self.analysis.settings.effort = Some(level.to_string());
+        } else {
+            return Err(format!(
+                "Unknown effort \"{level}\": use {} or default",
+                EFFORT_LEVELS.join(", ")
+            ));
+        }
+        Ok(())
+    }
+
+    /// Set the model of the requests to come: an alias or a full name.
+    pub fn set_model(&mut self, model: &str) -> Result<(), String> {
+        if model == "default" {
+            self.analysis.settings.model = None;
+        } else if model.is_empty() || model.starts_with('-') {
+            return Err(format!("Not a model name: \"{model}\""));
+        } else {
+            self.analysis.settings.model = Some(model.to_string());
+        }
+        Ok(())
+    }
+
+    fn effort_command(&mut self, arg: Option<&str>) {
+        self.message = Some(match arg {
+            None => format!(
+                "Effort: {}",
+                self.analysis
+                    .settings
+                    .effort
+                    .as_deref()
+                    .unwrap_or("default")
+            ),
+            Some(level) => match self.set_effort(level) {
+                Ok(()) => format!("Effort: {level} (from the next request)"),
+                Err(e) => e,
+            },
+        });
+    }
+
+    fn model_command(&mut self, arg: Option<&str>) {
+        self.message = Some(match arg {
+            None => format!(
+                "Model: {}",
+                self.analysis.settings.model.as_deref().unwrap_or("default")
+            ),
+            Some(model) => match self.set_model(model) {
+                Ok(()) => format!("Model: {model} (from the next request)"),
+                Err(e) => e,
+            },
+        });
+    }
+
+    /// The settings that are not the defaults, for the status line.
+    pub(super) fn settings_status(&self) -> String {
+        let settings = &self.analysis.settings;
+        let mut text = String::new();
+        if let Some(effort) = &settings.effort {
+            text.push_str(&format!("  effort:{effort}"));
+        }
+        if let Some(model) = &settings.model {
+            text.push_str(&format!("  model:{model}"));
+        }
+        text
     }
 
     /// Ask for the Summary of the current head and language unless there is
@@ -126,6 +207,7 @@ impl Session {
             base: self.range.base.clone(),
             head: key.0.clone(),
             language: key.1.clone(),
+            settings: self.analysis.settings.clone(),
             pull_request: self.pull_request.clone(),
         };
         let sender = self.analysis.sender.clone();
