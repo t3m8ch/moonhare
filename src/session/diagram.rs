@@ -100,6 +100,7 @@ impl Session {
                 base: self.range.base.clone(),
                 head: key.0.clone(),
                 language: key.1.clone(),
+                settings: self.analysis.settings.clone(),
                 subject: key.2.clone(),
             };
             let sender = self.diagrams.sender.clone();
