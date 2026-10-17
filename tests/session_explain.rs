@@ -41,7 +41,10 @@ impl FakeAnalyst {
 
 impl Analyst for FakeAnalyst {
     fn summarize(&self, _: &SummaryRequest) -> Result<Summary, AnalystError> {
-        Ok(Summary { text: "-".into() })
+        Ok(Summary {
+            text: "-".into(),
+            ..Summary::default()
+        })
     }
 
     fn explain(&self, request: &ExplainRequest) -> Result<Explanation, AnalystError> {

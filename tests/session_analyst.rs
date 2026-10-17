@@ -22,7 +22,12 @@ struct FakeAnalyst {
 impl FakeAnalyst {
     fn answering(text: &str) -> Arc<FakeAnalyst> {
         let text = text.to_string();
-        Self::with(move |_| Ok(Summary { text: text.clone() }))
+        Self::with(move |_| {
+            Ok(Summary {
+                text: text.clone(),
+                ..Summary::default()
+            })
+        })
     }
 
     fn failing(error: AnalystError) -> Arc<FakeAnalyst> {
@@ -66,6 +71,7 @@ fn the_summary_is_built_in_the_background_while_the_diff_is_readable() {
         gate.lock().unwrap().recv().unwrap();
         Ok(Summary {
             text: "Finally ready".into(),
+            ..Summary::default()
         })
     });
     let mut h = review_with(&fx, &analyst);
@@ -168,6 +174,7 @@ fn head_naming_analyst() -> Arc<FakeAnalyst> {
     FakeAnalyst::with(|r| {
         Ok(Summary {
             text: format!("Built for {}", &r.head[..7]),
+            ..Summary::default()
         })
     })
 }
@@ -224,6 +231,7 @@ fn language_naming_analyst() -> Arc<FakeAnalyst> {
     FakeAnalyst::with(|r| {
         Ok(Summary {
             text: format!("Summary in {}", r.language),
+            ..Summary::default()
         })
     })
 }

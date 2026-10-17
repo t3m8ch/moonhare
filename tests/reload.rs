@@ -290,7 +290,10 @@ impl moonhare::analyst::Analyst for ByHand {
         &self,
         _: &moonhare::analyst::SummaryRequest,
     ) -> Result<moonhare::analyst::Summary, moonhare::analyst::AnalystError> {
-        Ok(moonhare::analyst::Summary { text: "ok".into() })
+        Ok(moonhare::analyst::Summary {
+            text: "ok".into(),
+            diagram: None,
+        })
     }
 
     fn group(

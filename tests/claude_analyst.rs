@@ -5,7 +5,7 @@ mod support;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 
-use moonhare::analyst::{Analyst, AnalystError, SummaryRequest};
+use moonhare::analyst::{Analyst, AnalystError, DiagramRequest, DiagramSubject, SummaryRequest};
 use moonhare::claude::ClaudeAnalyst;
 use support::{feature_branch, Fixture};
 use tempfile::TempDir;
@@ -345,4 +345,91 @@ fn the_prompt_carries_the_pull_request_title_and_description() {
     let prompt = fake.recorded("stdin");
     assert!(prompt.contains("Rework the widgets"), "{prompt}");
     assert!(prompt.contains("Because the old ones leaked"), "{prompt}");
+}
+
+#[test]
+fn the_summary_may_carry_a_mermaid_diagram() {
+    let fx = feature_branch();
+    let with = serde_json::json!({
+        "type": "result", "is_error": false, "result": "",
+        "structured_output": { "summary": "s", "diagram": "graph LR\n A --> B" }
+    })
+    .to_string();
+    let fake = FakeClaude::replying(&with);
+    let summary = fake.analyst().summarize(&request(&fx)).unwrap();
+    assert_eq!(summary.diagram.as_deref(), Some("graph LR\n A --> B"));
+
+    let schema: serde_json::Value =
+        serde_json::from_str(&value_after(&args_of(&fake), "--json-schema").unwrap()).unwrap();
+    assert_eq!(schema["properties"]["diagram"]["type"], "string");
+    assert_eq!(schema["required"], serde_json::json!(["summary"]));
+    let prompt = fake.recorded("stdin");
+    assert!(prompt.contains("Mermaid"), "{prompt}");
+
+    let fake = FakeClaude::replying(&success("s"));
+    assert_eq!(
+        fake.analyst().summarize(&request(&fx)).unwrap().diagram,
+        None
+    );
+}
+
+fn diagram_request(fx: &Fixture) -> DiagramRequest {
+    let r = request(fx);
+    DiagramRequest {
+        repo: r.repo,
+        base: r.base,
+        head: r.head,
+        language: "ru".into(),
+        subject: DiagramSubject::Fragment {
+            path: "src/a.rs".into(),
+            line: 2,
+        },
+    }
+}
+
+#[test]
+fn draws_a_diagram_through_the_same_sandboxed_claude() {
+    let fx = feature_branch();
+    let reply = serde_json::json!({
+        "type": "result", "is_error": false, "result": "",
+        "structured_output": { "mermaid": "sequenceDiagram\n A->>B: hi" }
+    })
+    .to_string();
+    let fake = FakeClaude::replying(&reply);
+    let diagram = fake.analyst().diagram(&diagram_request(&fx)).unwrap();
+    assert_eq!(diagram.mermaid, "sequenceDiagram\n A->>B: hi");
+
+    let args = args_of(&fake);
+    let schema: serde_json::Value =
+        serde_json::from_str(&value_after(&args, "--json-schema").unwrap()).unwrap();
+    assert_eq!(schema["required"], serde_json::json!(["mermaid"]));
+    assert_eq!(
+        value_after(&args, "--tools").as_deref(),
+        Some("Read,Grep,Glob")
+    );
+    assert_eq!(
+        value_after(&args, "--setting-sources").as_deref(),
+        Some("user")
+    );
+    assert!(args.contains(&"--strict-mcp-config".to_string()));
+    assert!(args.contains(&"--disable-slash-commands".to_string()));
+    let cwd = fake.recorded("cwd");
+    assert!(!std::path::Path::new(cwd.trim()).starts_with(fx.path()));
+
+    let prompt = fake.recorded("stdin");
+    assert!(prompt.contains("src/a.rs"), "{prompt}");
+    assert!(prompt.contains("line 2"), "{prompt}");
+    assert!(prompt.contains("Language: ru"), "{prompt}");
+    assert!(
+        prompt.contains("sequence") && prompt.contains("flowchart"),
+        "{prompt}"
+    );
+}
+
+#[test]
+fn a_diagram_answer_without_mermaid_is_a_failure() {
+    let fx = feature_branch();
+    let fake = FakeClaude::replying(&success("only a summary"));
+    let err = fake.analyst().diagram(&diagram_request(&fx)).unwrap_err();
+    assert!(matches!(err, AnalystError::Failed(_)), "{err:?}");
 }

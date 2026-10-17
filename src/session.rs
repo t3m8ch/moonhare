@@ -215,6 +215,7 @@ enum Focus {
 
 mod analysis;
 mod comments;
+mod diagram;
 mod explain;
 mod file_bar;
 mod file_picker;
@@ -304,6 +305,7 @@ pub struct Session {
     quit: bool,
     analysis: analysis::Analysis,
     reload: reload::Reload,
+    diagrams: diagram::Diagrams,
     groups: groups::Groups,
     explain: explain::Explain,
 }
@@ -469,6 +471,7 @@ impl Session {
             quit: false,
             analysis: Default::default(),
             reload: Default::default(),
+            diagrams: Default::default(),
             groups: Default::default(),
             explain: Default::default(),
         };
@@ -894,7 +897,11 @@ impl Session {
             self.help_key(key.code);
             return;
         }
-        if self.explain_key(key) || self.analysis_key(key) || self.groups_key(key) {
+        if self.diagram_key(key)
+            || self.explain_key(key)
+            || self.analysis_key(key)
+            || self.groups_key(key)
+        {
             return;
         }
         if let Some(cursor) = self.file_picker {
@@ -1103,7 +1110,7 @@ impl Session {
                 self.confirm_clear = true;
                 self.message = Some("Delete all Comments for good? y / n".into());
             }
-            other if self.analysis_command(other) => {}
+            other if self.analysis_command(other) || self.diagram_command(other) => {}
             other if other.split_whitespace().next() == Some("scope") => {
                 let arg = other["scope".len()..].trim();
                 if let Err(e) = self.scope_command(arg) {
@@ -1196,6 +1203,7 @@ impl Session {
             self.render_picker(buf);
         }
         self.render_summary(buf);
+        self.render_diagram_overlay(buf);
         self.render_explain(buf);
         if let Some(cursor) = self.file_picker {
             self.render_file_picker(buf, cursor);
