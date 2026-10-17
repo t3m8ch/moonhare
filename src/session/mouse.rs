@@ -52,6 +52,8 @@ pub(super) struct Mouse {
     clock: std::time::Duration,
     last_click: Option<Click>,
     press: Option<Press>,
+    /// The border of the sidebar is held (see `sidebar.rs`).
+    pub(super) resizing: bool,
     /// Text selected in an overlay, and whether its button is held.
     pub(super) text: Option<super::overlay_mouse::TextSelection>,
     pub(super) text_press: bool,

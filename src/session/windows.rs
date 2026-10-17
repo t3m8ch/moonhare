@@ -14,7 +14,9 @@ impl Session {
             self.pending = None;
             self.count = None;
             if let KeyCode::Char(c) = code {
-                self.go_window(c);
+                if !self.sidebar_key(c) {
+                    self.go_window(c);
+                }
             }
             return true;
         }

@@ -380,9 +380,9 @@ fn help_scrolls_on_a_short_terminal() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 100, 20);
     h.keys("?");
-    assert!(!h.screen().contains("Ctrl-w w"));
+    assert!(!h.screen().contains("Ctrl-w ="));
     h.keys(&"j".repeat(80));
-    assert!(h.screen().contains("Ctrl-w w"));
+    assert!(h.screen().contains("Ctrl-w ="));
 }
 
 #[test]
