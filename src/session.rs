@@ -1089,7 +1089,7 @@ impl Session {
     }
 
     fn on_mouse(&mut self, mouse: MouseEvent) {
-        if self.help.is_some() {
+        if self.help.is_some() || self.editor.is_some() || self.confirm_clear {
             return;
         }
         let at = |area: Rect| area.contains((mouse.column, mouse.row).into());

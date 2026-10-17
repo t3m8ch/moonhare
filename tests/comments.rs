@@ -432,6 +432,31 @@ fn hidden_count_includes_line_comments_in_other_files_of_the_scope() {
     assert!(h.screen().contains("1 скрытых Comments"), "{}", h.screen());
 }
 
+#[test]
+fn the_mouse_does_not_pull_the_file_from_under_an_open_draft() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("jjcikeep me");
+    let (col, row) = h.frame().find("src/b.rs").unwrap();
+    h.click(col, row);
+    let screen = h.screen();
+    assert!(screen.contains("README.md (line-based"), "{screen}");
+    assert!(screen.contains("keep me"), "{screen}");
+    h.keys("<Esc><CR>");
+    assert!(h.screen().contains("keep me"), "{}", h.screen());
+}
+
+#[test]
+fn x_and_o_say_how_many_comments_they_changed() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("jjcione<Esc><CR>citwo<Esc><CR>");
+    h.keys("x");
+    assert!(h.screen().contains("Closed 2 Comments"), "{}", h.screen());
+    h.keys("o");
+    assert!(h.screen().contains("Reopened 2 Comments"), "{}", h.screen());
+}
+
 /// The mode badge at the start of the status line.
 fn badge(h: &mut Harness) -> String {
     let screen = h.screen();

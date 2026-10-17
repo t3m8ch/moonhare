@@ -419,7 +419,14 @@ impl Session {
             return;
         }
         let saved = self.comments.set_state(&ids, state);
-        self.report_saved(saved);
+        match saved {
+            Ok(()) => {
+                let verb = if state == State::Closed { "Closed" } else { "Reopened" };
+                let noun = if ids.len() == 1 { "Comment" } else { "Comments" };
+                self.message = Some(format!("{verb} {} {noun}", ids.len()));
+            }
+            Err(e) => self.message = Some(e),
+        }
     }
 
     /// Comments about files and lines that the Scope leaves off the screen:
