@@ -44,6 +44,8 @@ const MULTI_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
 
 #[derive(Default)]
 pub(super) struct Mouse {
+    /// `:set nomouse`: the terminal keeps the mouse.
+    disabled: bool,
     /// Time since the session opened, as the events and ticks report it.
     clock: std::time::Duration,
     last_click: Option<Click>,
@@ -94,6 +96,24 @@ impl Session {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Whether the terminal should hand mouse events over (`:set mouse`).
+    pub fn mouse_enabled(&self) -> bool {
+        !self.mouse.disabled
+    }
+
+    /// `:set mouse` and `:set nomouse`.
+    pub(super) fn set_command(&mut self, option: &str) {
+        match option {
+            "mouse" => self.mouse.disabled = false,
+            "nomouse" => {
+                self.mouse.disabled = true;
+                self.mouse.press = None;
+                self.mouse.selection = None;
+            }
+            other => self.message = Some(format!("Unknown option: {other}")),
         }
     }
 

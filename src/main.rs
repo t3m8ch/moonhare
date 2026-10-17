@@ -97,6 +97,7 @@ const ANALYST_POLL: Duration = Duration::from_millis(200);
 fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Result<()> {
     let mut redraw = true;
     let mut last = Instant::now();
+    let mut captured = true;
     while !session.should_quit() {
         if redraw {
             terminal.draw(|f| session.render(f.buffer_mut()))?;
@@ -126,6 +127,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Re
         let busy = session.analyst_busy();
         session.tick();
         redraw |= busy || session.analyst_busy();
+        // `:set nomouse` hands the mouse back to the terminal.
+        if session.mouse_enabled() != captured {
+            captured = session.mouse_enabled();
+            if captured {
+                execute!(io::stdout(), EnableMouseCapture)?;
+            } else {
+                execute!(io::stdout(), DisableMouseCapture)?;
+            }
+        }
         if let Some(text) = session.take_clipboard() {
             let mut out = io::stdout();
             let _ = out.write_all(moonhare::clipboard::osc52(&text).as_bytes());

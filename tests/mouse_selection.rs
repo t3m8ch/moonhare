@@ -195,4 +195,26 @@ fn y_in_visual_side_by_side_copies_a_changed_row_as_a_diff() {
         vec!["-    old_call(1);\n+    new_call(2);\n+    extra();".to_string()]
     );
 }
+
+#[test]
+fn set_nomouse_gives_the_mouse_back_to_the_terminal() {
+    let fx = changed_file();
+    let mut h = Harness::open(&fx, 100, 24);
+    assert!(h.session().mouse_enabled());
+    h.keys(":set nomouse<CR>");
+    assert!(!h.session().mouse_enabled());
+    let (x, y) = h.frame().find("extra").unwrap();
+    let (kx, ky) = h.frame().find("keep_me").unwrap();
+    h.drag((x, y), (kx + 9, ky));
+    h.click(x, y);
+    h.keys("c");
+    // The click did not move the cursor and nothing was copied.
+    assert!(h.screen().contains("new 1"), "{}", h.screen());
+    assert!(h.copied().is_empty());
+
+    h.keys("<Esc><Esc>:set mouse<CR>");
+    assert!(h.session().mouse_enabled());
+    h.drag((x, y), (kx + 9, ky));
+    assert_eq!(h.copied().len(), 1);
+}
 // END

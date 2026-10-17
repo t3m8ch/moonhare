@@ -1143,6 +1143,9 @@ impl Session {
                 self.confirm_clear = true;
                 self.message = Some("Delete all Comments for good? y / n".into());
             }
+            other if other.split_whitespace().next() == Some("set") => {
+                self.set_command(other["set".len()..].trim())
+            }
             other if self.analysis_command(other) || self.diagram_command(other) => {}
             other if self.prompt_command(other) => {}
             other if other.split_whitespace().next() == Some("scope") => {
@@ -1156,6 +1159,9 @@ impl Session {
     }
 
     fn on_mouse(&mut self, mouse: MouseEvent) {
+        if !self.mouse_enabled() {
+            return;
+        }
         if self.help.is_some()
             || self.editor.is_some()
             || self.confirm_clear
