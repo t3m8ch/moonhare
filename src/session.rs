@@ -222,6 +222,7 @@ mod explain;
 mod file_bar;
 mod file_picker;
 mod groups;
+mod long_list;
 mod marks;
 mod mechanical_view;
 mod mouse;
@@ -237,6 +238,8 @@ mod windows;
 enum Mode {
     Normal,
     Command(String),
+    /// Typing a `/` search in the commit list.
+    Search(String),
 }
 
 /// Scope ends and Comments revision, with the ids worked out for them.
@@ -246,6 +249,7 @@ pub struct Session {
     repo: Repo,
     range: Range,
     commits: Vec<Commit>,
+    list: long_list::State,
     scope: Scope,
     focus: Focus,
     /// Cursor in the commit list: 0 is the pinned "Весь Range" row, `n` is
@@ -443,6 +447,7 @@ impl Session {
             repo,
             range,
             commits,
+            list: Default::default(),
             scope: Scope::All,
             focus: Focus::Diff,
             commit_cursor: 0,
@@ -892,6 +897,10 @@ impl Session {
     }
 
     fn on_key(&mut self, key: KeyEvent) {
+        if matches!(self.mode, Mode::Search(_)) {
+            self.search_key(key);
+            return;
+        }
         if let Mode::Command(buf) = &mut self.mode {
             match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
@@ -947,7 +956,10 @@ impl Session {
         if self.window_key(key.code, key.modifiers) {
             return;
         }
-        if self.focus == Focus::Commits && self.sidebar_visible() && self.commits_key(key) {
+        if self.focus == Focus::Commits
+            && self.sidebar_visible()
+            && (self.list_key(key) || self.commits_key(key))
+        {
             return;
         }
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
@@ -1036,7 +1048,9 @@ impl Session {
                 self.picker = false;
             }
             _ => {
-                self.commits_key(key);
+                if !self.list_key(key) {
+                    self.commits_key(key);
+                }
             }
         }
     }
@@ -1047,14 +1061,8 @@ impl Session {
             return false;
         }
         match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.commit_cursor = (self.commit_cursor + 1).min(self.commits.len());
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                // A selection holds commits only: the Range row is out of reach.
-                let floor = usize::from(self.commit_anchor.is_some());
-                self.commit_cursor = self.commit_cursor.saturating_sub(1).max(floor);
-            }
+            KeyCode::Char('j') | KeyCode::Down => self.step_list(1),
+            KeyCode::Char('k') | KeyCode::Up => self.step_list(-1),
             KeyCode::Char('v') => {
                 self.commit_anchor = match self.commit_anchor {
                     Some(_) => None,
@@ -1097,6 +1105,7 @@ impl Session {
         };
         self.commit_cursor = target;
         self.commit_anchor = None;
+        self.reveal_commit(target - 1);
         self.apply_scope(Scope::Commits {
             lo: target - 1,
             hi: target - 1,
@@ -1132,6 +1141,9 @@ impl Session {
             Scope::All => 0,
             Scope::Commits { lo, .. } => lo + 1,
         };
+        if let Scope::Commits { lo, .. } = scope {
+            self.reveal_commit(lo);
+        }
         self.commit_anchor = None;
         Ok(())
     }
@@ -1191,9 +1203,7 @@ impl Session {
                 self.scroll_view(-(WHEEL_STEP as isize))
             }
             MouseEventKind::Down(_) if at(self.commits_area()) && !self.picker => {
-                let area = self.commits_area();
-                let inner = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
-                self.click_commit_list(inner, mouse.row);
+                self.click_commits(mouse.row);
             }
             MouseEventKind::Down(_) if at(self.files_area()) && !self.picker => {
                 let area = self.files_area();
@@ -1294,15 +1304,6 @@ impl Session {
         }
     }
 
-    /// Index of the first list row (a commit or a Round header) shown when
-    /// `capacity` rows fit.
-    fn commit_offset(&self, capacity: usize) -> usize {
-        let cursor = (self.list_rows().iter())
-            .position(|r| *r == rounds::ListRow::Commit(self.commit_cursor.saturating_sub(1)))
-            .unwrap_or(0);
-        (cursor + 1).saturating_sub(capacity)
-    }
-
     /// Whether the commit list marks commit `index` as inside the Scope.
     fn in_scope(&self, index: usize) -> bool {
         matches!(self.scope, Scope::Commits { lo, hi } if (lo..=hi).contains(&index))
@@ -1313,32 +1314,37 @@ impl Session {
     fn render_commit_rows(&self, buf: &mut Buffer, area: Rect, show_cursor: bool) {
         let width = area.width as usize;
         let frame = self.range_frame_in(area.width, area.height);
-        let capacity = (area.height as usize)
-            .saturating_sub(1)
-            .saturating_sub(frame.len());
-        let offset = self.commit_offset(capacity);
+        let capacity = self.list_capacity(area.width, area.height);
+        let shown = self.shown_rows(capacity);
         let selection = self
             .commit_anchor
             .map(|a| (a.min(self.commit_cursor), a.max(self.commit_cursor)));
         let rows = std::iter::once((0, "▣ Весь Range".to_string(), self.scope == Scope::All))
             .chain(
-                self.list_rows()
-                    .into_iter()
-                    .skip(offset)
-                    .take(capacity)
-                    .map(|row| match row {
-                        rounds::ListRow::Header(title) => (HEADER, format!("── {title}"), false),
-                        rounds::ListRow::Commit(i) => {
-                            let c = &self.commits[i];
-                            let sha = &c.sha[..7.min(c.sha.len())];
-                            (
-                                i + 1,
-                                format!("{:>2} {sha} {}", i + 1, c.subject),
-                                self.in_scope(i),
-                            )
-                        }
-                    }),
-            );
+                shown
+                    .pinned
+                    .map(|span| (HEADER, format!("── {}", span.title), false)),
+            )
+            .chain(shown.rows.into_iter().map(|row| match row {
+                rounds::ListRow::Header(title) => (HEADER, format!("── {title}"), false),
+                rounds::ListRow::Folded { title, start, end } => {
+                    let position = match self.commit_cursor {
+                        n if (start + 1..=end).contains(&n) => n,
+                        _ => start + 1,
+                    };
+                    let in_scope = (start..end).any(|i| self.in_scope(i));
+                    (position, format!("▸ {title}"), in_scope)
+                }
+                rounds::ListRow::Commit(i) => {
+                    let c = &self.commits[i];
+                    let sha = &c.sha[..7.min(c.sha.len())];
+                    (
+                        i + 1,
+                        format!("{:>2} {sha} {}", i + 1, c.subject),
+                        self.in_scope(i),
+                    )
+                }
+            }));
         for (row, (position, text, in_scope)) in rows.enumerate() {
             let cursor = show_cursor && position == self.commit_cursor;
             let mark = if in_scope { '●' } else { ' ' };
@@ -1369,7 +1375,7 @@ impl Session {
     }
 
     /// The `Space c` picker: the commit list in a box over the screen.
-    /// Where the `Space c` picker box is.
+    /// The box of the `Space c` picker.
     fn picker_area(&self) -> Rect {
         let width = self.size.0.saturating_sub(4).min(72);
         let frame = self.range_frame(width.saturating_sub(2) as usize).len() as u16;

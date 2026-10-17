@@ -134,29 +134,6 @@ impl Session {
         false
     }
 
-    /// A click on screen row `row` of the commit list drawn in `inner`
-    /// (below the border): the cursor goes to the commit, and the focus too.
-    pub(super) fn click_commit_list(&mut self, inner: Rect, row: u16) {
-        let frame = self.range_frame_in(inner.width, inner.height).len();
-        let capacity = (inner.height as usize).saturating_sub(1 + frame);
-        // Row 0 is the pinned "Весь Range" row, the Range Comments hang under it.
-        let Some(row) = (row as usize).checked_sub(inner.y as usize) else {
-            return;
-        };
-        if row <= capacity + frame {
-            self.focus = Focus::Commits;
-            if row <= frame {
-                self.commit_cursor = 0;
-            } else {
-                // A Round header is not a commit: the click only focuses.
-                let at = self.commit_offset(capacity) + row - 1 - frame;
-                if let Some(rounds::ListRow::Commit(i)) = self.list_rows().get(at) {
-                    self.commit_cursor = i + 1;
-                }
-            }
-        }
-    }
-
     /// Clicks and the wheel in the open commit picker; returns whether the
     /// picker took the event.
     pub(super) fn picker_mouse(&mut self, mouse: MouseEvent) -> bool {
@@ -168,7 +145,8 @@ impl Session {
             MouseEventKind::Down(MouseButton::Left)
                 if inner.contains((mouse.column, mouse.row).into()) =>
             {
-                self.click_commit_list(inner, mouse.row);
+                let area = self.picker_area();
+                self.click_commit_box(area, area.height - 3, mouse.row);
             }
             MouseEventKind::ScrollDown => {
                 self.commits_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));

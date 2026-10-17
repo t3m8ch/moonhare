@@ -361,7 +361,7 @@ fn the_base64_payload_is_padded_to_whole_groups_for_any_text_length() {
 #[test]
 fn which_key_and_help_list_the_prompt_keys() {
     let fx = feature_branch();
-    let mut h = Harness::open(&fx, 100, 60);
+    let mut h = Harness::open(&fx, 100, 70);
     h.keys("<Space>p").wait(350);
     let screen = h.screen();
     assert!(screen.contains("which-key: Space p"), "{screen}");
