@@ -17,17 +17,32 @@ pub(super) struct Reload {
     since_poll: Duration,
     /// The Range as the branch has it now, when that differs from ours, and
     /// how many commits in it are ones we have not shown.
-    available: Option<(Range, usize)>,
+    available: Option<Available>,
+    /// With `Target::Current`: the clone moved to this other branch, which is
+    /// not the Range under review and is never swapped in silently.
+    switched: Option<String>,
+}
+
+struct Available {
+    range: Range,
+    /// Commits in the new Range that we have not shown.
+    fresh: usize,
+    /// Commits we show that the branch no longer has.
+    gone: usize,
 }
 
 impl Session {
     /// Time passing: once in a while look whether the branch moved.
-    pub(super) fn poll_reload(&mut self, elapsed: Duration) {
+    /// Returns whether the note in the status line changed.
+    pub(super) fn poll_reload(&mut self, elapsed: Duration) -> bool {
         self.reload.since_poll += elapsed;
-        if self.reload.since_poll >= POLL {
-            self.reload.since_poll = Duration::ZERO;
-            self.look_for_new_commits();
+        if self.reload.since_poll < POLL {
+            return false;
         }
+        self.reload.since_poll = Duration::ZERO;
+        let before = self.reload_status("");
+        self.look_for_new_commits();
+        before != self.reload_status("")
     }
 
     /// How long until the next look at the branch.
@@ -43,22 +58,29 @@ impl Session {
         let Ok(range) = self.repo.range_for(target) else {
             return;
         };
+        if matches!(target, Target::Current) && range.head_name != self.range.head_name {
+            self.reload.available = None;
+            self.reload.switched = Some(range.head_name);
+            return;
+        }
+        self.reload.switched = None;
         self.reload.available = if range.head == self.range.head && range.base == self.range.base {
             None
         } else {
-            let shown: std::collections::HashSet<&str> =
-                self.commits.iter().map(|c| c.sha.as_str()).collect();
-            let fresh = self
+            let count = |of: &[Commit], among: &[Commit]| {
+                of.iter()
+                    .filter(|c| !among.iter().any(|o| o.sha == c.sha))
+                    .count()
+            };
+            let now = self
                 .repo
                 .commits(&range.base, &range.head)
-                .map(|commits| {
-                    commits
-                        .iter()
-                        .filter(|c| !shown.contains(c.sha.as_str()))
-                        .count()
-                })
-                .unwrap_or(0);
-            Some((range, fresh))
+                .unwrap_or_default();
+            Some(Available {
+                fresh: count(&now, &self.commits),
+                gone: count(&self.commits, &now),
+                range,
+            })
         };
     }
 
@@ -66,7 +88,14 @@ impl Session {
     /// its commits are still there, the selected file stays when it is.
     pub(super) fn reload(&mut self) {
         self.look_for_new_commits();
-        let Some((range, _)) = self.reload.available.take() else {
+        if let Some(name) = &self.reload.switched {
+            self.message = Some(format!(
+                "The clone is on {name} now, not on {}: reopen moonhare to review it",
+                self.range.head_name
+            ));
+            return;
+        }
+        let Some(Available { range, .. }) = self.reload.available.take() else {
             self.message = Some("Nothing to reload".into());
             return;
         };
@@ -82,7 +111,11 @@ impl Session {
             Ok(loaded) => loaded,
             Err(e) => {
                 self.message = Some(format!("Cannot reload: {e}"));
-                self.reload.available = Some((range, 0));
+                self.reload.available = Some(Available {
+                    range,
+                    fresh: 0,
+                    gone: 0,
+                });
                 return;
             }
         };
@@ -111,9 +144,15 @@ impl Session {
 
     /// The status line with the note about new commits in front.
     pub(super) fn reload_status(&self, rest: &str) -> String {
+        if let Some(name) = &self.reload.switched {
+            return format!(" ⚠ clone switched to {name}: reopen moonhare{rest}");
+        }
         match &self.reload.available {
-            Some((_, 1)) => format!(" +1 new commit (:reload){rest}"),
-            Some((_, n)) => format!(" +{n} new commits (:reload){rest}"),
+            Some(Available { fresh, gone, .. }) if *gone > 0 => {
+                format!(" branch rewritten: +{fresh}/-{gone} commits (:reload){rest}")
+            }
+            Some(Available { fresh: 1, .. }) => format!(" +1 new commit (:reload){rest}"),
+            Some(Available { fresh, .. }) => format!(" +{fresh} new commits (:reload){rest}"),
             None => rest.to_string(),
         }
     }

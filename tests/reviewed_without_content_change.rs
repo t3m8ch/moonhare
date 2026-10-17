@@ -62,7 +62,8 @@ fn a_mode_change_is_unreviewed_until_marked() {
 fn a_rename_whose_edit_was_undone_is_unreviewed_until_marked() {
     let fx = base();
     fx.git(&["mv", "README.md", "DOC.md"]);
-    fx.write("DOC.md", &demo("changed")).commit("rename and edit");
+    fx.write("DOC.md", &demo("changed"))
+        .commit("rename and edit");
     fx.write("DOC.md", &demo("demo")).commit("undo the edit");
     assert_needs_an_explicit_mark(&fx);
 }

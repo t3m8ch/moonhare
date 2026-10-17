@@ -479,11 +479,22 @@ impl Session {
 
     /// Time passing without input; opens the which-key window once a key
     /// prefix has been waiting long enough.
-    pub fn elapse(&mut self, elapsed: std::time::Duration) {
+    /// Returns whether what is drawn may have changed.
+    pub fn elapse(&mut self, elapsed: std::time::Duration) -> bool {
+        let mut changed = false;
         if self.pending.is_some() {
+            let before = self.pending_for;
             self.pending_for += elapsed;
+            let delay = crate::hints::WHICH_KEY_DELAY;
+            changed = before < delay && self.pending_for >= delay;
         }
-        self.poll_reload(elapsed);
+        self.poll_reload(elapsed) || changed
+    }
+
+    /// Time passing, for the watch on the branch only. The real loop calls it
+    /// also between input events, so that typing never starves the watch.
+    pub fn watch(&mut self, elapsed: std::time::Duration) -> bool {
+        self.poll_reload(elapsed)
     }
 
     /// Draw with truecolor (exact RGB) instead of the 256-colour palette.

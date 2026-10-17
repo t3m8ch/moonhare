@@ -179,7 +179,7 @@ fn a_force_pushed_branch_with_a_new_shape_keeps_the_marks_of_unchanged_files() {
         .commit("b, reworked");
     fx.checkout("main");
     h.wait(LATER);
-    assert!(h.screen().contains("+3 new commits"), "{}", h.screen());
+    assert!(h.screen().contains("rewritten"), "{}", h.screen());
     h.keys(":reload<CR>");
 
     let screen = h.screen();
@@ -194,6 +194,147 @@ fn a_force_pushed_branch_with_a_new_shape_keeps_the_marks_of_unchanged_files() {
     let pane = diff_pane(&mut h);
     assert!(pane.contains("modified"), "{pane}");
     assert!(pane.contains('2') && pane.contains('3'), "{pane}");
+}
+
+#[test]
+fn a_squash_that_changes_the_content_is_not_reviewed() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    mark_everything(&mut h);
+
+    fx.write("src/a.rs", "fn a() {\n    99\n}\n");
+    fx.git(&["reset", "-q", "--soft", "main"]);
+    fx.git(&["add", "-A"]);
+    fx.git(&["commit", "-q", "-m", "squashed"]);
+    h.wait(LATER);
+    h.keys(":reload<CR>");
+
+    assert!(h.screen().contains("reviewed 2/3"), "{}", h.screen());
+}
+
+#[test]
+fn an_amend_is_announced_as_a_rewrite_not_as_one_new_commit() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    fx.git(&["commit", "-q", "--amend", "-m", "reword a"]);
+    h.wait(LATER);
+    let screen = h.screen();
+    assert!(screen.contains("rewritten"), "{screen}");
+    assert!(!screen.contains("+1 new commit"), "{screen}");
+}
+
+#[test]
+fn a_switch_of_the_cloned_branch_is_not_taken_for_new_commits() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    fx.checkout("main");
+    fx.branch("other");
+    fx.write("o.txt", "o\n").commit("other work");
+    h.wait(LATER);
+    let screen = h.screen();
+    assert!(screen.contains("switched to other"), "{screen}");
+    assert!(!screen.contains("new commit"), "{screen}");
+
+    h.keys("R");
+    let screen = h.screen();
+    assert!(screen.contains("add a"), "{screen}");
+    assert!(!screen.contains("other work"), "{screen}");
+}
+
+#[test]
+fn the_branch_is_watched_even_when_input_never_pauses() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    fx.write("src/c.rs", "fn c() {}\n").commit("add c");
+    h.keys("j");
+    h.session().watch(std::time::Duration::from_secs(1));
+    assert!(!h.screen().contains("new commit"), "{}", h.screen());
+    h.keys("j");
+    h.session().watch(std::time::Duration::from_secs(1));
+    assert!(h.screen().contains("+1 new commit"), "{}", h.screen());
+}
+
+#[test]
+fn an_idle_tick_asks_for_a_redraw_only_when_something_changed() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    let tick = std::time::Duration::from_secs(2);
+    assert!(!h.session().elapse(tick));
+    assert!(!h.session().elapse(tick));
+
+    fx.write("src/c.rs", "fn c() {}\n").commit("add c");
+    assert!(h.session().elapse(tick), "a new commit changes the status");
+    assert!(!h.session().elapse(tick), "and only once");
+}
+
+#[test]
+fn a_line_comment_stays_with_its_code_across_a_reload() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("jjcifix this<Esc><CR>");
+    assert!(h.screen().contains("fix this"), "{}", h.screen());
+
+    fx.write("src/c.rs", "fn c() {}\n").commit("add c");
+    h.wait(LATER);
+    h.keys(":reload<CR>");
+
+    let screen = h.screen();
+    assert!(screen.contains("add c"), "{screen}");
+    assert!(screen.contains("fix this"), "{screen}");
+}
+
+struct ByHand;
+
+impl moonhare::analyst::Analyst for ByHand {
+    fn summarize(
+        &self,
+        _: &moonhare::analyst::SummaryRequest,
+    ) -> Result<moonhare::analyst::Summary, moonhare::analyst::AnalystError> {
+        Ok(moonhare::analyst::Summary { text: "ok".into() })
+    }
+
+    fn group(
+        &self,
+        _: &moonhare::analyst::GroupRequest,
+    ) -> Result<moonhare::analyst::Grouping, moonhare::analyst::AnalystError> {
+        let group = |name: &str, files: &[&str]| moonhare::analyst::Group {
+            name: name.into(),
+            description: "d".into(),
+            mechanical: false,
+            files: files.iter().map(|f| f.to_string()).collect(),
+        };
+        Ok(moonhare::analyst::Grouping {
+            groups: vec![
+                group("Core", &["src/a.rs", "src/b.rs"]),
+                group("Docs", &["README.md"]),
+            ],
+        })
+    }
+}
+
+#[test]
+fn group_progress_survives_a_reload_and_a_rewrite() {
+    let fx = feature_branch();
+    let mut session = moonhare::session::Session::open(fx.path(), 160, 30).unwrap();
+    session.set_analyst(std::sync::Arc::new(ByHand));
+    let mut h = Harness::from_session(session);
+    h.session().wait_for_analyst();
+    h.keys("m");
+    let row = |h: &mut Harness, name: &str| {
+        sidebar(h)
+            .lines()
+            .find(|l| l.contains(name))
+            .unwrap_or_else(|| panic!("no {name}:\n{}", h.screen()))
+            .to_string()
+    };
+    assert!(row(&mut h, "Docs").contains("1/1"), "{}", h.screen());
+
+    fx.git(&["commit", "-q", "--amend", "-m", "reword a"]);
+    h.wait(LATER);
+    h.keys(":reload<CR>");
+
+    assert!(row(&mut h, "Docs").contains("1/1"), "{}", h.screen());
+    assert!(row(&mut h, "Core").contains("0/2"), "{}", h.screen());
 }
 
 #[test]
