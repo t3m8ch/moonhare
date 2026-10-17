@@ -287,17 +287,23 @@ impl Review {
             .flat_map(|c| [Some(c.path.as_str()), c.old_path.as_deref()])
             .flatten()
             .collect();
-        let mut reached: HashSet<String> = HashSet::from([base.clone()]);
+        // The base counts as reached only through marks, never by itself: a
+        // file whose content did not change (a pure rename, a mode change, an
+        // edit that was undone) is not Reviewed until it is marked.
+        let mut reached: HashSet<String> = HashSet::new();
         let mut edges = Vec::new();
         let mut open = vec![base.clone()];
+        let mut expanded: HashSet<String> = HashSet::new();
         while let Some(version) = open.pop() {
+            if !expanded.insert(version.clone()) {
+                continue;
+            }
             for path in &paths {
                 for edge in self.by_path.get(*path).into_iter().flatten() {
                     if edge.0 == version {
                         edges.push((path.to_string(), edge.clone()));
-                        if reached.insert(edge.1.clone()) {
-                            open.push(edge.1.clone());
-                        }
+                        reached.insert(edge.1.clone());
+                        open.push(edge.1.clone());
                     }
                 }
             }
