@@ -24,7 +24,7 @@ use crate::review::{self, FileChange, Mark, Review};
 use crate::special;
 use crate::viewport::Viewport;
 use diagram::clear_area;
-pub use diffs::DiffEngine;
+pub use diffs::{silence_worker_panics, DiffEngine};
 use rounds::HEADER;
 
 /// Below this size the session shows a "terminal too small" screen.

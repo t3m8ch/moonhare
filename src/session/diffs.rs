@@ -54,7 +54,8 @@ struct Job {
 struct Queue {
     /// Most wanted first.
     jobs: VecDeque<Job>,
-    running: HashSet<Key>,
+    /// Keys being worked on, with the generation they were asked for in.
+    running: HashSet<(Key, u64)>,
     stop: bool,
 }
 
@@ -85,13 +86,29 @@ fn read(repo: &Repo, source: &Source) -> Result<Option<Vec<u8>>, String> {
 }
 
 fn compute(repo: &Repo, job: &Job) -> Computed {
-    let old = read(repo, &job.key.old)?;
-    let new = read(repo, &job.key.new)?;
     catch_unwind(AssertUnwindSafe(|| {
-        (job.engine)(&job.key.path, old.as_deref(), new.as_deref())
+        let old = read(repo, &job.key.old)?;
+        let new = read(repo, &job.key.new)?;
+        let diff = (job.engine)(&job.key.path, old.as_deref(), new.as_deref());
+        Ok(Arc::new(Loaded::new(diff)))
     }))
-    .map(|diff| Arc::new(Loaded::new(diff)))
-    .map_err(|_| "The diff engine failed on this file".to_string())
+    .unwrap_or_else(|_| Err("The diff engine failed on this file".to_string()))
+}
+
+/// The name of the worker threads.
+const WORKER: &str = "moonhare-diff";
+
+/// Keep the panic message of a diff worker (and the terminal restore that the
+/// hooks installed before this one do) away from the TUI: the worker catches
+/// its own panic and the session shows it as an error. Other threads panic as
+/// before. Call it after the other hooks are set, so this one runs first.
+pub fn silence_worker_panics() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current().name() != Some(WORKER) {
+            previous(info);
+        }
+    }));
 }
 
 fn work(shared: Arc<Shared>, repo: Repo, sender: Sender<(u64, Key, Computed)>) {
@@ -103,15 +120,22 @@ fn work(shared: Arc<Shared>, repo: Repo, sender: Sender<(u64, Key, Computed)>) {
                     return;
                 }
                 if let Some(job) = queue.jobs.pop_front() {
-                    queue.running.insert(job.key.clone());
+                    queue.running.insert((job.key.clone(), job.generation));
                     break job;
                 }
                 queue = shared.wake.wait(queue).unwrap();
             }
         };
         let result = compute(&repo, &job);
-        shared.queue.lock().unwrap().running.remove(&job.key);
-        if sender.send((job.generation, job.key, result)).is_err() {
+        // Send first: between the two, a key must not look idle and unanswered.
+        let sent = sender.send((job.generation, job.key.clone(), result));
+        shared
+            .queue
+            .lock()
+            .unwrap()
+            .running
+            .remove(&(job.key, job.generation));
+        if sent.is_err() {
             return;
         }
     }
@@ -129,7 +153,9 @@ impl Diffs {
             .clamp(2, 4);
         for _ in 0..workers {
             let (shared, repo, sender) = (shared.clone(), repo.clone(), sender.clone());
-            std::thread::spawn(move || work(shared, repo, sender));
+            let _ = std::thread::Builder::new()
+                .name(WORKER.into())
+                .spawn(move || work(shared, repo, sender));
         }
         Diffs {
             shared,
@@ -172,10 +198,13 @@ impl Diffs {
     /// The finished diff for `key`, if there is one.
     pub(super) fn get(&mut self, key: &Key) -> Option<Computed> {
         let at = self.cache.iter().position(|(k, _)| k == key)?;
-        // Most recently used goes last, so it is evicted last.
         let entry = self.cache.remove(at)?;
         let result = entry.1.clone();
-        self.cache.push_back(entry);
+        // A failure is shown once and not kept, so the next visit tries again.
+        // Most recently used goes last, so it is evicted last.
+        if result.is_ok() {
+            self.cache.push_back(entry);
+        }
         Some(result)
     }
 
@@ -186,7 +215,10 @@ impl Diffs {
         let mut queue = self.shared.queue.lock().unwrap();
         queue.jobs = keys
             .into_iter()
-            .filter(|k| !queue.running.contains(k) && !self.cache.iter().any(|(c, _)| c == k))
+            .filter(|k| {
+                !queue.running.contains(&(k.clone(), self.generation))
+                    && !self.cache.iter().any(|(c, _)| c == k)
+            })
             .map(|key| Job {
                 key,
                 engine: self.engine.clone(),

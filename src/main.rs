@@ -83,6 +83,8 @@ fn main() -> ExitCode {
         let _ = execute!(io::stdout(), DisableMouseCapture);
         hook(info);
     }));
+    // The diff workers catch their panics; the hooks above must not see them.
+    moonhare::session::silence_worker_panics();
     let _ = execute!(io::stdout(), EnableMouseCapture);
     let result = run(&mut terminal, &mut session);
     let _ = execute!(io::stdout(), DisableMouseCapture);

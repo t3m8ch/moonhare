@@ -24,10 +24,15 @@ impl Gate {
     }
 
     fn pass(&self) {
-        let mut open = self.open.lock().unwrap();
-        while !*open {
-            open = self.changed.wait(open).unwrap();
-        }
+        // Gives up after a while, so that a key which waits for the diff
+        // fails its time check instead of hanging the test.
+        let (open, _) = self
+            .changed
+            .wait_timeout_while(self.open.lock().unwrap(), Duration::from_secs(3), |open| {
+                !*open
+            })
+            .unwrap();
+        drop(open);
     }
 }
 
@@ -129,7 +134,6 @@ fn a_diff_that_is_ready_shows_at_once_on_the_way_back() {
     ));
     gate.open();
     h.settle().keys("[f");
-    gate.open();
     // README.md is in the cache now: no placeholder even if the engine stalls.
     let screen = h.screen_now();
     assert!(!screen.contains("Computing diff"), "{screen}");
