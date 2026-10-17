@@ -99,6 +99,80 @@ impl Session {
         }
     }
 
+    /// The wheel over the commit list or the file list; returns whether it was.
+    pub(super) fn list_mouse(&mut self, mouse: MouseEvent) -> bool {
+        let down = match mouse.kind {
+            MouseEventKind::ScrollDown => true,
+            MouseEventKind::ScrollUp => false,
+            _ => return false,
+        };
+        let at = (mouse.column, mouse.row).into();
+        if self.sidebar_visible() && !self.picker && self.commits_area().contains(at) {
+            self.focus = Focus::Commits;
+            let key = if down { 'j' } else { 'k' };
+            self.commits_key(KeyEvent::new(KeyCode::Char(key), KeyModifiers::NONE));
+            return true;
+        }
+        if self.sidebar_visible() && !self.picker && self.files_area().contains(at) {
+            let last = self.files.len().saturating_sub(1);
+            let to = if down {
+                (self.selected + 1).min(last)
+            } else {
+                self.selected.saturating_sub(1)
+            };
+            self.select(to);
+            return true;
+        }
+        false
+    }
+
+    /// A click on screen row `row` of the commit list drawn in `inner`
+    /// (below the border): the cursor goes to the commit, and the focus too.
+    pub(super) fn click_commit_list(&mut self, inner: Rect, row: u16) {
+        let frame = self.range_frame_in(inner.width, inner.height).len();
+        let capacity = (inner.height as usize).saturating_sub(1 + frame);
+        // Row 0 is the pinned "Весь Range" row, the Range Comments hang under it.
+        let Some(row) = (row as usize).checked_sub(inner.y as usize) else {
+            return;
+        };
+        if row <= capacity + frame {
+            self.focus = Focus::Commits;
+            if row <= frame {
+                self.commit_cursor = 0;
+            } else {
+                // A Round header is not a commit: the click only focuses.
+                let at = self.commit_offset(capacity) + row - 1 - frame;
+                if let Some(rounds::ListRow::Commit(i)) = self.list_rows().get(at) {
+                    self.commit_cursor = i + 1;
+                }
+            }
+        }
+    }
+
+    /// Clicks and the wheel in the open commit picker; returns whether the
+    /// picker took the event.
+    pub(super) fn picker_mouse(&mut self, mouse: MouseEvent) -> bool {
+        if !self.picker {
+            return false;
+        }
+        let inner = self.picker_inner();
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left)
+                if inner.contains((mouse.column, mouse.row).into()) =>
+            {
+                self.click_commit_list(inner, mouse.row);
+            }
+            MouseEventKind::ScrollDown => {
+                self.commits_key(KeyEvent::new(KeyCode::Char('j'), KeyModifiers::NONE));
+            }
+            MouseEventKind::ScrollUp => {
+                self.commits_key(KeyEvent::new(KeyCode::Char('k'), KeyModifiers::NONE));
+            }
+            _ => {}
+        }
+        true
+    }
+
     /// Whether the terminal should hand mouse events over (`:set mouse`).
     pub fn mouse_enabled(&self) -> bool {
         !self.mouse.disabled

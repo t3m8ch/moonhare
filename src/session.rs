@@ -1169,7 +1169,7 @@ impl Session {
         {
             return;
         }
-        if self.diff_mouse(mouse) {
+        if self.picker_mouse(mouse) || self.diff_mouse(mouse) || self.list_mouse(mouse) {
             return;
         }
         let at = |area: Rect| area.contains((mouse.column, mouse.row).into());
@@ -1185,24 +1185,8 @@ impl Session {
             }
             MouseEventKind::Down(_) if at(self.commits_area()) && !self.picker => {
                 let area = self.commits_area();
-                let row = (mouse.row - area.y) as usize;
-                let frame = self.range_frame_in(area.width - 2, area.height - 2).len();
-                let capacity = (area.height.saturating_sub(3) as usize).saturating_sub(frame);
-                // Row 0 is the border, row 1 the pinned "Весь Range" row, the
-                // Range Comments hang under it.
-                if row >= 1 && row <= capacity + 1 + frame {
-                    self.focus = Focus::Commits;
-                    match row {
-                        r if r <= 1 + frame => self.commit_cursor = 0,
-                        r => {
-                            // A Round header is not a commit: the click only focuses.
-                            let at = self.commit_offset(capacity) + r - 2 - frame;
-                            if let Some(rounds::ListRow::Commit(i)) = self.list_rows().get(at) {
-                                self.commit_cursor = i + 1;
-                            }
-                        }
-                    }
-                }
+                let inner = Rect::new(area.x + 1, area.y + 1, area.width - 2, area.height - 2);
+                self.click_commit_list(inner, mouse.row);
             }
             MouseEventKind::Down(_) if at(self.files_area()) && !self.picker => {
                 let area = self.files_area();
@@ -1372,28 +1356,40 @@ impl Session {
     }
 
     /// The `Space c` picker: the commit list in a box over the screen.
-    fn render_picker(&self, buf: &mut Buffer) {
+    /// Where the `Space c` picker box is.
+    fn picker_area(&self) -> Rect {
         let width = self.size.0.saturating_sub(4).min(72);
         let frame = self.range_frame(width.saturating_sub(2) as usize).len() as u16;
         let height = (self.list_rows().len() as u16 + 4 + frame)
             .min(self.size.1.saturating_sub(BOTTOM_ROWS + 1));
-        let area = Rect::new(
+        Rect::new(
             (self.size.0 - width) / 2,
             (self.size.1 - BOTTOM_ROWS - height) / 2,
             width,
             height,
-        );
+        )
+    }
+
+    /// The commit rows inside the picker box.
+    fn picker_inner(&self) -> Rect {
+        let area = self.picker_area();
+        Rect::new(
+            area.x + 1,
+            area.y + 1,
+            area.width.saturating_sub(2),
+            area.height.saturating_sub(3),
+        )
+    }
+
+    fn render_picker(&self, buf: &mut Buffer) {
+        let area = self.picker_area();
+        let width = area.width;
         buf.set_style(area, Style::new().fg(FG).bg(Color::Reset));
         for y in area.y..area.y + area.height {
             buf.set_string(area.x, y, " ".repeat(width as usize), Style::new().fg(FG));
         }
         draw_box(buf, area, " Pick a Scope ");
-        let inner = Rect::new(
-            area.x + 1,
-            area.y + 1,
-            area.width.saturating_sub(2),
-            area.height.saturating_sub(3),
-        );
+        let inner = self.picker_inner();
         self.render_commit_rows(buf, inner, true);
         let hint = "j/k move  v select  Enter apply  a whole Range  Esc close";
         let hint_w = inner.width as usize;
