@@ -228,7 +228,10 @@ impl Review {
         for c in changes {
             self.remove(&Self::key(c));
         }
-        while let Some(walk) = self.walk(changes).filter(|w| Self::reaches_head(changes, w)) {
+        while let Some(walk) = self
+            .walk(changes)
+            .filter(|w| Self::reaches_head(changes, w))
+        {
             if walk.edges.is_empty() {
                 break;
             }

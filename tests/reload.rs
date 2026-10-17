@@ -73,7 +73,10 @@ fn capital_r_reloads_too_and_keeps_the_selected_file() {
     h.keys("R");
 
     let side = sidebar(&mut h);
-    assert!(side.contains("Files (4)") && side.contains("add c"), "{side}");
+    assert!(
+        side.contains("Files (4)") && side.contains("add c"),
+        "{side}"
+    );
     let cursor = side.lines().find(|l| l.starts_with("│>")).unwrap();
     assert!(cursor.contains("src/b.rs"), "{side}");
 }
@@ -122,6 +125,145 @@ fn squashing_the_commits_keeps_the_marks_of_files_whose_final_content_is_the_sam
     assert!(screen.contains("squashed"), "{screen}");
     assert!(screen.contains("Commits 1"), "{screen}");
     assert!(screen.contains("reviewed 3/3"), "{screen}");
+}
+
+/// The diff pane only (right of the sidebar).
+fn diff_pane(h: &mut Harness) -> String {
+    h.screen()
+        .lines()
+        .map(|l| l.chars().skip(33).collect::<String>())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn a_file_changed_by_an_amend_returns_to_unreviewed_with_the_delta_from_the_reviewed_version() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    mark_everything(&mut h);
+
+    // The last commit now makes `a` return 20 where the Reviewer saw 10.
+    fx.write("src/a.rs", "fn a() {\n    20\n}\n");
+    fx.git(&["commit", "-q", "-a", "--amend", "--no-edit"]);
+    h.wait(LATER);
+    h.keys(":reload<CR>");
+    let side = sidebar(&mut h);
+    assert!(side.contains("reviewed 2/3"), "{}", h.screen());
+
+    h.keys(" u");
+    let side = sidebar(&mut h);
+    assert!(
+        side.contains("Files (1)") && side.contains("src/a.rs"),
+        "{side}"
+    );
+    let pane = diff_pane(&mut h);
+    assert!(pane.contains("modified"), "{pane}");
+    assert!(pane.contains("10") && pane.contains("20"), "{pane}");
+}
+
+#[test]
+fn a_force_pushed_branch_with_a_new_shape_keeps_the_marks_of_unchanged_files() {
+    let fx = feature_branch();
+    fx.checkout("main");
+    let target = moonhare::git::Target::Branch("feature".into());
+    let mut h = Harness::open_target(&fx, &target, 160, 30);
+    mark_everything(&mut h);
+
+    // The agent starts over: other commits, other messages, `b` reworked.
+    fx.checkout("feature");
+    fx.git(&["reset", "-q", "--hard", "main"]);
+    fx.write("README.md", "# demo\n\nmore\n").commit("docs");
+    fx.write("src/a.rs", "fn a() {\n    10\n}\n")
+        .commit("a, finished");
+    fx.write("src/b.rs", "fn b() {\n    3\n}\n")
+        .commit("b, reworked");
+    fx.checkout("main");
+    h.wait(LATER);
+    assert!(h.screen().contains("+3 new commits"), "{}", h.screen());
+    h.keys(":reload<CR>");
+
+    let screen = h.screen();
+    assert!(screen.contains("b, reworked"), "{screen}");
+    assert!(screen.contains("reviewed 2/3"), "{screen}");
+    h.keys(" u");
+    let side = sidebar(&mut h);
+    assert!(
+        side.contains("Files (1)") && side.contains("src/b.rs"),
+        "{side}"
+    );
+    let pane = diff_pane(&mut h);
+    assert!(pane.contains("modified"), "{pane}");
+    assert!(pane.contains('2') && pane.contains('3'), "{pane}");
+}
+
+#[test]
+fn help_lists_reload() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 60);
+    h.keys("?");
+    let screen = h.screen();
+    assert!(
+        screen
+            .lines()
+            .any(|l| l.contains(" R   ") && l.contains("новые коммиты")),
+        "{screen}"
+    );
+    assert!(
+        screen
+            .lines()
+            .any(|l| l.contains(":reload") && l.contains("новые коммиты")),
+        "{screen}"
+    );
+}
+
+#[test]
+fn a_mark_that_survived_a_squash_can_still_be_taken_back() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    mark_everything(&mut h);
+    fx.git(&["reset", "-q", "--soft", "main"]);
+    fx.git(&["commit", "-q", "-m", "squashed"]);
+    h.wait(LATER);
+    h.keys(":reload<CR>");
+    assert!(h.screen().contains("reviewed 3/3"), "{}", h.screen());
+
+    h.keys("[fm");
+
+    let screen = h.screen();
+    assert!(screen.contains("reviewed 2/3"), "{screen}");
+}
+
+#[test]
+fn the_reviewed_version_is_remembered_between_runs() {
+    let fx = feature_branch();
+    mark_everything(&mut Harness::open(&fx, 160, 30));
+
+    fx.write("src/a.rs", "fn a() {\n    20\n}\n");
+    fx.git(&["commit", "-q", "-a", "--amend", "--no-edit"]);
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys(" u");
+
+    let pane = diff_pane(&mut h);
+    assert!(pane.contains("modified"), "{pane}");
+    assert!(pane.contains("10") && pane.contains("20"), "{pane}");
+}
+
+#[test]
+fn reload_keeps_a_commit_scope_whose_commits_are_still_there_and_drops_one_that_is_not() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys(":scope 2<CR>");
+    fx.write("src/c.rs", "fn c() {}\n").commit("add c");
+    h.wait(LATER);
+    h.keys(":reload<CR>");
+    assert!(h.screen().contains("Commits 2/4"), "{}", h.screen());
+
+    // History is rewritten from the second commit on.
+    fx.git(&["reset", "-q", "--hard", "HEAD~3"]);
+    fx.write("src/b.rs", "fn b() {}\n").commit("b again");
+    h.wait(LATER);
+    h.keys(":reload<CR>");
+    assert!(h.screen().contains("Commits 2 "), "{}", h.screen());
 }
 
 #[test]

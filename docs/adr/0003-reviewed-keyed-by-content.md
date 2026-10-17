@@ -11,3 +11,4 @@ A Reviewed mark is keyed by the content of the File change (the path and the blo
 
 - moonhare writes refs in the repository's `refs/moonhare/` namespace, the only writes outside its own state directory besides the Analyst's temporary worktree.
 - Pins for superseded versions accumulate until the Review is reset.
+- Marks are read as edges between versions of a file (old blob to new blob). A file is Reviewed in a Scope when the marks lead from the version at the base of the Scope to the version at its head, so a squash or a re-cut of the commits keeps the marks as long as the Reviewer has been through the same versions. The delta of a changed file starts from the target of the latest mark on that way.

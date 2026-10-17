@@ -16,9 +16,7 @@ impl Session {
             .map(|mut f| {
                 // Against a version the Reviewer saw, a new file is a change.
                 let seen = self.last_seen(&f.path);
-                if f.status == Status::Added
-                    && seen.is_some_and(|blob| blob != review::NULL_BLOB)
-                {
+                if f.status == Status::Added && seen.is_some_and(|blob| blob != review::NULL_BLOB) {
                     f.status = Status::Modified;
                 }
                 f
@@ -76,10 +74,7 @@ impl Session {
         Some(if seen == review::NULL_BLOB {
             Ok(None)
         } else {
-            self.repo
-                .blob(&seen)
-                .map(Some)
-                .map_err(|e| e.to_string())
+            self.repo.blob(&seen).map(Some).map_err(|e| e.to_string())
         })
     }
 }

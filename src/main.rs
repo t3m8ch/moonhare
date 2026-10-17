@@ -98,24 +98,21 @@ fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Re
     while !session.should_quit() {
         terminal.draw(|f| session.render(f.buffer_mut()))?;
         // Sleep until input, until a pause makes the screen change, or (while
-        // the Analyst works) until it may have answered; never redraw an idle
-        // screen.
+        // the Analyst works) until it may have answered, and in any case until
+        // it is time to look for new commits in the branch.
+        let poll = session.next_poll_in();
         let wake = match (session.next_tick_in(), session.analyst_busy()) {
-            (Some(due), true) => Some(due.min(ANALYST_POLL)),
-            (Some(due), false) => Some(due),
-            (None, true) => Some(ANALYST_POLL),
-            (None, false) => None,
-        };
-        match wake {
-            Some(wake) => {
-                let waited = Instant::now();
-                if event::poll(wake)? {
-                    session.handle(event::read()?);
-                } else {
-                    session.elapse(wake.max(waited.elapsed()));
-                }
-            }
-            None => session.handle(event::read()?),
+            (Some(due), true) => due.min(ANALYST_POLL),
+            (Some(due), false) => due,
+            (None, true) => ANALYST_POLL,
+            (None, false) => poll,
+        }
+        .min(poll);
+        let waited = Instant::now();
+        if event::poll(wake)? {
+            session.handle(event::read()?);
+        } else {
+            session.elapse(wake.max(waited.elapsed()));
         }
         session.tick();
     }

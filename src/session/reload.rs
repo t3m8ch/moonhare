@@ -70,11 +70,14 @@ impl Session {
             self.message = Some("Nothing to reload".into());
             return;
         };
-        let loaded = self.repo.commits(&range.base, &range.head).and_then(|commits| {
-            let files = self.repo.changed_files(&range.base, &range.head)?;
-            let changes = changes_per_commit(&self.repo, &range, &commits)?;
-            Ok((commits, files, changes))
-        });
+        let loaded = self
+            .repo
+            .commits(&range.base, &range.head)
+            .and_then(|commits| {
+                let files = self.repo.changed_files(&range.base, &range.head)?;
+                let changes = changes_per_commit(&self.repo, &range, &commits)?;
+                Ok((commits, files, changes))
+            });
         let (commits, files, commit_changes) = match loaded {
             Ok(loaded) => loaded,
             Err(e) => {
