@@ -139,10 +139,8 @@ fn git_text(repo: &Path, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-fn prompt(request: &SummaryRequest, tree: &Path) -> String {
-    let range = format!("{}..{}", request.base, request.head);
-    let commits = git_text(&request.repo, &["log", "--format=%h %s", &range, "--"]);
-    let mut diff = git_text(&request.repo, &["diff", &request.base, &request.head, "--"]);
+/// `diff` cut to `DIFF_LIMIT` bytes, with a note when it was cut.
+fn capped(mut diff: String) -> String {
     if diff.len() > DIFF_LIMIT {
         let mut cut = DIFF_LIMIT;
         while !diff.is_char_boundary(cut) {
@@ -151,6 +149,16 @@ fn prompt(request: &SummaryRequest, tree: &Path) -> String {
         diff.truncate(cut);
         diff.push_str("\n[diff truncated: read the files in the tree]\n");
     }
+    diff
+}
+
+fn prompt(request: &SummaryRequest, tree: &Path) -> String {
+    let range = format!("{}..{}", request.base, request.head);
+    let commits = git_text(&request.repo, &["log", "--format=%h %s", &range, "--"]);
+    let diff = capped(git_text(
+        &request.repo,
+        &["diff", &request.base, &request.head, "--"],
+    ));
     let pull_request = request.pull_request.as_ref().map_or(String::new(), |pr| {
         format!(
             "Pull request #{}: {}\n\n{}\n\n",
@@ -174,17 +182,23 @@ fn prompt(request: &SummaryRequest, tree: &Path) -> String {
 }
 
 fn diagram_prompt(request: &DiagramRequest, tree: &Path) -> String {
-    let (path, what) = match &request.subject {
-        DiagramSubject::File { path } => (path, format!("the file {path}")),
+    let (paths, what) = match &request.subject {
+        DiagramSubject::File { path } => (vec![path.as_str()], format!("the file {path}")),
         DiagramSubject::Fragment { path, line } => (
-            path,
+            vec![path.as_str()],
             format!("the fragment of {path} around line {line} of its new version"),
         ),
+        DiagramSubject::Group { name, files } => (
+            files.iter().map(String::as_str).collect(),
+            format!(
+                "the group of files \"{name}\" ({}) taken together",
+                files.join(", ")
+            ),
+        ),
     };
-    let diff = git_text(
-        &request.repo,
-        &["diff", &request.base, &request.head, "--", path],
-    );
+    let mut args = vec!["diff", &request.base, &request.head, "--"];
+    args.extend(paths);
+    let diff = capped(git_text(&request.repo, &args));
     format!(
         "You are the Analyst of a code review tool. Draw {what} for a human who \
          is about to review it: a Mermaid sequence diagram if the point is an \
@@ -193,7 +207,7 @@ fn diagram_prompt(request: &DiagramRequest, tree: &Path) -> String {
          with Mermaid text only, in `mermaid`. The files at the head of the \
          change are in {tree}; you may read and search them, nothing else.\n\n\
          Language: {language}\n\n\
-         Diff of the file:\n{diff}",
+         Diff:\n{diff}",
         language = request.language,
         tree = tree.display(),
     )
