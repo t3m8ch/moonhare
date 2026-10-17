@@ -505,6 +505,7 @@ impl Session {
     /// prefix has been waiting long enough.
     /// Returns whether what is drawn may have changed.
     pub fn elapse(&mut self, elapsed: std::time::Duration) -> bool {
+        self.mouse_time(elapsed);
         let mut changed = false;
         if self.pending.is_some() {
             let before = self.pending_for;
@@ -518,6 +519,7 @@ impl Session {
     /// Time passing, for the watch on the branch only. The real loop calls it
     /// also between input events, so that typing never starves the watch.
     pub fn watch(&mut self, elapsed: std::time::Duration) -> bool {
+        self.mouse_time(elapsed);
         self.poll_reload(elapsed)
     }
 

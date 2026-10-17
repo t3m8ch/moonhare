@@ -29,8 +29,22 @@ pub(super) struct Press {
     half: Option<Side>,
 }
 
+/// A click, to tell double and triple clicks.
+#[derive(Debug, Clone, Copy)]
+struct Click {
+    at: (u16, u16),
+    time: std::time::Duration,
+    count: u8,
+}
+
+/// Clicks closer in time than this chain into a double or triple click.
+const MULTI_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
+
 #[derive(Default)]
 pub(super) struct Mouse {
+    /// Time since the session opened, as the events and ticks report it.
+    clock: std::time::Duration,
+    last_click: Option<Click>,
     press: Option<Press>,
     selection: Option<Selection>,
 }
@@ -51,6 +65,11 @@ impl Session {
                 let half = self.half_at(mouse.column);
                 let anchor = self.pos_at(item, mouse.column, half);
                 self.mouse.press = Some(Press { anchor, half });
+                match self.count_click(mouse.column, mouse.row) {
+                    2 => self.select_span(anchor, half, true),
+                    3 => self.select_span(anchor, half, false),
+                    _ => {}
+                }
                 true
             }
             MouseEventKind::Drag(MouseButton::Left) if self.mouse.press.is_some() => {
@@ -74,6 +93,49 @@ impl Session {
             }
             _ => false,
         }
+    }
+
+    /// Time passes: double clicks are told apart by it.
+    pub(super) fn mouse_time(&mut self, elapsed: std::time::Duration) {
+        self.mouse.clock += elapsed;
+    }
+
+    /// Register a click and say how many in a row it is: 1, 2 or 3.
+    fn count_click(&mut self, column: u16, row: u16) -> u8 {
+        let now = self.mouse.clock;
+        let count = match self.mouse.last_click {
+            Some(c) if c.at == (column, row) && now - c.time <= MULTI_CLICK => c.count % 3 + 1,
+            _ => 1,
+        };
+        self.mouse.last_click = Some(Click {
+            at: (column, row),
+            time: now,
+            count,
+        });
+        count
+    }
+
+    /// Select the word under `at`, or its whole line.
+    fn select_span(&mut self, at: Pos, half: Option<Side>, word: bool) {
+        let Some(line) = self.copy_line_at(at.item, half) else {
+            return;
+        };
+        let (from, to) = if word {
+            match word_span(&line.text, at.col) {
+                Some(span) => span,
+                None => return,
+            }
+        } else {
+            (0, usize::MAX / 2)
+        };
+        self.mouse.selection = Some(Selection {
+            anchor: Pos { col: from, ..at },
+            head: Pos {
+                col: to.saturating_sub(1),
+                ..at
+            },
+            half,
+        });
     }
 
     /// The view item drawn on screen row `row` of the diff.
@@ -158,42 +220,85 @@ impl Session {
         };
         let mut out = Vec::new();
         for item in from.item..=to.item {
-            let Some(&Item::Line(entry)) = self.view.items.get(item) else {
+            let Some(mut line) = self.copy_line_at(item, selection.half) else {
                 continue;
             };
             let start = if item == from.item { from.col } else { 0 };
             let end = if item == to.item { to.col + 1 } else { usize::MAX };
-            let (side, index, mark) = match selection.half {
-                None => {
-                    let line = self.inline[entry];
-                    match line.kind {
-                        InlineKind::Context => (Side::New, line.new.unwrap(), Mark::Context),
-                        InlineKind::Removed => (Side::Old, line.old.unwrap(), Mark::Removed),
-                        InlineKind::Added => (Side::New, line.new.unwrap(), Mark::Added),
-                    }
-                }
-                Some(side) => {
-                    let row = loaded.diff.rows[entry];
-                    let (mine, other) = match side {
-                        Side::Old => (row.old, row.new),
-                        Side::New => (row.new, row.old),
-                    };
-                    let Some(index) = mine else { continue };
-                    let mark = match (loaded.line_changed(side, index, other), side) {
-                        (false, _) => Mark::Context,
-                        (true, Side::Old) => Mark::Removed,
-                        (true, Side::New) => Mark::Added,
-                    };
-                    (side, index, mark)
-                }
-            };
-            out.push(CopyLine {
-                mark,
-                side,
-                line: index,
-                text: cut(&loaded.lines(side)[index], start, end),
-            });
+            line.text = cut(&line.text, start, end);
+            out.push(line);
         }
         out
     }
+
+    /// The whole line of `item` as a selection in `half` takes it.
+    fn copy_line_at(&self, item: usize, half: Option<Side>) -> Option<CopyLine> {
+        let Some(Ok(loaded)) = &self.loaded else {
+            return None;
+        };
+        let &Item::Line(entry) = self.view.items.get(item)? else {
+            return None;
+        };
+        let (side, index, mark) = match half {
+            None => {
+                let line = self.inline[entry];
+                match line.kind {
+                    InlineKind::Context => (Side::New, line.new?, Mark::Context),
+                    InlineKind::Removed => (Side::Old, line.old?, Mark::Removed),
+                    InlineKind::Added => (Side::New, line.new?, Mark::Added),
+                }
+            }
+            Some(side) => {
+                let row = loaded.diff.rows[entry];
+                let (mine, other) = match side {
+                    Side::Old => (row.old, row.new),
+                    Side::New => (row.new, row.old),
+                };
+                let index = mine?;
+                let mark = match (loaded.line_changed(side, index, other), side) {
+                    (false, _) => Mark::Context,
+                    (true, Side::Old) => Mark::Removed,
+                    (true, Side::New) => Mark::Added,
+                };
+                (side, index, mark)
+            }
+        };
+        Some(CopyLine {
+            mark,
+            side,
+            line: index,
+            text: loaded.lines(side)[index].clone(),
+        })
+    }
+}
+
+/// The cell columns `from..to` of the word at cell column `col` of `text`:
+/// a run of letters, digits and `_`, of blanks, or one other character.
+fn word_span(text: &str, col: usize) -> Option<(usize, usize)> {
+    let mut cells = Vec::new();
+    let mut cell = 0;
+    for c in text.chars() {
+        let width = if c == '\t' { TAB_WIDTH } else { 1 };
+        cells.push((c, cell, cell + width));
+        cell += width;
+    }
+    let at = cells.iter().position(|&(_, from, to)| from <= col && col < to)?;
+    let class = |c: char| match c {
+        c if c.is_alphanumeric() || c == '_' => 0,
+        c if c.is_whitespace() => 1,
+        _ => 2,
+    };
+    let kind = class(cells[at].0);
+    if kind == 2 {
+        return Some((cells[at].1, cells[at].2));
+    }
+    let mut first = at;
+    while first > 0 && class(cells[first - 1].0) == kind {
+        first -= 1;
+    }
+    let mut last = at;
+    while last + 1 < cells.len() && class(cells[last + 1].0) == kind {
+        last += 1;
+    }
+    Some((cells[first].1, cells[last].2))
 }

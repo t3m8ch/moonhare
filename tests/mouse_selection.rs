@@ -65,4 +65,24 @@ fn side_by_side_selection_stays_in_the_half_where_it_started() {
     h.drag((ox, oy), (150, ky));
     assert_eq!(h.copied(), vec!["old_call(1);\n    keep_me();".to_string()]);
 }
+
+#[test]
+fn a_double_click_selects_the_word_and_a_triple_click_the_line() {
+    let fx = changed_file();
+    let mut h = Harness::open(&fx, 100, 24);
+    let (x, y) = h.frame().find("new_call").unwrap();
+    h.click(x + 2, y).click(x + 2, y);
+    assert_eq!(h.copied(), vec!["new_call".to_string()]);
+    h.click(x + 2, y);
+    assert_eq!(h.copied(), vec!["    new_call(2);".to_string()]);
+}
+
+#[test]
+fn clicks_far_apart_in_time_are_not_a_double_click() {
+    let fx = changed_file();
+    let mut h = Harness::open(&fx, 100, 24);
+    let (x, y) = h.frame().find("new_call").unwrap();
+    h.click(x + 2, y).wait(1000).click(x + 2, y);
+    assert_eq!(h.copied(), Vec::<String>::new());
+}
 // END
