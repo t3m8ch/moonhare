@@ -131,11 +131,7 @@ fn prompt_show_is_the_command_form_of_the_overlay() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 160, 40);
     h.keys("Cifresh one<Esc><CR>:prompt show<CR>");
-    assert!(
-        h.screen().contains("You are the author"),
-        "{}",
-        h.screen()
-    );
+    assert!(h.screen().contains("You are the author"), "{}", h.screen());
     assert!(copied(&mut h).is_empty());
 }
 
@@ -221,7 +217,36 @@ fn commits_after_a_prompt_sit_under_a_round_header_in_the_list() {
         row_of(&screen, "Round 2, after Prompt #1"),
         row_of(&screen, "answer c"),
     );
-    assert!(r1 < a && a < change && change < r2 && r2 < answer, "{screen}");
+    assert!(
+        r1 < a && a < change && change < r2 && r2 < answer,
+        "{screen}"
+    );
+}
+
+#[test]
+fn clicks_and_motions_in_the_commit_list_skip_round_headers() {
+    let fx = feature_branch();
+    copy_one_prompt(&fx);
+    fx.write("src/c.rs", "fn c() {}\n").commit("answer c");
+
+    let mut h = Harness::open(&fx, 160, 30);
+    let screen = h.screen();
+    // A click on a commit row lands on that commit, not on its neighbour.
+    let row = row_of(&screen, "answer c") as u16;
+    h.click(6, row).keys("<CR>");
+    assert!(h.screen().contains("scope:4"), "{}", h.screen());
+    let row = row_of(&h.screen(), "add b") as u16;
+    h.click(6, row).keys("<CR>");
+    assert!(h.screen().contains("scope:2"), "{}", h.screen());
+
+    // A click on a header changes nothing; `j` goes commit to commit across it.
+    let row = row_of(&h.screen(), "Round 2") as u16;
+    h.click(6, row).keys("<CR>");
+    assert!(h.screen().contains("scope:2"), "{}", h.screen());
+    h.keys("<Esc>ajjj<CR>");
+    assert!(h.screen().contains("scope:3"), "{}", h.screen());
+    h.keys("j<CR>");
+    assert!(h.screen().contains("scope:4"), "{}", h.screen());
 }
 
 #[test]
@@ -257,6 +282,107 @@ fn the_status_line_names_the_current_round() {
     // The Prompt closed Round 1, even though no commit answered it yet.
     h.keys("<Esc>");
     assert!(h.screen().contains("round:2"), "{}", h.screen());
+}
+
+#[test]
+fn control_characters_of_the_code_never_reach_the_clipboard_or_the_terminal() {
+    let fx = feature_branch();
+    fx.write("danger.txt", "a\x1b[31mb\x07c\x08d\re\u{202e}f\ng\n")
+        .commit("add danger");
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("]fcibad<Esc><CR>Y");
+    let raw = h.session().take_terminal_output();
+    assert_eq!(raw.len(), 1);
+    // Only the OSC 52 frame and base64 are on the wire.
+    let body = raw[0]
+        .strip_prefix("\x1b]52;c;")
+        .and_then(|s| s.strip_suffix('\x07'))
+        .expect("framed");
+    assert!(
+        body.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"+/=".contains(&b)),
+        "{body:?}"
+    );
+    let prompt = unbase64(body);
+    assert!(prompt.contains("bad"), "{prompt}");
+    assert!(
+        prompt.contains("[31mb"),
+        "the printable rest stays: {prompt}"
+    );
+    for c in prompt.chars() {
+        assert!(
+            c == '\n' || c == '\t' || !c.is_control(),
+            "control character {c:?} in:\n{prompt}"
+        );
+    }
+    assert!(!prompt.contains('\u{202e}'), "{prompt}");
+}
+
+#[test]
+fn a_prompt_too_big_for_osc_52_is_not_sent_and_stays_open_for_prompt_save() {
+    let fx = feature_branch();
+    fx.write("big.txt", &format!("{}\n", "x".repeat(100_000)))
+        .commit("add big");
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("]fcibig<Esc><CR>Y");
+    assert!(copied(&mut h).is_empty());
+    let screen = h.screen();
+    assert!(screen.contains("too big"), "{screen}");
+    assert!(screen.contains(":prompt save"), "{screen}");
+    // Nothing was handed over: the Comment is open and no Round closed.
+    assert!(screen.contains("Comment · open"), "{screen}");
+    assert!(!screen.contains("Round"), "{screen}");
+
+    // The file has no such limit.
+    let out = tempfile::tempdir().unwrap();
+    let path = out.path().join("big.md");
+    h.keys(&format!(":prompt save {}<CR>", path.display()));
+    assert!(std::fs::read_to_string(&path).unwrap().len() > 100_000);
+    assert!(h.screen().contains("Comment · sent"), "{}", h.screen());
+}
+
+#[test]
+fn the_base64_payload_is_padded_to_whole_groups_for_any_text_length() {
+    for note in ["a", "bb", "ccc", "dddd", "é", "日本"] {
+        let fx = feature_branch();
+        let mut h = Harness::open(&fx, 160, 30);
+        h.keys(&format!("Ci{note}<Esc><CR>Y"));
+        let raw = h.session().take_terminal_output().remove(0);
+        let body = raw.strip_prefix("\x1b]52;c;").unwrap();
+        let body = body.strip_suffix('\x07').unwrap();
+        assert_eq!(body.len() % 4, 0, "{note}: {body}");
+        assert!(unbase64(body).contains(note), "{note}");
+    }
+}
+
+#[test]
+fn which_key_and_help_list_the_prompt_keys() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 60);
+    h.keys("<Space>p").wait(350);
+    let screen = h.screen();
+    assert!(screen.contains("which-key: Space p"), "{screen}");
+    for label in [
+        "всех открытых",
+        "комментариев файла",
+        "под курсором",
+        "оверлее",
+    ] {
+        assert!(screen.contains(label), "{label}:\n{screen}");
+    }
+    h.keys("<Esc>?");
+    let help = h.screen();
+    for key in [
+        "Space p p",
+        "Space p f",
+        "Space p c",
+        "Space p s",
+        "Y ",
+        ":prompt save",
+    ] {
+        assert!(help.contains(key), "{key}:\n{help}");
+    }
+    assert!(help.contains(":prompt show"), "{help}");
 }
 
 #[test]

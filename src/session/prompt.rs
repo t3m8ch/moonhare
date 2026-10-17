@@ -14,10 +14,12 @@ enum Delivery {
 impl Session {
     /// The `Space p` keys; returns whether the key was one of them.
     pub(super) fn prompt_key(&mut self, key: KeyEvent) -> bool {
-        if let Some((_, offset)) = &mut self.prompt_view {
+        if let Some((text, offset)) = &mut self.prompt_view {
             match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => self.prompt_view = None,
-                KeyCode::Char('j') | KeyCode::Down => *offset += 1,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    *offset = (*offset + 1).min(text.lines().count().saturating_sub(1))
+                }
                 KeyCode::Char('k') | KeyCode::Up => *offset = offset.saturating_sub(1),
                 _ => {}
             }
@@ -160,6 +162,20 @@ impl Session {
                 return;
             }
         }
+        let sequence = match &how {
+            Delivery::Clipboard => match crate::clipboard::osc52(&text) {
+                Some(sequence) => Some(sequence),
+                None => {
+                    self.message = Some(format!(
+                        "Prompt is too big for the clipboard ({} KB, at most {}): use :prompt save",
+                        text.len() / 1000,
+                        crate::clipboard::MAX_TEXT / 1000
+                    ));
+                    return;
+                }
+            },
+            Delivery::File(_) => None,
+        };
         // Copying closes the Round: remember where the Range stood.
         let number = match self.prompts.record(&self.range.head, self.commits.len()) {
             Ok(number) => number,
@@ -170,7 +186,7 @@ impl Session {
         };
         let done = match how {
             Delivery::Clipboard => {
-                self.terminal_out.push(crate::clipboard::osc52(&text));
+                self.terminal_out.extend(sequence);
                 format!("Prompt #{number} copied: {} Comments", ids.len())
             }
             Delivery::File(path) => format!(
@@ -205,7 +221,7 @@ impl Session {
         let comments: Vec<_> = (self.comments.all().iter())
             .filter(|c| ids.contains(&c.id))
             .collect();
-        build(
+        let text = build(
             &Preamble {
                 number: self.prompts.next_number(),
                 branch: &self.range.head_name,
@@ -214,6 +230,7 @@ impl Session {
                 commits: self.commits.len(),
             },
             &comments,
-        )
+        );
+        crate::clipboard::sanitize(&text)
     }
 }

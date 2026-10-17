@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, Write};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
@@ -118,6 +118,15 @@ fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Re
             None => session.handle(event::read()?),
         }
         session.tick();
+        // Clipboard copies (OSC 52) go straight to the terminal.
+        let sequences = session.take_terminal_output();
+        if !sequences.is_empty() {
+            let mut out = io::stdout();
+            for sequence in sequences {
+                out.write_all(sequence.as_bytes())?;
+            }
+            out.flush()?;
+        }
     }
     Ok(())
 }

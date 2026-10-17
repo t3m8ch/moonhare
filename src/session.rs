@@ -21,8 +21,8 @@ use crate::forge::{Forge, PullRequest};
 use crate::git::{ChangedFile, Commit, GitError, Range, Repo, Status, Target};
 use crate::review::{self, FileChange, Mark, Review};
 use crate::special;
-use rounds::HEADER;
 use crate::viewport::Viewport;
+use rounds::HEADER;
 
 /// Below this size the session shows a "terminal too small" screen.
 pub const MIN_SIZE: (u16, u16) = (60, 15);
