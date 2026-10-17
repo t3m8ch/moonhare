@@ -104,6 +104,16 @@ fn which_key_and_help_list_the_analyst_summary() {
 }
 
 #[test]
+fn which_key_and_help_list_the_groups_toggle() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 100, 60);
+    h.keys("<Space>").wait(350);
+    assert!(h.screen().contains("группы / дерево"), "{}", h.screen());
+    h.keys("<Esc>?");
+    assert!(h.screen().contains("Space g"), "{}", h.screen());
+}
+
+#[test]
 fn which_key_and_help_list_the_analyst_explanations() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 100, 60);

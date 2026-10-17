@@ -82,7 +82,7 @@ impl Session {
             return true;
         };
         let path = file.path.clone();
-        let subject = match (here, self.cursor_line()) {
+        let subject = match (here, self.new_cursor_line()) {
             (true, Some(line)) => DiagramSubject::Fragment { path, line },
             _ => DiagramSubject::File { path },
         };
@@ -116,7 +116,7 @@ impl Session {
 
     /// The line of the new version of the file under the cursor (1-based);
     /// for a removed line, the nearest line that exists in the new one.
-    fn cursor_line(&self) -> Option<usize> {
+    fn new_cursor_line(&self) -> Option<usize> {
         let items = &self.view.items;
         (self.vp.cursor..items.len())
             .chain((0..self.vp.cursor).rev())

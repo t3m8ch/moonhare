@@ -94,6 +94,11 @@ A note the Reviewer writes, anchored to lines of code in a diff, to a whole file
 _Russian_: комментарий (состояния: открыт, отправлен, закрыт)
 _Avoid_: review comment (that is GitHub's), note
 
+**Anchor**:
+What a line Comment remembers of its code (the lines, their surroundings and whether they were unique) so it can be found again when lines move. A Comment whose Anchor no longer matches is hidden, not lost.
+_Russian_: привязка
+_Avoid_: position, line number
+
 **Prompt**:
 Text assembled from one or more Comments and copied to the clipboard to hand to the Author agent. Copying code, with or without its Comments, is not a Prompt.
 _Russian_: промпт

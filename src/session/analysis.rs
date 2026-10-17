@@ -60,9 +60,10 @@ impl Session {
     /// Hand the session an Analyst; it starts building the Summary at once,
     /// in the background, while the Reviewer reads the diff.
     pub fn set_analyst(&mut self, analyst: Arc<dyn Analyst>) {
-        self.analysis.analyst = Some(analyst);
+        self.analysis.analyst = Some(analyst.clone());
         self.analysis.head = self.range.head.clone();
         self.request_summary(false);
+        self.start_grouping(analyst);
     }
 
     /// Set the language of the Summary: a code such as `ru` or `en`. The
@@ -70,6 +71,8 @@ impl Session {
     pub fn set_language(&mut self, language: &str) {
         self.analysis.language = language.to_string();
         self.request_summary(false);
+        self.request_grouping(false);
+        self.refilter();
     }
 
     /// Where the head of the Range is now: new commits move it.
@@ -86,6 +89,7 @@ impl Session {
             (Some("analyze"), None, _) => {
                 self.refresh_head();
                 self.request_summary(true);
+                self.request_grouping(true);
             }
             (Some("lang"), None, _) => {
                 self.message = Some(format!("Summary language: {}", self.analysis.language));
@@ -160,6 +164,7 @@ impl Session {
         while let Ok(answer) = self.analysis.receiver.try_recv() {
             self.take_answer(answer);
         }
+        self.collect_groupings();
         self.take_explanations();
     }
 
@@ -177,6 +182,7 @@ impl Session {
                 Err(_) => break,
             }
         }
+        self.wait_for_groupings();
         self.wait_for_explanations();
     }
 
@@ -238,7 +244,7 @@ impl Session {
         )
     }
 
-    fn current_key(&self) -> Key {
+    pub(super) fn current_key(&self) -> Key {
         (self.analysis.head.clone(), self.analysis.language.clone())
     }
 

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 
 use crate::analyst::{
     Analyst, AnalystError, Diagram, DiagramRequest, DiagramSubject, ExplainRequest, ExplainTarget,
-    Explanation, Summary, SummaryRequest,
+    Explanation, Group, GroupRequest, Grouping, Summary, SummaryRequest,
 };
 
 /// The shape the answer must have; `claude` validates it.
@@ -15,6 +15,12 @@ const SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"string
 
 /// The shape of the answer to a request for a diagram.
 const DIAGRAM_SCHEMA: &str = r#"{"type":"object","properties":{"mermaid":{"type":"string"}},"required":["mermaid"],"additionalProperties":false}"#;
+
+/// Asks for the whole structured answer instead of one field of it.
+const WHOLE_ANSWER: &str = "";
+
+/// The shape of the Groups; `claude` validates it.
+const GROUPS_SCHEMA: &str = r#"{"type":"object","properties":{"groups":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"mechanical":{"type":"boolean"},"files":{"type":"array","items":{"type":"string"}}},"required":["name","description","mechanical","files"],"additionalProperties":false}}},"required":["groups"],"additionalProperties":false}"#;
 
 /// The shape of an explanation.
 const EXPLAIN_SCHEMA: &str = r#"{"type":"object","properties":{"explanation":{"type":"string"}},"required":["explanation"],"additionalProperties":false}"#;
@@ -193,6 +199,54 @@ fn diagram_prompt(request: &DiagramRequest, tree: &Path) -> String {
     )
 }
 
+fn groups_prompt(request: &GroupRequest, tree: &Path) -> String {
+    let files: String = request.files.iter().map(|f| format!("- {f}\n")).collect();
+    let range = format!("{}..{}", request.base, request.head);
+    let commits = git_text(&request.repo, &["log", "--format=%h %s", &range, "--"]);
+    let pull_request = request.pull_request.as_ref().map_or(String::new(), |pr| {
+        format!(
+            "Pull request #{}: {}\n\n{}\n\n",
+            pr.number, pr.title, pr.body
+        )
+    });
+    format!(
+        "You are the Analyst of a code review tool. Split the files the change \
+         below touches into groups that belong together logically, for a human who is \
+         about to review it. Every file listed must be in exactly one group. Give each \
+         group a short name and a one-line description, mark it mechanical when its changes \
+         need no close reading (generated files, lockfiles, bulk renames), and list the \
+         groups in the order the human should read them. The files at the head of the \
+         change are in {tree}; you may read and search them, nothing else.\n\n\
+         Language: {language}\n\n\
+         {pull_request}\
+         Files:\n{files}\n\
+         Commits:\n{commits}",
+        language = request.language,
+        tree = tree.display(),
+    )
+}
+
+fn parse_groups(answer: &serde_json::Value) -> Option<Grouping> {
+    let text = |g: &serde_json::Value, field: &str| Some(g[field].as_str()?.to_string());
+    let groups = answer
+        .as_array()?
+        .iter()
+        .map(|g| {
+            Some(Group {
+                name: text(g, "name")?,
+                description: text(g, "description")?,
+                mechanical: g["mechanical"].as_bool()?,
+                files: g["files"]
+                    .as_array()?
+                    .iter()
+                    .map(|f| f.as_str().map(String::from))
+                    .collect::<Option<_>>()?,
+            })
+        })
+        .collect::<Option<_>>()?;
+    Some(Grouping { groups })
+}
+
 fn explain_prompt(request: &ExplainRequest, tree: &Path) -> String {
     let (what, path, hunk) = match &request.target {
         ExplainTarget::Hunk { path, text } => ("this hunk", path, format!("Hunk:\n{text}\n")),
@@ -298,12 +352,13 @@ fn run_with_timeout(
 
 const NOT_LOGGED_IN: &str = "claude is not logged in: run `claude /login`, then :analyze";
 
-/// What `claude -p --output-format json` printed: the structured answer, or an
-/// error.
+/// What `claude -p --output-format json` printed: the text of the `field` of
+/// the structured answer, or an error.
 fn interpret(
     stdout: &[u8],
     stderr: &[u8],
     success: bool,
+    field: &str,
 ) -> Result<serde_json::Value, AnalystError> {
     let reply: Option<serde_json::Value> = serde_json::from_slice(stdout).ok();
     let said = reply
@@ -323,27 +378,25 @@ fn interpret(
         );
     }
     reply
-        .and_then(|r| r.get("structured_output").cloned())
-        .ok_or_else(|| AnalystError::Failed("claude gave an answer without structure".into()))
-}
-
-/// The text of a field of the structured answer.
-fn field(answer: &serde_json::Value, name: &str) -> Result<String, AnalystError> {
-    answer[name]
-        .as_str()
-        .map(str::to_string)
-        .ok_or_else(|| AnalystError::Failed(format!("claude gave an answer without a {name}")))
+        .as_ref()
+        .map(|r| match field {
+            WHOLE_ANSWER => r["structured_output"].clone(),
+            field => r["structured_output"][field].clone(),
+        })
+        .filter(|v| !v.is_null())
+        .ok_or_else(|| AnalystError::Failed(format!("claude gave an answer without a {field}")))
 }
 
 impl ClaudeAnalyst {
     /// Run `claude -p` over the Range with the read-only worktree at `head`,
-    /// and return its structured answer.
+    /// and return the `field` of its structured answer.
     fn ask(
         &self,
         repo: &Path,
         base: &str,
         head: &str,
         schema: &str,
+        field: &str,
         prompt: impl FnOnce(&Path) -> String,
     ) -> Result<serde_json::Value, AnalystError> {
         // `--` cannot end the options in front of a revision, so refuse
@@ -398,36 +451,47 @@ impl ClaudeAnalyst {
                 }
             })?;
         let out = run_with_timeout(child, prompt(&worktree.path).into_bytes(), self.timeout)?;
-        interpret(&out.stdout, &out.stderr, out.status.success())
+        interpret(&out.stdout, &out.stderr, out.status.success(), field)
     }
+}
+
+/// The answer's `field` as text.
+fn as_text(answer: serde_json::Value, field: &str) -> Result<String, AnalystError> {
+    answer
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| AnalystError::Failed(format!("claude gave an answer without a {field}")))
 }
 
 impl Analyst for ClaudeAnalyst {
     fn summarize(&self, request: &SummaryRequest) -> Result<Summary, AnalystError> {
-        let answer = self.ask(
+        self.ask(
             &request.repo,
             &request.base,
             &request.head,
             SCHEMA,
+            WHOLE_ANSWER,
             |tree| prompt(request, tree),
-        )?;
-        Ok(Summary {
-            text: field(&answer, "summary")?,
-            diagram: field(&answer, "diagram").ok(),
+        )
+        .and_then(|answer| {
+            Ok(Summary {
+                text: as_text(answer["summary"].clone(), "summary")?,
+                diagram: answer["diagram"].as_str().map(str::to_string),
+            })
         })
     }
 
     fn diagram(&self, request: &DiagramRequest) -> Result<Diagram, AnalystError> {
-        let answer = self.ask(
+        self.ask(
             &request.repo,
             &request.base,
             &request.head,
             DIAGRAM_SCHEMA,
+            "mermaid",
             |tree| diagram_prompt(request, tree),
-        )?;
-        Ok(Diagram {
-            mermaid: field(&answer, "mermaid")?,
-        })
+        )
+        .and_then(|a| as_text(a, "mermaid"))
+        .map(|mermaid| Diagram { mermaid })
     }
 
     fn explain(&self, request: &ExplainRequest) -> Result<Explanation, AnalystError> {
@@ -436,9 +500,23 @@ impl Analyst for ClaudeAnalyst {
             &request.base,
             &request.head,
             EXPLAIN_SCHEMA,
+            "explanation",
             |tree| explain_prompt(request, tree),
         )
-        .and_then(|answer| field(&answer, "explanation"))
+        .and_then(|a| as_text(a, "explanation"))
         .map(|text| Explanation { text })
+    }
+
+    fn group(&self, request: &GroupRequest) -> Result<Grouping, AnalystError> {
+        let answer = self.ask(
+            &request.repo,
+            &request.base,
+            &request.head,
+            GROUPS_SCHEMA,
+            "groups",
+            |tree| groups_prompt(request, tree),
+        )?;
+        parse_groups(&answer)
+            .ok_or_else(|| AnalystError::Failed("claude gave an answer without groups".into()))
     }
 }

@@ -64,7 +64,7 @@ impl Session {
     pub(super) fn reset_review(&mut self) {
         let reset = self.review.reset(&self.repo);
         match reset {
-            Ok(()) => self.message = Some("Review reset".into()),
+            Ok(()) => self.message = Some("Review reset (Comments kept)".into()),
             Err(e) => self.message = Some(e),
         }
     }
