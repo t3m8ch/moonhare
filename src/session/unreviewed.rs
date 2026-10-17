@@ -62,21 +62,10 @@ impl Session {
 
     /// With the filter on: the version of `path` the Reviewer has reviewed up
     /// to, which is where the delta starts. `None` when there is none.
-    fn last_seen(&self, path: &str) -> Option<String> {
+    pub(super) fn last_seen(&self, path: &str) -> Option<String> {
         if !self.unreviewed_only {
             return None;
         }
         self.review.seen_blob(&self.changes_of(path, self.scope))
-    }
-
-    /// The content from which only the delta of `path` is shown, or `None`
-    /// to show the whole Scope's diff.
-    pub(super) fn delta_baseline(&self, path: &str) -> Option<Result<Option<Vec<u8>>, String>> {
-        let seen = self.last_seen(path)?;
-        Some(if seen == review::NULL_BLOB {
-            Ok(None)
-        } else {
-            self.repo.blob(&seen).map(Some).map_err(|e| e.to_string())
-        })
     }
 }

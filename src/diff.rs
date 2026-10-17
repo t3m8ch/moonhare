@@ -6,6 +6,17 @@
 
 pub use difftastic::{Fallback as FallbackReason, Highlight, Limits, Token};
 
+/// The limits the session diffs with. difftastic's own graph limit (3M nodes)
+/// is reached only after several seconds on a few KB of heavily edited code
+/// (the search slows down as it grows); past this smaller one the line-based
+/// fallback comes within about a second.
+pub fn session_limits() -> Limits {
+    Limits {
+        graph_limit: 1_000_000,
+        ..Limits::default()
+    }
+}
+
 /// Which version of the file a token or fragment belongs to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {

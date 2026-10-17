@@ -83,6 +83,8 @@ fn main() -> ExitCode {
         let _ = execute!(io::stdout(), DisableMouseCapture);
         hook(info);
     }));
+    // The diff workers catch their panics; the hooks above must not see them.
+    moonhare::session::silence_worker_panics();
     let _ = execute!(io::stdout(), EnableMouseCapture);
     let result = run(&mut terminal, &mut session);
     let _ = execute!(io::stdout(), DisableMouseCapture);
@@ -113,6 +115,8 @@ fn take_flag_value(args: &mut Vec<String>, flag: &str) -> Result<Option<String>,
 
 /// How often to look for the Analyst's answers while it works.
 const ANALYST_POLL: Duration = Duration::from_millis(200);
+/// How often to look for a diff the selected file waits for.
+const DIFF_POLL: Duration = Duration::from_millis(40);
 
 fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Result<()> {
     let mut redraw = true;
@@ -134,6 +138,11 @@ fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Re
             (None, false) => poll,
         }
         .min(poll);
+        let wake = if session.diff_pending() {
+            wake.min(DIFF_POLL)
+        } else {
+            wake
+        };
         redraw = if event::poll(wake)? {
             session.handle(event::read()?);
             // Typing must not starve the watch on the branch: the time spent
@@ -144,9 +153,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Re
             session.elapse(wake.max(last.elapsed()))
         };
         last = Instant::now();
-        let busy = session.analyst_busy();
+        let busy = session.analyst_busy() || session.diff_pending();
         session.tick();
-        redraw |= busy || session.analyst_busy();
+        redraw |= busy || session.analyst_busy() || session.diff_pending();
         // `:set nomouse` hands the mouse back to the terminal.
         if session.mouse_enabled() != captured {
             captured = session.mouse_enabled();

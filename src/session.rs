@@ -7,6 +7,7 @@
 
 use std::fmt;
 use std::path::Path;
+use std::sync::Arc;
 
 use ratatui::buffer::Buffer;
 use ratatui::crossterm::event::{
@@ -15,7 +16,7 @@ use ratatui::crossterm::event::{
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::diff::{diff_file, FileDiff, FileKind, Highlight, Limits, Side, Token};
+use crate::diff::{FileDiff, FileKind, Highlight, Side, Token};
 use crate::fold::{fold, Folded, Item};
 use crate::forge::{Forge, PullRequest};
 use crate::git::{ChangedFile, Commit, GitError, Range, Repo, Status, Target};
@@ -23,6 +24,7 @@ use crate::review::{self, FileChange, Mark, Review};
 use crate::special;
 use crate::viewport::Viewport;
 use diagram::clear_area;
+pub use diffs::{silence_worker_panics, DiffEngine};
 use rounds::HEADER;
 
 /// Below this size the session shows a "terminal too small" screen.
@@ -216,6 +218,7 @@ mod analysis;
 mod comments;
 mod copy;
 mod diagram;
+mod diffs;
 mod explain;
 mod file_bar;
 mod file_picker;
@@ -283,7 +286,9 @@ pub struct Session {
     /// Scope ends and Comments revision they were worked out for.
     hidden_cache: std::cell::RefCell<Option<HiddenCache>>,
     selected: usize,
-    loaded: Option<Result<Loaded, String>>,
+    loaded: Option<Result<Arc<Loaded>, String>>,
+    /// Diffs computed in the background, and the ones kept.
+    diffs: diffs::Diffs,
     vp: Viewport,
     hscroll: usize,
     /// Digits typed so far: the count of the next command.
@@ -449,6 +454,7 @@ impl Session {
             format!("⚠ {merges} merge commit(s) in range, compared against the first parent")
         });
         let review_dir = review.dir().to_path_buf();
+        let diffs = diffs::Diffs::new(&repo);
         let mut session = Session {
             repo,
             range,
@@ -505,6 +511,7 @@ impl Session {
             prompts: crate::rounds::Prompts::open(&review_dir),
             mouse: mouse::Mouse::default(),
             sidebar_scroll: None,
+            diffs,
         };
         session.load_selected();
         session.sync_view();
@@ -687,41 +694,94 @@ impl Session {
         }
     }
 
-    fn load_selected(&mut self) {
+    /// Where the two sides of the diff of file `index` come from.
+    fn diff_key(&self, index: usize) -> Option<diffs::Key> {
+        use diffs::{Key, Source};
+        let f = self.files.get(index)?;
         let (scope_base, scope_head) = self.scope_ends();
+        let old = match self.last_seen(&f.path) {
+            Some(seen) if seen == review::NULL_BLOB => Source::Absent,
+            Some(seen) => Source::Blob(seen),
+            None => match f.status {
+                Status::Added => Source::Absent,
+                _ => Source::Rev(scope_base, f.base_path().to_string()),
+            },
+        };
+        let new = match f.status {
+            Status::Deleted => Source::Absent,
+            _ => Source::Rev(scope_head, f.path.clone()),
+        };
+        Some(Key {
+            path: f.path.clone(),
+            old,
+            new,
+        })
+    }
+
+    /// Show the diff of the selected file: at once when it is at hand,
+    /// otherwise when a worker has it. The neighbours are warmed up too.
+    fn load_selected(&mut self) {
         self.vp = Viewport::default();
         self.hscroll = 0;
         self.view = Folded::default();
         self.dirty = true;
         self.mechanical_open = false;
-        self.loaded = self.files.get(self.selected).map(|f| {
-            let blob = |rev: &str, path: &str| {
-                self.repo
-                    .file_at(rev, path)
-                    .map(Some)
-                    .map_err(|e| e.to_string())
-            };
-            let old = match self.delta_baseline(&f.path) {
-                Some(reviewed) => reviewed,
-                None => match f.status {
-                    Status::Added => Ok(None),
-                    _ => blob(&scope_base, f.base_path()),
-                },
-            };
-            let new = match f.status {
-                Status::Deleted => Ok(None),
-                _ => blob(&scope_head, &f.path),
-            };
-            match (old, new) {
-                (Ok(old), Ok(new)) => Ok(Loaded::new(diff_file(
-                    &f.path,
-                    old.as_deref(),
-                    new.as_deref(),
-                    Limits::default(),
-                ))),
-                (Err(e), _) | (_, Err(e)) => Err(e),
-            }
-        });
+        self.loaded = None;
+        self.diffs.drain();
+        let wanted: Vec<diffs::Key> = [
+            Some(self.selected),
+            self.selected.checked_add(1),
+            self.selected.checked_sub(1),
+        ]
+        .into_iter()
+        .flatten()
+        .filter_map(|i| self.diff_key(i))
+        .collect();
+        self.loaded = wanted.first().and_then(|key| self.diffs.get(key));
+        self.diffs.want(wanted);
+    }
+
+    /// Whether the selected file waits for its diff.
+    pub fn diff_pending(&self) -> bool {
+        self.loaded.is_none() && self.selected < self.files.len()
+    }
+
+    /// Take in the diffs that finished; whether the screen changed.
+    fn take_diffs(&mut self) -> bool {
+        self.diffs.drain();
+        if !self.diff_pending() {
+            return false;
+        }
+        let Some(done) = self
+            .diff_key(self.selected)
+            .and_then(|k| self.diffs.get(&k))
+        else {
+            return false;
+        };
+        self.loaded = Some(done);
+        self.dirty = true;
+        self.sync_view();
+        self.reveal_with_comments();
+        true
+    }
+
+    /// Block until the selected file has its diff.
+    pub fn wait_for_diff(&mut self) {
+        if !self.diff_pending() {
+            return;
+        }
+        if let Some(key) = self.diff_key(self.selected) {
+            self.diffs.wait(&key);
+        }
+        self.take_diffs();
+    }
+
+    /// Compute diffs with `engine` instead of the real one (for tests that
+    /// need a slow or scripted diff).
+    pub fn set_diff_engine(&mut self, engine: DiffEngine) {
+        self.diffs.set_engine(engine);
+        self.load_selected();
+        self.sync_view();
     }
 
     /// Make `scope` the displayed Scope and reload the file list and diff.
@@ -1521,7 +1581,17 @@ impl Session {
             );
             return;
         };
-        let Some(loaded) = &self.loaded else { return };
+        let Some(loaded) = &self.loaded else {
+            let text = format!("{} Computing diff…", analysis::spinner(self.clock()));
+            buf.set_stringn(
+                area.x + 1,
+                area.y + 1,
+                &text,
+                w.saturating_sub(1),
+                Style::new().fg(DIM),
+            );
+            return;
+        };
         let loaded = match loaded {
             Ok(l) => l,
             Err(e) => {

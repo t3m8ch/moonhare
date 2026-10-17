@@ -105,6 +105,7 @@ impl Target {
     }
 }
 
+#[derive(Clone)]
 pub struct Repo {
     root: PathBuf,
 }
