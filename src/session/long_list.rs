@@ -35,6 +35,8 @@ impl Session {
         }
         match key.code {
             KeyCode::Char('/') if !ctrl => self.mode = Mode::Search(String::new()),
+            KeyCode::Char('n') if !ctrl => self.jump_to_match(true),
+            KeyCode::Char('N') if !ctrl => self.jump_to_match(false),
             KeyCode::Char('d') if ctrl => self.step_list(self.list_step() as isize),
             KeyCode::Char('u') if ctrl => self.step_list(-(self.list_step() as isize)),
             _ => return false,
@@ -68,10 +70,22 @@ impl Session {
     }
 
     /// Whether commit `index` answers the search `query` (lower case): by its
-    /// number, or by its sha or its subject.
+    /// number, by the start of its sha, or by its subject. A query that is a
+    /// number of the Range names that commit, not the shas that start with
+    /// those digits.
     fn commit_matches(&self, index: usize, query: &str) -> bool {
         let commit = &self.commits[index];
-        (index + 1).to_string() == query || commit.sha.starts_with(query)
+        let number = query
+            .parse::<usize>()
+            .ok()
+            .filter(|n| (1..=self.commits.len()).contains(n));
+        match number {
+            Some(n) if n == index + 1 => return true,
+            Some(_) => {}
+            None if commit.sha.starts_with(query) => return true,
+            None => {}
+        }
+        commit.subject.to_lowercase().contains(query)
     }
 
     /// Move the cursor to the next (or previous) commit that answers the last

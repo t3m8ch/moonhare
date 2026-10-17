@@ -189,3 +189,43 @@ fn slash_finds_a_commit_by_its_sha() {
     // feature~45 is the 55th of the 100 commits.
     assert_eq!(title(&h.screen()), "Commits 55/100");
 }
+
+#[test]
+fn slash_finds_text_and_n_with_capital_n_walk_the_matches_around_the_list() {
+    let fx = Fixture::new();
+    fx.write("README.md", "# demo\n").commit("initial");
+    fx.branch("feature");
+    add_commits(&fx, 1, 100, |n| match n {
+        37 | 80 => format!("Frobnicate the widget {n}"),
+        _ => format!("step {n}"),
+    });
+    let mut h = Harness::open(&fx, 160, 60);
+    h.keys("<Tab>/frobnicate<CR>");
+    assert_eq!(title(&h.screen()), "Commits 37/100");
+    h.keys("n");
+    assert_eq!(title(&h.screen()), "Commits 80/100");
+    h.keys("n");
+    assert_eq!(title(&h.screen()), "Commits 37/100", "wraps to the first");
+    h.keys("N");
+    assert_eq!(title(&h.screen()), "Commits 80/100", "wraps to the last");
+    h.keys("N");
+    assert_eq!(title(&h.screen()), "Commits 37/100");
+
+    // An empty pattern repeats the last one; a miss says so and stays put.
+    h.keys("/<CR>");
+    assert_eq!(title(&h.screen()), "Commits 80/100");
+    h.keys("/zzz<CR>");
+    assert_eq!(title(&h.screen()), "Commits 80/100");
+    assert!(h.screen().contains("No match: zzz"), "{}", h.screen());
+    // Esc leaves the search line without moving.
+    h.keys("/step<Esc>");
+    assert_eq!(title(&h.screen()), "Commits 80/100");
+}
+
+#[test]
+fn n_and_slash_in_the_diff_do_not_touch_the_commit_list() {
+    let fx = long_branch(100);
+    let mut h = Harness::open(&fx, 160, 60);
+    h.keys("/step<CR>n");
+    assert_eq!(title(&h.screen()), "Commits 100");
+}
