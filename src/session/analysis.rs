@@ -10,6 +10,7 @@ use super::*;
 use crate::analyst::{
     Analyst, AnalystError, AnalystSettings, Summary, SummaryRequest, EFFORT_LEVELS,
 };
+use crate::analyst_cache::AnalystCache;
 
 /// What a Summary is cached under: the head of the Range and the language.
 type Key = (String, String);
@@ -30,6 +31,8 @@ pub(super) struct Analysis {
     /// branch gets new commits.
     pub(super) head_rev: String,
     pending: HashSet<Key>,
+    /// Keys whose Summary was read from the disk cache, not asked for.
+    from_cache: HashSet<Key>,
     /// Why the last request for a key failed.
     errors: HashMap<Key, String>,
     sender: Sender<Answer>,
@@ -50,6 +53,7 @@ impl Default for Analysis {
             built: Vec::new(),
             head_rev: "HEAD".to_string(),
             pending: HashSet::new(),
+            from_cache: HashSet::new(),
             errors: HashMap::new(),
             sender,
             receiver,
@@ -202,6 +206,16 @@ impl Session {
             return;
         }
         self.analysis.errors.remove(&key);
+        let cache = self.analyst_cache.clone();
+        let cache_key = self.summary_cache_key(&key);
+        if !force {
+            if let Some(summary) = cache.load_summary(&cache_key) {
+                self.analysis.pending.remove(&key);
+                self.analysis.from_cache.insert(key.clone());
+                self.keep_summary(key, summary);
+                return;
+            }
+        }
         let request = SummaryRequest {
             repo: self.repo.root().to_path_buf(),
             base: self.range.base.clone(),
@@ -213,6 +227,9 @@ impl Session {
         let sender = self.analysis.sender.clone();
         std::thread::spawn(move || {
             let answer = analyst.summarize(&request);
+            if let Ok(summary) = &answer {
+                cache.store_summary(&cache_key, summary);
+            }
             let _ = sender.send((key, answer));
         });
     }
@@ -221,18 +238,35 @@ impl Session {
         self.analysis.pending.remove(&key);
         match answer {
             Ok(summary) => {
-                self.analysis.errors.remove(&key);
-                self.analysis.built.retain(|k| *k != key);
-                self.analysis.built.push(key.clone());
-                if let Some(mermaid) = &summary.diagram {
-                    self.remember_drawing(mermaid);
-                }
-                self.analysis.cache.insert(key, summary);
+                self.analysis.from_cache.remove(&key);
+                self.keep_summary(key, summary);
             }
             Err(e) => {
                 self.analysis.errors.insert(key, e.to_string());
             }
         }
+    }
+
+    fn keep_summary(&mut self, key: Key, summary: Summary) {
+        self.analysis.errors.remove(&key);
+        self.analysis.built.retain(|k| *k != key);
+        self.analysis.built.push(key.clone());
+        if let Some(mermaid) = &summary.diagram {
+            self.remember_drawing(mermaid);
+        }
+        self.analysis.cache.insert(key, summary);
+    }
+
+    /// Where a Summary for `key` lives on disk. It depends on the Range and
+    /// the language, not on effort or model.
+    fn summary_cache_key(&self, (head, language): &Key) -> String {
+        AnalystCache::key("summary", &[&self.range.base, head, language])
+    }
+
+    /// Whether the Summary of the current head and language came from the
+    /// disk cache of an earlier run and has not been rebuilt since.
+    pub fn summary_from_cache(&self) -> bool {
+        self.analysis.from_cache.contains(&self.current_key())
     }
 
     /// The Analyst's state for the status line: a failure comes first so it

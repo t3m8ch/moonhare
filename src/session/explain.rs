@@ -7,6 +7,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use super::analysis::wrap;
 use super::*;
 use crate::analyst::{AnalystError, ExplainRequest, ExplainTarget, Explanation};
+use crate::analyst_cache::AnalystCache;
 
 type Answer = (u64, Result<Explanation, AnalystError>);
 
@@ -114,17 +115,58 @@ impl Session {
         };
         let id = self.explain.next_id;
         self.explain.next_id += 1;
-        self.explain.in_flight += 1;
         self.explain.error = None;
+        let title = format!(" Explain {what}: {path} [{}] ", request.language);
+        let cache = self.analyst_cache.clone();
+        let cache_key = self.explanation_cache_key(&request);
+        if let Some(explanation) = cache.load_explanation(&cache_key) {
+            self.explain.overlay = Some(Overlay {
+                id,
+                title,
+                state: State::Done(explanation.text),
+            });
+            return;
+        }
+        self.explain.in_flight += 1;
         self.explain.overlay = Some(Overlay {
             id,
-            title: format!(" Explain {what}: {path} [{}] ", request.language),
+            title,
             state: State::Waiting,
         });
         let sender = self.explain.sender.clone();
         std::thread::spawn(move || {
-            let _ = sender.send((id, analyst.explain(&request)));
+            let answer = analyst.explain(&request);
+            if let Ok(explanation) = &answer {
+                cache.store_explanation(&cache_key, explanation);
+            }
+            let _ = sender.send((id, answer));
         });
+    }
+
+    /// An explanation is tied to the code it explains, not to the commits it
+    /// was asked about: a hunk by its text, a file by its content at both
+    /// ends of the Scope.
+    fn explanation_cache_key(&self, request: &ExplainRequest) -> String {
+        let blob = |rev: &str, path: &str| {
+            self.repo
+                .run(&["rev-parse", "--verify", &format!("{rev}:{path}")])
+                .map(|id| id.trim().to_string())
+                .unwrap_or_default()
+        };
+        match &request.target {
+            ExplainTarget::Hunk { path, text } => {
+                AnalystCache::key("explain-hunk", &[&request.language, path, text])
+            }
+            ExplainTarget::File { path } => AnalystCache::key(
+                "explain-file",
+                &[
+                    &request.language,
+                    path,
+                    &blob(&request.base, path),
+                    &blob(&request.head, path),
+                ],
+            ),
+        }
     }
 
     /// The hunk the cursor is on, or the nearest one above it (the first one

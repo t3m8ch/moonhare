@@ -8,6 +8,7 @@ use super::*;
 use unicode_width::UnicodeWidthStr;
 
 use crate::analyst::{DiagramRequest, DiagramSubject};
+use crate::analyst_cache::AnalystCache;
 
 /// What a diagram is cached under: head of the Range, language, subject.
 type Key = (String, String, DiagramSubject);
@@ -27,6 +28,8 @@ pub(super) struct Diagrams {
     /// next `:diagram` asks again.
     errors: HashMap<Key, String>,
     pending: HashSet<Key>,
+    /// Keys whose diagram was read from the disk cache, not asked for.
+    from_cache: HashSet<Key>,
     sender: Sender<Answer>,
     receiver: Receiver<Answer>,
     /// The overlay is open on this diagram.
@@ -48,6 +51,7 @@ impl Default for Diagrams {
             cache: HashMap::new(),
             errors: HashMap::new(),
             pending: HashSet::new(),
+            from_cache: HashSet::new(),
             sender,
             receiver,
             open: None,
@@ -103,10 +107,28 @@ impl Session {
                 settings: self.analysis.settings.clone(),
                 subject: key.2.clone(),
             };
+            let cache = self.analyst_cache.clone();
+            let cache_key = diagram_cache_key(&request);
+            if let Some(diagram) = cache.load_diagram(&cache_key) {
+                self.diagrams.pending.remove(&key);
+                self.diagrams.from_cache.insert(key.clone());
+                self.diagrams.cache.insert(
+                    key.clone(),
+                    Drawn {
+                        lines: crate::diagram::draw(&diagram.mermaid),
+                        mermaid: diagram.mermaid,
+                    },
+                );
+                self.diagrams.open = Some(key);
+                self.diagrams.hscroll = 0;
+                self.diagrams.vscroll = 0;
+                return true;
+            }
             let sender = self.diagrams.sender.clone();
             std::thread::spawn(move || {
                 let answer = analyst
                     .diagram(&request)
+                    .inspect(|diagram| cache.store_diagram(&cache_key, diagram))
                     .map(|diagram| Drawn {
                         lines: crate::diagram::draw(&diagram.mermaid),
                         mermaid: diagram.mermaid,
@@ -119,6 +141,15 @@ impl Session {
         self.diagrams.hscroll = 0;
         self.diagrams.vscroll = 0;
         true
+    }
+
+    /// Whether the diagram of this open overlay was read from the disk cache
+    /// of an earlier run.
+    pub fn diagram_from_cache(&self) -> bool {
+        self.diagrams
+            .open
+            .as_ref()
+            .is_some_and(|key| self.diagrams.from_cache.contains(key))
     }
 
     /// The line of the new version of the file under the cursor (1-based);
@@ -135,6 +166,7 @@ impl Session {
         self.diagrams.pending.remove(&key);
         match answer {
             Ok(drawn) => {
+                self.diagrams.from_cache.remove(&key);
                 self.diagrams.errors.remove(&key);
                 self.diagrams.cache.insert(key, drawn);
             }
@@ -317,6 +349,21 @@ fn failure_lines(error: &str, mermaid: &str) -> Vec<String> {
         .lines()
         .map(crate::diagram::sanitize)
         .collect()
+}
+
+/// A diagram depends on the Range, the language and what it is drawn for.
+fn diagram_cache_key(request: &DiagramRequest) -> String {
+    let subject = match &request.subject {
+        DiagramSubject::File { path } => format!("file\u{2}{path}"),
+        DiagramSubject::Fragment { path, line } => format!("fragment\u{2}{path}\u{2}{line}"),
+        DiagramSubject::Group { name, files } => {
+            format!("group\u{2}{name}\u{2}{}", files.join("\u{3}"))
+        }
+    };
+    AnalystCache::key(
+        "diagram",
+        &[&request.base, &request.head, &request.language, &subject],
+    )
 }
 
 fn key_of(request: &DiagramRequest) -> Key {

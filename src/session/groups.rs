@@ -7,6 +7,7 @@ use std::sync::Arc;
 
 use super::*;
 use crate::analyst::{Analyst, AnalystError, DiagramSubject, GroupRequest, Grouping};
+use crate::analyst_cache::AnalystCache;
 
 type Key = (String, String);
 
@@ -16,6 +17,8 @@ pub(super) struct Groups {
     analyst: Option<Arc<dyn Analyst>>,
     cache: HashMap<Key, Placed>,
     pending: HashSet<Key>,
+    /// Keys whose Groups were read from the disk cache, not asked for.
+    from_cache: HashSet<Key>,
     /// Why the last request for a key failed.
     errors: HashMap<Key, String>,
     /// The cached keys, oldest first.
@@ -33,6 +36,7 @@ impl Default for Groups {
             analyst: None,
             cache: HashMap::new(),
             pending: HashSet::new(),
+            from_cache: HashSet::new(),
             errors: HashMap::new(),
             built: Vec::new(),
             tree: false,
@@ -91,6 +95,16 @@ impl Session {
         {
             return;
         }
+        let cache = self.analyst_cache.clone();
+        let cache_key = AnalystCache::key("groups", &[&self.range.base, &key.0, &key.1]);
+        if !force {
+            if let Some(grouping) = cache.load_grouping(&cache_key) {
+                self.groups.pending.remove(&key);
+                self.groups.from_cache.insert(key.clone());
+                self.keep_grouping(key, grouping);
+                return;
+            }
+        }
         let request = GroupRequest {
             repo: self.repo.root().to_path_buf(),
             base: self.range.base.clone(),
@@ -106,6 +120,9 @@ impl Session {
             let answer =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| analyst.group(&request)))
                     .unwrap_or_else(|_| Err(AnalystError::Failed("the Analyst crashed".into())));
+            if let Ok(grouping) = &answer {
+                cache.store_grouping(&cache_key, grouping);
+            }
             let _ = sender.send((key, answer));
         });
     }
@@ -114,16 +131,27 @@ impl Session {
         self.groups.pending.remove(&key);
         match answer {
             Ok(grouping) => {
-                self.groups.errors.remove(&key);
-                self.groups.built.retain(|k| *k != key);
-                self.groups.built.push(key.clone());
-                self.groups.cache.insert(key, Placed::new(grouping));
-                self.refilter();
+                self.groups.from_cache.remove(&key);
+                self.keep_grouping(key, grouping);
             }
             Err(e) => {
                 self.groups.errors.insert(key, e.to_string());
             }
         }
+    }
+
+    fn keep_grouping(&mut self, key: Key, grouping: Grouping) {
+        self.groups.errors.remove(&key);
+        self.groups.built.retain(|k| *k != key);
+        self.groups.built.push(key.clone());
+        self.groups.cache.insert(key, Placed::new(grouping));
+        self.refilter();
+    }
+
+    /// Whether the Groups of the current head and language came from the disk
+    /// cache of an earlier run and have not been rebuilt since.
+    pub fn groups_from_cache(&self) -> bool {
+        self.groups.from_cache.contains(&self.current_key())
     }
 
     /// The status line, with the reason the Groups could not be built in

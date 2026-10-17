@@ -109,7 +109,7 @@ pub struct Review {
 }
 
 /// 128 bits of FNV-1a over `text`, as 32 hex digits.
-fn digest(text: &str) -> String {
+pub(crate) fn digest(text: &str) -> String {
     let mut out = String::new();
     for seed in [0xcbf2_9ce4_8422_2325_u64, 0x8422_2325_cbf2_9ce4_u64] {
         let mut h = seed;
