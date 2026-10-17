@@ -189,7 +189,9 @@ impl Review {
     /// Forget every mark and release every pin of the Review.
     pub fn reset(&mut self, repo: &Repo) -> Result<(), String> {
         self.marked.clear();
-        match std::fs::remove_dir_all(&self.dir) {
+        // Only the marks go: Comments live in the same directory and are
+        // the Reviewer's own words, which a reset must not destroy.
+        match std::fs::remove_file(self.dir.join("marks")) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(io_error("cannot reset the Review", e)),

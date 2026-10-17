@@ -255,6 +255,7 @@ impl Session {
             Some(ed) if ed.insert => " INSERT ",
             Some(_) => " COMMENT",
             None if self.visual.is_some() => " VISUAL ",
+            None if self.commit_anchor.is_some() && self.window() == Focus::Commits => " VISUAL ",
             None => " NORMAL ",
         }
     }
@@ -376,7 +377,7 @@ impl Session {
     /// Whether a click at the cell lands on the Range counter.
     pub(super) fn on_range_chip(&self, column: u16, row: u16) -> bool {
         self.range_chip().is_some_and(|(x, text)| {
-            row == self.size.1 - 1 && column >= x && column < x + text.chars().count() as u16
+            row == self.size.1 - BOTTOM_ROWS && column >= x && column < x + text.chars().count() as u16
         })
     }
 
@@ -606,6 +607,17 @@ impl Session {
                 KeyCode::Esc if ed.text.trim().is_empty() => self.editor = None,
                 KeyCode::Esc => ed.confirm = true,
                 _ => {}
+            }
+        }
+    }
+
+    /// `y` deletes every Comment, anything else keeps them.
+    pub(super) fn confirm_clear_key(&mut self, key: KeyEvent) {
+        self.confirm_clear = false;
+        if key.code == KeyCode::Char('y') {
+            match self.comments.clear() {
+                Ok(()) => self.message = Some("All Comments deleted".into()),
+                Err(e) => self.message = Some(e),
             }
         }
     }

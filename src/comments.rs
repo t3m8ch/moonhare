@@ -108,10 +108,17 @@ impl Comments {
         self.save().map(|()| id)
     }
 
-    /// Forget every Comment without touching the disk (the Review's reset
-    /// removes its directory).
-    pub fn clear(&mut self) {
-        self.items.clear();
+    /// Delete every Comment, on disk first: if saving fails the Comments
+    /// stay in memory too, so the two never disagree.
+    pub fn clear(&mut self) -> Result<(), String> {
+        let kept = std::mem::take(&mut self.items);
+        match self.save() {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.items = kept;
+                Err(e)
+            }
+        }
     }
 
     fn save(&self) -> Result<(), String> {

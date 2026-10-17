@@ -127,11 +127,11 @@ fn without_the_sidebar_a_clickable_range_counter_sits_in_the_status_line() {
     assert!(!h.screen().contains("Range ✎"), "{}", h.screen());
     h.keys("<Space>e");
     let screen = h.screen();
-    let last = screen.lines().last().unwrap();
+    let last = screen.lines().nth(screen.lines().count() - 2).unwrap();
     assert!(last.contains("Range ✎2"), "{screen}");
 
     let (col, row) = h.frame().find("Range ✎2").unwrap();
-    assert_eq!(row as usize, screen.lines().count() - 1);
+    assert_eq!(row as usize, screen.lines().count() - 2);
     h.click(col + 2, row);
     let screen = h.screen();
     assert!(screen.contains("Pick a Scope"), "{screen}");
@@ -293,10 +293,40 @@ fn an_unsaved_draft_survives_a_resize() {
     assert!(h.screen().contains("half written"), "{}", h.screen());
 }
 
+#[test]
+fn reset_forgets_the_marks_but_never_the_comments() {
+    let fx = feature_branch();
+    {
+        let mut h = Harness::open(&fx, 160, 30);
+        h.keys(":comment<CR>ihand written<Esc><CR>m");
+        h.keys(":reset<CR>");
+        assert!(h.screen().contains("hand written"), "{}", h.screen());
+    }
+    let mut h = Harness::open(&fx, 160, 30);
+    assert!(h.screen().contains("hand written"), "{}", h.screen());
+}
+
+#[test]
+fn comments_clear_asks_first_and_then_removes_every_comment_for_good() {
+    let fx = feature_branch();
+    {
+        let mut h = Harness::open(&fx, 160, 30);
+        h.keys(":comment<CR>iprecious<Esc><CR>");
+        h.keys(":comments clear<CR>");
+        assert!(h.screen().contains("Delete all"), "{}", h.screen());
+        h.keys("n");
+        assert!(h.screen().contains("precious"), "{}", h.screen());
+        h.keys(":comments clear<CR>y");
+        assert!(!h.screen().contains("precious"), "{}", h.screen());
+    }
+    let mut h = Harness::open(&fx, 160, 30);
+    assert!(!h.screen().contains("precious"), "{}", h.screen());
+}
+
 /// The mode badge at the start of the status line.
 fn badge(h: &mut Harness) -> String {
     let screen = h.screen();
-    let last = screen.lines().last().unwrap().to_string();
+    let last = screen.lines().nth(screen.lines().count() - 2).unwrap().to_string();
     last.split_whitespace().next().unwrap_or("").to_string()
 }
 

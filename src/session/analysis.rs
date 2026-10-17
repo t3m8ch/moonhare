@@ -157,6 +157,11 @@ impl Session {
         }
     }
 
+    /// Whether the Analyst still owes an answer.
+    pub fn analyst_busy(&self) -> bool {
+        !self.analysis.pending.is_empty()
+    }
+
     /// Block until every request to the Analyst has been answered.
     pub fn wait_for_analyst(&mut self) {
         while !self.analysis.pending.is_empty() {
