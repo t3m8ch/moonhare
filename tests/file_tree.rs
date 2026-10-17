@@ -453,3 +453,50 @@ fn clicking_a_group_header_opens_its_first_file() {
     h.click(x, y);
     assert!(file_bar(&mut h).contains("reviews.ts"), "{}", h.screen());
 }
+
+#[test]
+fn clicking_a_group_header_in_the_picker_opens_its_first_file() {
+    let fx = deep_branch();
+    let mut h = grouped(&fx, 120, 40);
+    h.keys("<Space>f");
+    let (x, y) = h.frame().find("1 Access").expect("header");
+    h.click(x, y);
+    assert!(!h.screen().contains("Pick a file"));
+    assert!(file_bar(&mut h).contains("reviews.ts"), "{}", h.screen());
+}
+
+#[test]
+fn the_wheel_scrolls_the_tree_and_leaves_the_open_file() {
+    let fx = Fixture::new();
+    fx.write("README.md", "# demo\n").commit("initial");
+    fx.branch("feature");
+    for d in 0..6 {
+        for f in 0..4 {
+            fx.write(&format!("dir{d}/file{f}.rs"), "x\n");
+        }
+    }
+    fx.commit("many files");
+    let mut h = Harness::open(&fx, 160, 30);
+    let side = sidebar(&mut h, 32);
+    assert!(side.contains("dir0") && !side.contains("dir5"), "{side}");
+    let (x, y) = h.frame().find("▾ dir1").expect("a directory row");
+    for _ in 0..10 {
+        h.wheel_down(x, y);
+    }
+    let side = sidebar(&mut h, 32);
+    assert!(side.contains("dir5") && !side.contains("dir0"), "{side}");
+    assert!(at_file(&mut h, 1, 24), "{}", h.screen());
+    h.wheel_up(x, y);
+    assert!(sidebar(&mut h, 32) != side);
+}
+
+#[test]
+fn from_the_diff_space_i_describes_the_group_of_the_open_file() {
+    let fx = deep_branch();
+    let mut h = grouped(&fx, 160, 30);
+    h.keys("[f[f[f[f<Space>i");
+    assert!(h.screen().contains("The end."), "{}", h.screen());
+    // The overlay scrolls like every other one and `q` closes it.
+    h.keys("j").keys("q");
+    assert!(!h.screen().contains("The end."));
+}
