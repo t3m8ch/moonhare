@@ -38,10 +38,8 @@ pub(super) struct Diagrams {
     open: Option<Key>,
     /// Columns the picture is scrolled to the left.
     hscroll: usize,
-    /// Rows the picture is scrolled up.
-    vscroll: usize,
-    /// `g` was typed and waits for a second one.
-    g_typed: bool,
+    /// How far the picture is scrolled up.
+    scroll: scroll::Scroll,
     /// Mermaid texts of Summaries, drawn once.
     drawings: HashMap<String, Result<Vec<String>, String>>,
 }
@@ -58,8 +56,7 @@ impl Default for Diagrams {
             receiver,
             open: None,
             hscroll: 0,
-            vscroll: 0,
-            g_typed: false,
+            scroll: Default::default(),
             drawings: HashMap::new(),
         }
     }
@@ -125,7 +122,7 @@ impl Session {
                 );
                 self.diagrams.open = Some(key);
                 self.diagrams.hscroll = 0;
-                self.diagrams.vscroll = 0;
+                self.diagrams.scroll = Default::default();
                 return true;
             }
             let sender = self.diagrams.sender.clone();
@@ -143,7 +140,7 @@ impl Session {
         }
         self.diagrams.open = Some(key);
         self.diagrams.hscroll = 0;
-        self.diagrams.vscroll = 0;
+        self.diagrams.scroll = Default::default();
         true
     }
 
@@ -281,23 +278,21 @@ impl Session {
                 .map(|drawn| drawn.mermaid.clone())
         });
         let lines = self.open_lines();
-        let rows = self.overlay_area().height.saturating_sub(2) as usize;
-        let last = lines.len().saturating_sub(rows);
-        let g_typed = std::mem::take(&mut self.diagrams.g_typed);
-        match key.code {
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.diagrams.vscroll = (self.diagrams.vscroll + 1).min(last)
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.diagrams.vscroll = self.diagrams.vscroll.saturating_sub(1)
-            }
-            KeyCode::Char('G') => self.diagrams.vscroll = last,
-            KeyCode::Char('g') if g_typed => self.diagrams.vscroll = 0,
-            KeyCode::Char('g') => self.diagrams.g_typed = true,
-            _ => {}
+        let rows = scroll::text_rows(self.overlay_area());
+        let mut scroll = self.diagrams.scroll;
+        if scroll.key(key, lines.len(), rows) {
+            self.diagrams.scroll = scroll;
+            return true;
         }
         self.picture_key(key.code, source, &lines);
         true
+    }
+
+    pub(super) fn diagram_scroll_mut(&mut self) -> Option<&mut scroll::Scroll> {
+        self.diagrams
+            .open
+            .is_some()
+            .then_some(&mut self.diagrams.scroll)
     }
 
     pub(super) fn render_diagram_overlay(&self, buf: &mut Buffer) {
@@ -316,24 +311,10 @@ impl Session {
             ""
         };
         draw_box(buf, area, &format!(" Diagram: {what}{cached} "));
-        let inner_w = self.overlay_text_width();
-        let rows = area.height.saturating_sub(2) as usize;
-        for (row, line) in self
-            .open_lines()
-            .iter()
-            .skip(self.diagrams.vscroll)
-            .take(rows)
-            .enumerate()
-        {
-            let visible: String = line.chars().skip(self.diagrams.hscroll).collect();
-            buf.set_stringn(
-                area.x + 2,
-                area.y + 1 + row as u16,
-                visible,
-                inner_w,
-                Style::new().fg(FG),
-            );
-        }
+        let lines: Vec<String> = (self.open_lines().iter())
+            .map(|l| l.chars().skip(self.diagrams.hscroll).collect())
+            .collect();
+        scroll::render_lines(buf, area, &lines, &self.diagrams.scroll);
     }
 
     /// Width in cells of the text inside the overlay's border.
@@ -342,7 +323,7 @@ impl Session {
     }
 
     /// The lines the open overlay shows.
-    fn open_lines(&self) -> Vec<String> {
+    pub(super) fn open_lines(&self) -> Vec<String> {
         let Some(key) = &self.diagrams.open else {
             return Vec::new();
         };

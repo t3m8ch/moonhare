@@ -233,6 +233,7 @@ mod overlay_mouse;
 mod prompt;
 mod reload;
 mod rounds;
+mod scroll;
 mod sidebar;
 mod unreviewed;
 mod windows;
@@ -311,7 +312,7 @@ pub struct Session {
     /// How long `pending` has been waiting.
     pending_for: std::time::Duration,
     /// The `?` help is open, scrolled to this line.
-    help: Option<usize>,
+    help: Option<scroll::Scroll>,
     dirty: bool,
     message: Option<String>,
     /// A standing caveat about the Range, shown until the Review closes.
@@ -329,7 +330,7 @@ pub struct Session {
     /// Clipboard sequences waiting to be written to the terminal.
     terminal_out: Vec<String>,
     /// The Prompt overlay (`Space p s`), scrolled to this line.
-    prompt_view: Option<(String, usize)>,
+    prompt_view: Option<(String, scroll::Scroll)>,
     /// The Prompts copied so far, which cut the commits into Rounds.
     prompts: crate::rounds::Prompts,
     mouse: mouse::Mouse,
@@ -1009,7 +1010,7 @@ impl Session {
             return;
         }
         if self.help.is_some() {
-            self.help_key(key.code);
+            self.help_key(key);
             return;
         }
         if self.diagram_key(key)
@@ -1029,7 +1030,7 @@ impl Session {
             return;
         }
         if key.code == KeyCode::Char('?') && self.pending.is_none() {
-            self.help = Some(0);
+            self.help = Some(scroll::Scroll::default());
             return;
         }
         if self.window_key(key.code, key.modifiers) {
@@ -1264,7 +1265,8 @@ impl Session {
         if !self.mouse_enabled() || self.too_small() {
             return;
         }
-        if self.editor.is_some() || self.confirm_clear {
+        // A draft under its lines takes no mouse; the popup of one does.
+        if (self.editor.is_some() && self.editor_popup().is_none()) || self.confirm_clear {
             return;
         }
         if self.overlay_mouse(mouse) {
@@ -1356,8 +1358,8 @@ impl Session {
         if let Some(cursor) = self.file_picker {
             self.render_file_picker(buf, cursor);
         }
-        if let Some(offset) = self.help {
-            self.render_help(buf, offset);
+        if let Some(scroll) = self.help {
+            self.render_help(buf, &scroll);
         }
         if let Some(prefix) = self.which_key_prefix() {
             self.render_which_key(buf, prefix);

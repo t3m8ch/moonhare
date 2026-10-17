@@ -41,15 +41,26 @@ impl Session {
         );
     }
 
-    /// Keys while the help is open: `j/k` scroll, `Esc`, `q` and `?` close.
-    pub(super) fn help_key(&mut self, code: KeyCode) {
-        let Some(offset) = self.help else { return };
-        let last = hints::help_lines().len().saturating_sub(1);
-        match code {
-            KeyCode::Esc | KeyCode::Char('q' | '?') => self.help = None,
-            KeyCode::Char('j') | KeyCode::Down => self.help = Some((offset + 1).min(last)),
-            KeyCode::Char('k') | KeyCode::Up => self.help = Some(offset.saturating_sub(1)),
-            _ => {}
+    /// The help wrapped to the width of its box.
+    pub(super) fn help_lines(&self) -> Vec<String> {
+        let width = scroll::text_cols(self.full_overlay_area());
+        (hints::help_lines().iter())
+            .flat_map(|line| super::comments::wrap(line, width))
+            .collect()
+    }
+
+    /// Keys while the help is open: the scrolling keys, `Esc`, `q` and `?`
+    /// close.
+    pub(super) fn help_key(&mut self, key: KeyEvent) {
+        let Some(mut scroll) = self.help else { return };
+        let (total, rows) = (
+            self.help_lines().len(),
+            scroll::text_rows(self.full_overlay_area()),
+        );
+        if scroll.key(key, total, rows) {
+            self.help = Some(scroll);
+        } else if matches!(key.code, KeyCode::Esc | KeyCode::Char('q' | '?')) {
+            self.help = None;
         }
     }
 
@@ -59,25 +70,15 @@ impl Session {
         Rect::new(0, 0, self.size.0, self.size.1.saturating_sub(BOTTOM_ROWS))
     }
 
-    pub(super) fn render_help(&self, buf: &mut Buffer, offset: usize) {
+    pub(super) fn render_help(&self, buf: &mut Buffer, scroll: &scroll::Scroll) {
         let area = self.full_overlay_area();
         clear_area(buf, area);
-        draw_box(buf, area, " Справка (j/k прокрутка, Esc закрыть) ");
-        let rows = area.height.saturating_sub(2) as usize;
-        for (i, line) in hints::help_lines()
-            .iter()
-            .skip(offset)
-            .take(rows)
-            .enumerate()
-        {
-            buf.set_stringn(
-                area.x + 2,
-                area.y + 1 + i as u16,
-                line,
-                area.width.saturating_sub(4) as usize,
-                Style::new().fg(FG),
-            );
-        }
+        draw_box(
+            buf,
+            area,
+            " Справка (j/k, Ctrl-d/u, gg/G, колесо; Esc закрыть) ",
+        );
+        scroll::render_lines(buf, area, &self.help_lines(), scroll);
     }
 
     pub(super) fn render_which_key(&self, buf: &mut Buffer, prefix: char) {

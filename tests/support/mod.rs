@@ -305,6 +305,12 @@ pub fn parse_keys(notation: &str) -> Vec<Event> {
                     "BS" => Some(key(KeyCode::Backspace, KeyModifiers::NONE)),
                     "Space" => Some(key(KeyCode::Char(' '), KeyModifiers::NONE)),
                     "C-w" => Some(key(KeyCode::Char('w'), KeyModifiers::CONTROL)),
+                    "Up" => Some(key(KeyCode::Up, KeyModifiers::NONE)),
+                    "Down" => Some(key(KeyCode::Down, KeyModifiers::NONE)),
+                    "PageUp" => Some(key(KeyCode::PageUp, KeyModifiers::NONE)),
+                    "PageDown" => Some(key(KeyCode::PageDown, KeyModifiers::NONE)),
+                    "Home" => Some(key(KeyCode::Home, KeyModifiers::NONE)),
+                    "End" => Some(key(KeyCode::End, KeyModifiers::NONE)),
                     "lt" => Some(key(KeyCode::Char('<'), KeyModifiers::NONE)),
                     n if n.starts_with("C-") && n.chars().count() == 3 => Some(key(
                         KeyCode::Char(n.chars().nth(2).unwrap()),
