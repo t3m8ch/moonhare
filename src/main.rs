@@ -63,6 +63,12 @@ fn main() -> ExitCode {
     session.set_analyst(std::sync::Arc::new(ClaudeAnalyst::new()));
 
     let mut terminal = ratatui::init();
+    // ratatui's hook restores the screen; the mouse capture is ours to release.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(io::stdout(), DisableMouseCapture);
+        hook(info);
+    }));
     let _ = execute!(io::stdout(), EnableMouseCapture);
     let result = run(&mut terminal, &mut session);
     let _ = execute!(io::stdout(), DisableMouseCapture);

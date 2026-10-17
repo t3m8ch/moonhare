@@ -429,3 +429,36 @@ fn double_and_triple_clicks_measure_wide_characters_by_cells() {
     let plain = h.frame().bg_at(bx + 6, by);
     assert_ne!(h.frame().bg_at(bx + 2, by), plain);
 }
+
+#[test]
+fn a_drag_over_a_collapsed_mechanical_file_copies_nothing() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n").commit("initial");
+    fx.branch("feature");
+    fx.write("Cargo.lock", "x = 1\n").commit("lock");
+    let mut h = Harness::open(&fx, 100, 24);
+    let (x, y) = h.frame().find("lock file").unwrap();
+    h.drag((x, y), (x + 5, y + 1));
+    assert!(h.copied().is_empty());
+}
+
+#[test]
+fn a_drag_with_no_changes_in_the_range_copies_nothing() {
+    let fx = Fixture::new();
+    fx.write("a.txt", "one\n").commit("initial");
+    fx.branch("feature");
+    let mut h = Harness::open(&fx, 100, 24);
+    h.drag((40, 2), (60, 4));
+    h.keys("y");
+    assert!(h.copied().is_empty());
+}
+
+#[test]
+fn a_drag_through_a_comment_box_copies_only_the_code_lines() {
+    let fx = changed_file();
+    let mut h = Harness::open(&fx, 100, 24);
+    let (x, y) = with_comment_on_extra(&mut h);
+    let (_, ky) = h.frame().find("keep_me").unwrap();
+    h.drag((x, y), (x + 9, ky));
+    assert_eq!(h.copied(), vec!["extra();\n    keep_me();".to_string()]);
+}

@@ -92,6 +92,12 @@ pub(super) fn cut(text: &str, from: usize, to: usize) -> String {
     out
 }
 
+/// The OSC 52 sequence for `text` (sanitized), or `None` when it is too
+/// long for one. The one place text is turned into a clipboard sequence.
+pub(super) fn osc52_for(text: &str) -> Option<String> {
+    crate::clipboard::osc52_limited(&crate::clipboard::sanitize(text))
+}
+
 impl Session {
     /// `y` and `Space y`: copy the lines of the VISUAL selection or of the
     /// mouse selection, with the Comments on them when asked to.
