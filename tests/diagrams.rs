@@ -157,6 +157,105 @@ fn the_summary_diagram_scrolls_with_h_and_l_and_copies_with_y() {
     assert!(h.screen().contains("Alpha"), "{}", h.screen());
 }
 
+/// An Analyst whose first diagram fails (a timeout, no login) and later ones work.
+struct Flaky(Mutex<usize>);
+
+impl Analyst for Flaky {
+    fn summarize(&self, _: &SummaryRequest) -> Result<Summary, AnalystError> {
+        Ok(Summary::default())
+    }
+
+    fn diagram(&self, _: &DiagramRequest) -> Result<Diagram, AnalystError> {
+        let mut calls = self.0.lock().unwrap();
+        *calls += 1;
+        if *calls == 1 {
+            Err(AnalystError::Failed("claude timed out".into()))
+        } else {
+            Ok(Diagram {
+                mermaid: FLOW.into(),
+            })
+        }
+    }
+}
+
+#[test]
+fn a_failed_request_is_not_cached_and_the_next_diagram_asks_again() {
+    let fx = feature_branch();
+    let mut session = Session::open(fx.path(), 100, 30).unwrap();
+    session.set_analyst(Arc::new(Flaky(Mutex::new(0))));
+    let mut h = Harness::from_session(session);
+
+    h.keys(":diagram<CR>");
+    h.session().wait_for_analyst();
+    assert!(h.screen().contains("timed out"), "{}", h.screen());
+
+    h.keys("q:diagram<CR>");
+    h.session().wait_for_analyst();
+    assert!(h.screen().contains("Collect"), "{}", h.screen());
+}
+
+#[test]
+fn control_characters_in_mermaid_never_reach_the_screen() {
+    let fx = feature_branch();
+    let analyst = FakeAnalyst::drawing("graph LR\n    A[\u{1b}[31mred\u{7}] --> ???");
+    let mut h = review_with(&fx, &analyst);
+    h.keys(":diagram<CR>");
+    h.session().wait_for_analyst();
+    let screen = h.screen();
+    assert!(screen.contains("red"), "{screen}");
+    assert!(
+        !screen.chars().any(|c| c.is_control() && c != '\n'),
+        "{screen:?}"
+    );
+}
+
+#[test]
+fn a_source_too_long_to_draw_shows_an_error_and_the_source() {
+    let fx = feature_branch();
+    let long = format!("graph LR\n{}", "A --> B\n".repeat(10_000));
+    let analyst = FakeAnalyst::drawing(&long);
+    let mut h = review_with(&fx, &analyst);
+    h.keys(":diagram<CR>");
+    h.session().wait_for_analyst();
+    let screen = h.screen();
+    assert!(screen.contains("too long"), "{screen}");
+    assert!(screen.contains("A --> B"), "{screen}");
+}
+
+#[test]
+fn a_source_too_large_to_copy_is_refused() {
+    let fx = feature_branch();
+    let long = format!("graph LR\n{}", "A --> B\n".repeat(20_000));
+    let analyst = FakeAnalyst::drawing(&long);
+    let mut h = review_with(&fx, &analyst);
+    h.keys(":diagram<CR>");
+    h.session().wait_for_analyst();
+    h.keys("y");
+    assert_eq!(h.session().take_clipboard(), None);
+    assert!(h.screen().contains("too large"), "{}", h.screen());
+}
+
+#[test]
+fn a_tall_diagram_scrolls_with_j_and_k() {
+    let fx = feature_branch();
+    let chain: Vec<String> = (0..40).map(|i| format!("N{i}[Step{i}]")).collect();
+    let analyst = FakeAnalyst::drawing(&format!("graph TD\n    {}", chain.join(" --> ")));
+    let mut h = review_with(&fx, &analyst);
+    h.keys(":diagram<CR>");
+    h.session().wait_for_analyst();
+    assert!(h.screen().contains("Step0"), "{}", h.screen());
+    assert!(!h.screen().contains("Step39"), "{}", h.screen());
+
+    h.keys("G");
+    assert!(h.screen().contains("Step39"), "{}", h.screen());
+    h.keys("gg");
+    assert!(h.screen().contains("Step0"), "{}", h.screen());
+    h.keys("jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj");
+    assert!(!h.screen().contains("Step0"), "{}", h.screen());
+    h.keys("kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk");
+    assert!(h.screen().contains("Step0"), "{}", h.screen());
+}
+
 const WIDE: &str = "graph LR\n    A[Alpha stage] --> B[Bravo stage] --> C[Charlie stage] --> D[Delta stage] --> E[Echo stage] --> F[Foxtrot stage]";
 
 const BROKEN: &str = "graph LR\n    A[Open --> ???";

@@ -5,12 +5,18 @@ use std::collections::{HashMap, HashSet};
 use std::sync::mpsc::{channel, Receiver, Sender};
 
 use super::*;
-use crate::analyst::{AnalystError, Diagram, DiagramRequest, DiagramSubject};
+use unicode_width::UnicodeWidthStr;
+
+use crate::analyst::{DiagramRequest, DiagramSubject};
 
 /// What a diagram is cached under: head of the Range, language, subject.
 type Key = (String, String, DiagramSubject);
 
-type Answer = (Key, Result<Diagram, AnalystError>);
+/// The diagram is drawn on the worker's thread, not the event loop's.
+type Answer = (Key, Result<Drawn, String>);
+
+/// The largest Mermaid source that is copied, in bytes.
+const CLIPBOARD_LIMIT: usize = 100_000;
 
 /// A diagram that came back, drawn once.
 struct Drawn {
@@ -19,7 +25,10 @@ struct Drawn {
 }
 
 pub(super) struct Diagrams {
-    cache: HashMap<Key, Result<Drawn, String>>,
+    cache: HashMap<Key, Drawn>,
+    /// Why the last request for a key failed. A failure is not cached: the
+    /// next `:diagram` asks again.
+    errors: HashMap<Key, String>,
     pending: HashSet<Key>,
     sender: Sender<Answer>,
     receiver: Receiver<Answer>,
@@ -27,6 +36,10 @@ pub(super) struct Diagrams {
     open: Option<Key>,
     /// Columns the picture is scrolled to the left.
     hscroll: usize,
+    /// Rows the picture is scrolled up.
+    vscroll: usize,
+    /// `g` was typed and waits for a second one.
+    g_typed: bool,
     /// Text the Reviewer asked to copy, until the terminal layer takes it.
     clipboard: Option<String>,
     /// Mermaid texts of Summaries, drawn once.
@@ -38,11 +51,14 @@ impl Default for Diagrams {
         let (sender, receiver) = channel();
         Diagrams {
             cache: HashMap::new(),
+            errors: HashMap::new(),
             pending: HashSet::new(),
             sender,
             receiver,
             open: None,
             hscroll: 0,
+            vscroll: 0,
+            g_typed: false,
             clipboard: None,
             drawings: HashMap::new(),
         }
@@ -72,6 +88,7 @@ impl Session {
         };
         let key = (self.range.head.clone(), self.language_code(), subject);
         if !self.diagrams.cache.contains_key(&key) && self.diagrams.pending.insert(key.clone()) {
+            self.diagrams.errors.remove(&key);
             let request = DiagramRequest {
                 repo: self.repo.root().to_path_buf(),
                 base: self.range.base.clone(),
@@ -81,12 +98,19 @@ impl Session {
             };
             let sender = self.diagrams.sender.clone();
             std::thread::spawn(move || {
-                let answer = analyst.diagram(&request);
+                let answer = analyst
+                    .diagram(&request)
+                    .map(|diagram| Drawn {
+                        lines: crate::diagram::draw(&diagram.mermaid),
+                        mermaid: diagram.mermaid,
+                    })
+                    .map_err(|e| e.to_string());
                 let _ = sender.send((key_of(&request), answer));
             });
         }
         self.diagrams.open = Some(key);
         self.diagrams.hscroll = 0;
+        self.diagrams.vscroll = 0;
         true
     }
 
@@ -102,14 +126,15 @@ impl Session {
 
     fn take_diagram(&mut self, (key, answer): Answer) {
         self.diagrams.pending.remove(&key);
-        let entry = match answer {
-            Ok(Diagram { mermaid }) => Ok(Drawn {
-                lines: crate::diagram::draw(&mermaid),
-                mermaid,
-            }),
-            Err(e) => Err(e.to_string()),
-        };
-        self.diagrams.cache.insert(key, entry);
+        match answer {
+            Ok(drawn) => {
+                self.diagrams.errors.remove(&key);
+                self.diagrams.cache.insert(key, drawn);
+            }
+            Err(e) => {
+                self.diagrams.errors.insert(key, e);
+            }
+        }
     }
 
     /// Collect the diagrams that arrived.
@@ -133,19 +158,23 @@ impl Session {
     fn picture_key(&mut self, code: KeyCode, source: Option<String>, lines: &[String]) {
         match code {
             KeyCode::Char('l') => {
-                let widest = lines.iter().map(|l| width(l)).max().unwrap_or(0);
+                let widest = lines.iter().map(|l| l.width()).max().unwrap_or(0);
                 let limit = widest.saturating_sub(self.overlay_text_width());
                 self.diagrams.hscroll = (self.diagrams.hscroll + HSCROLL_STEP).min(limit);
             }
             KeyCode::Char('h') => {
                 self.diagrams.hscroll = self.diagrams.hscroll.saturating_sub(HSCROLL_STEP)
             }
-            KeyCode::Char('y') => {
-                if let Some(source) = source {
+            KeyCode::Char('y') => match source {
+                Some(source) if source.len() > CLIPBOARD_LIMIT => {
+                    self.message = Some("The Mermaid source is too large to copy".into());
+                }
+                Some(source) => {
                     self.diagrams.clipboard = Some(source);
                     self.message = Some("Copied the Mermaid source".into());
                 }
-            }
+                None => {}
+            },
             _ => {}
         }
     }
@@ -205,15 +234,28 @@ impl Session {
             self.diagrams.open = None;
             return true;
         }
-        let source =
+        let source = self.diagrams.open.as_ref().and_then(|key| {
             self.diagrams
-                .open
-                .as_ref()
-                .and_then(|key| match self.diagrams.cache.get(key) {
-                    Some(Ok(drawn)) => Some(drawn.mermaid.clone()),
-                    _ => None,
-                });
+                .cache
+                .get(key)
+                .map(|drawn| drawn.mermaid.clone())
+        });
         let lines = self.open_lines();
+        let rows = self.overlay_area().height.saturating_sub(2) as usize;
+        let last = lines.len().saturating_sub(rows);
+        let g_typed = std::mem::take(&mut self.diagrams.g_typed);
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.diagrams.vscroll = (self.diagrams.vscroll + 1).min(last)
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.diagrams.vscroll = self.diagrams.vscroll.saturating_sub(1)
+            }
+            KeyCode::Char('G') => self.diagrams.vscroll = last,
+            KeyCode::Char('g') if g_typed => self.diagrams.vscroll = 0,
+            KeyCode::Char('g') => self.diagrams.g_typed = true,
+            _ => {}
+        }
         self.picture_key(key.code, source, &lines);
         true
     }
@@ -228,7 +270,13 @@ impl Session {
         draw_box(buf, area, &format!(" Diagram: {path} "));
         let inner_w = self.overlay_text_width();
         let rows = area.height.saturating_sub(2) as usize;
-        for (row, line) in self.open_lines().iter().take(rows).enumerate() {
+        for (row, line) in self
+            .open_lines()
+            .iter()
+            .skip(self.diagrams.vscroll)
+            .take(rows)
+            .enumerate()
+        {
             let visible: String = line.chars().skip(self.diagrams.hscroll).collect();
             buf.set_stringn(
                 area.x + 2,
@@ -251,13 +299,15 @@ impl Session {
             return Vec::new();
         };
         match self.diagrams.cache.get(key) {
-            Some(Ok(Drawn { lines: Ok(l), .. })) => l.clone(),
-            Some(Ok(Drawn {
+            Some(Drawn { lines: Ok(l), .. }) => l.clone(),
+            Some(Drawn {
                 lines: Err(e),
                 mermaid,
-            })) => failure_lines(e, mermaid),
-            Some(Err(e)) => vec![format!("Analyst: {e}")],
-            None => vec!["The diagram is being drawn…".into()],
+            }) => failure_lines(e, mermaid),
+            None => match self.diagrams.errors.get(key) {
+                Some(e) => vec![format!("Analyst: {}", crate::diagram::sanitize(e))],
+                None => vec!["The diagram is being drawn…".into()],
+            },
         }
     }
 }
@@ -266,12 +316,8 @@ impl Session {
 fn failure_lines(error: &str, mermaid: &str) -> Vec<String> {
     format!("Cannot draw the diagram: {error}\n\n{mermaid}")
         .lines()
-        .map(String::from)
+        .map(crate::diagram::sanitize)
         .collect()
-}
-
-fn width(line: &str) -> usize {
-    line.chars().count()
 }
 
 fn key_of(request: &DiagramRequest) -> Key {
