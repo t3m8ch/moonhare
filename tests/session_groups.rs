@@ -44,7 +44,10 @@ impl FakeAnalyst {
 
 impl Analyst for FakeAnalyst {
     fn summarize(&self, _: &SummaryRequest) -> Result<Summary, AnalystError> {
-        Ok(Summary { text: "ok".into() })
+        Ok(Summary {
+            text: "ok".into(),
+            ..Summary::default()
+        })
     }
 
     fn group(&self, request: &GroupRequest) -> Result<Grouping, AnalystError> {

@@ -6,12 +6,18 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::analyst::{
-    Analyst, AnalystError, ExplainRequest, ExplainTarget, Explanation, Group, GroupRequest,
-    Grouping, Summary, SummaryRequest,
+    Analyst, AnalystError, Diagram, DiagramRequest, DiagramSubject, ExplainRequest, ExplainTarget,
+    Explanation, Group, GroupRequest, Grouping, Summary, SummaryRequest,
 };
 
 /// The shape the answer must have; `claude` validates it.
-const SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}"#;
+const SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"string"},"diagram":{"type":"string","description":"Mermaid text, only when the interaction of components changed"}},"required":["summary"],"additionalProperties":false}"#;
+
+/// The shape of the answer to a request for a diagram.
+const DIAGRAM_SCHEMA: &str = r#"{"type":"object","properties":{"mermaid":{"type":"string"}},"required":["mermaid"],"additionalProperties":false}"#;
+
+/// Asks for the whole structured answer instead of one field of it.
+const WHOLE_ANSWER: &str = "";
 
 /// The shape of the Groups; `claude` validates it.
 const GROUPS_SCHEMA: &str = r#"{"type":"object","properties":{"groups":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"mechanical":{"type":"boolean"},"files":{"type":"array","items":{"type":"string"}}},"required":["name","description","mechanical","files"],"additionalProperties":false}}},"required":["groups"],"additionalProperties":false}"#;
@@ -155,10 +161,39 @@ fn prompt(request: &SummaryRequest, tree: &Path) -> String {
         "You are the Analyst of a code review tool. Summarize what the change \
          below does and why, for a human who is about to review it. The files at the head of the change are in \
          {tree}; you may read and search them, nothing else.\n\n\
+         If the change alters how components interact, also give `diagram`: a \
+         Mermaid sequence diagram or flowchart of that interaction, compact: at \
+         most 5-6 participants and short labels. Leave `diagram` out otherwise.\n\n\
          Language: {language}\n\n\
          {pull_request}\
          Commits:\n{commits}\n\
          Diff:\n{diff}",
+        language = request.language,
+        tree = tree.display(),
+    )
+}
+
+fn diagram_prompt(request: &DiagramRequest, tree: &Path) -> String {
+    let (path, what) = match &request.subject {
+        DiagramSubject::File { path } => (path, format!("the file {path}")),
+        DiagramSubject::Fragment { path, line } => (
+            path,
+            format!("the fragment of {path} around line {line} of its new version"),
+        ),
+    };
+    let diff = git_text(
+        &request.repo,
+        &["diff", &request.base, &request.head, "--", path],
+    );
+    format!(
+        "You are the Analyst of a code review tool. Draw {what} for a human who \
+         is about to review it: a Mermaid sequence diagram if the point is an \
+         exchange between components over time, otherwise a flowchart. Be \
+         compact: at most 5-6 participants or nodes and short labels. Answer \
+         with Mermaid text only, in `mermaid`. The files at the head of the \
+         change are in {tree}; you may read and search them, nothing else.\n\n\
+         Language: {language}\n\n\
+         Diff of the file:\n{diff}",
         language = request.language,
         tree = tree.display(),
     )
@@ -344,7 +379,10 @@ fn interpret(
     }
     reply
         .as_ref()
-        .map(|r| r["structured_output"][field].clone())
+        .map(|r| match field {
+            WHOLE_ANSWER => r["structured_output"].clone(),
+            field => r["structured_output"][field].clone(),
+        })
         .filter(|v| !v.is_null())
         .ok_or_else(|| AnalystError::Failed(format!("claude gave an answer without a {field}")))
 }
@@ -432,11 +470,28 @@ impl Analyst for ClaudeAnalyst {
             &request.base,
             &request.head,
             SCHEMA,
-            "summary",
+            WHOLE_ANSWER,
             |tree| prompt(request, tree),
         )
-        .and_then(|a| as_text(a, "summary"))
-        .map(|text| Summary { text })
+        .and_then(|answer| {
+            Ok(Summary {
+                text: as_text(answer["summary"].clone(), "summary")?,
+                diagram: answer["diagram"].as_str().map(str::to_string),
+            })
+        })
+    }
+
+    fn diagram(&self, request: &DiagramRequest) -> Result<Diagram, AnalystError> {
+        self.ask(
+            &request.repo,
+            &request.base,
+            &request.head,
+            DIAGRAM_SCHEMA,
+            "mermaid",
+            |tree| diagram_prompt(request, tree),
+        )
+        .and_then(|a| as_text(a, "mermaid"))
+        .map(|mermaid| Diagram { mermaid })
     }
 
     fn explain(&self, request: &ExplainRequest) -> Result<Explanation, AnalystError> {
