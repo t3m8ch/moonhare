@@ -5,10 +5,15 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
-use crate::analyst::{Analyst, AnalystError, Summary, SummaryRequest};
+use crate::analyst::{
+    Analyst, AnalystError, Group, GroupRequest, Grouping, Summary, SummaryRequest,
+};
 
 /// The shape the answer must have; `claude` validates it.
 const SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}"#;
+
+/// The shape of the Groups; `claude` validates it.
+const GROUPS_SCHEMA: &str = r#"{"type":"object","properties":{"groups":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"mechanical":{"type":"boolean"},"files":{"type":"array","items":{"type":"string"}}},"required":["name","description","mechanical","files"],"additionalProperties":false}}},"required":["groups"],"additionalProperties":false}"#;
 
 /// The only tools the Analyst gets: reading and searching files.
 const READ_ONLY_TOOLS: &str = "Read,Grep,Glob";
@@ -124,10 +129,17 @@ fn git_text(repo: &Path, args: &[&str]) -> String {
         .unwrap_or_default()
 }
 
-fn prompt(request: &SummaryRequest, tree: &Path) -> String {
-    let range = format!("{}..{}", request.base, request.head);
-    let commits = git_text(&request.repo, &["log", "--format=%h %s", &range, "--"]);
-    let mut diff = git_text(&request.repo, &["diff", &request.base, &request.head, "--"]);
+/// The Range as the Analyst reads it: the pull request, the commits and the
+/// diff, cut off when too long.
+fn range_text(
+    repo: &Path,
+    base: &str,
+    head: &str,
+    pull_request: &Option<crate::forge::PullRequest>,
+) -> String {
+    let range = format!("{base}..{head}");
+    let commits = git_text(repo, &["log", "--format=%h %s", &range, "--"]);
+    let mut diff = git_text(repo, &["diff", base, head, "--"]);
     if diff.len() > DIFF_LIMIT {
         let mut cut = DIFF_LIMIT;
         while !diff.is_char_boundary(cut) {
@@ -136,22 +148,54 @@ fn prompt(request: &SummaryRequest, tree: &Path) -> String {
         diff.truncate(cut);
         diff.push_str("\n[diff truncated: read the files in the tree]\n");
     }
-    let pull_request = request.pull_request.as_ref().map_or(String::new(), |pr| {
+    let pull_request = pull_request.as_ref().map_or(String::new(), |pr| {
         format!(
             "Pull request #{}: {}\n\n{}\n\n",
             pr.number, pr.title, pr.body
         )
     });
+    format!("{pull_request}Commits:\n{commits}\nDiff:\n{diff}")
+}
+
+fn prompt(request: &SummaryRequest, tree: &Path) -> String {
     format!(
         "You are the Analyst of a code review tool. Summarize what the change \
          below does and why, for a human who is about to review it. The files at the head of the change are in \
          {tree}; you may read and search them, nothing else.\n\n\
          Language: {language}\n\n\
-         {pull_request}\
-         Commits:\n{commits}\n\
-         Diff:\n{diff}",
+         {range}",
         language = request.language,
         tree = tree.display(),
+        range = range_text(
+            &request.repo,
+            &request.base,
+            &request.head,
+            &request.pull_request
+        ),
+    )
+}
+
+fn groups_prompt(request: &GroupRequest, tree: &Path) -> String {
+    let files: String = request.files.iter().map(|f| format!("- {f}\n")).collect();
+    format!(
+        "You are the Analyst of a code review tool. Split the files the change \
+         below touches into groups that belong together logically, for a human who is \
+         about to review it. Every file listed must be in exactly one group. Give each \
+         group a short name and a one-line description, mark it mechanical when its changes \
+         need no close reading (generated files, lockfiles, bulk renames), and list the \
+         groups in the order the human should read them. The files at the head of the \
+         change are in {tree}; you may read and search them, nothing else.\n\n\
+         Language: {language}\n\n\
+         Files:\n{files}\n\
+         {range}",
+        language = request.language,
+        tree = tree.display(),
+        range = range_text(
+            &request.repo,
+            &request.base,
+            &request.head,
+            &request.pull_request
+        ),
     )
 }
 
@@ -222,8 +266,13 @@ fn run_with_timeout(
 
 const NOT_LOGGED_IN: &str = "claude is not logged in: run `claude /login`, then :analyze";
 
-/// What `claude -p --output-format json` printed, as a summary or an error.
-fn interpret(stdout: &[u8], stderr: &[u8], success: bool) -> Result<Summary, AnalystError> {
+/// What `claude -p --output-format json` printed, as the answer that fits the
+/// schema or an error.
+fn interpret(
+    stdout: &[u8],
+    stderr: &[u8],
+    success: bool,
+) -> Result<serde_json::Value, AnalystError> {
     let reply: Option<serde_json::Value> = serde_json::from_slice(stdout).ok();
     let said = reply
         .as_ref()
@@ -242,32 +291,56 @@ fn interpret(stdout: &[u8], stderr: &[u8], success: bool) -> Result<Summary, Ana
         );
     }
     reply
-        .as_ref()
-        .and_then(|r| r["structured_output"]["summary"].as_str())
-        .map(|text| Summary { text: text.into() })
-        .ok_or_else(|| AnalystError::Failed("claude gave an answer without a summary".into()))
+        .map(|r| r["structured_output"].clone())
+        .ok_or_else(|| AnalystError::Failed("claude gave an answer that is not JSON".into()))
 }
 
-impl Analyst for ClaudeAnalyst {
-    fn summarize(&self, request: &SummaryRequest) -> Result<Summary, AnalystError> {
+fn parse_groups(answer: &serde_json::Value) -> Option<Grouping> {
+    let groups = answer["groups"].as_array()?;
+    let text = |g: &serde_json::Value, field: &str| Some(g[field].as_str()?.to_string());
+    let groups = groups
+        .iter()
+        .map(|g| {
+            Some(Group {
+                name: text(g, "name")?,
+                description: text(g, "description")?,
+                mechanical: g["mechanical"].as_bool()?,
+                files: g["files"]
+                    .as_array()?
+                    .iter()
+                    .map(|f| f.as_str().map(String::from))
+                    .collect::<Option<_>>()?,
+            })
+        })
+        .collect::<Option<_>>()?;
+    Some(Grouping { groups })
+}
+
+impl ClaudeAnalyst {
+    /// Run `claude -p` on the Range with the prompt `prompt` builds from the
+    /// path of the tree at its head, and return the answer that fits `schema`.
+    fn ask(
+        &self,
+        repo: &Path,
+        base: &str,
+        head: &str,
+        schema: &str,
+        prompt: impl FnOnce(&Path) -> String,
+    ) -> Result<serde_json::Value, AnalystError> {
         // `--` cannot end the options in front of a revision, so refuse
         // anything that git could take for one.
-        if [&request.base, &request.head]
-            .iter()
-            .any(|rev| rev.starts_with('-'))
-        {
+        if [base, head].iter().any(|rev| rev.starts_with('-')) {
             return Err(AnalystError::Failed(format!(
-                "not a revision: {}..{}",
-                request.base, request.head
+                "not a revision: {base}..{head}"
             )));
         }
-        let worktree = TempWorktree::create(&request.repo, &request.head)?;
+        let worktree = TempWorktree::create(repo, head)?;
         let sandbox = tempfile::Builder::new()
             .prefix("moonhare-cwd-")
             .tempdir()
             .map_err(|e| AnalystError::Failed(format!("cannot create a directory: {e}")))?;
         let child = Command::new(&self.program)
-            .args(["-p", "--output-format", "json", "--json-schema", SCHEMA])
+            .args(["-p", "--output-format", "json", "--json-schema", schema])
             .args([
                 "--tools",
                 READ_ONLY_TOOLS,
@@ -305,11 +378,35 @@ impl Analyst for ClaudeAnalyst {
                     AnalystError::Failed(format!("cannot run claude: {e}"))
                 }
             })?;
-        let out = run_with_timeout(
-            child,
-            prompt(request, &worktree.path).into_bytes(),
-            self.timeout,
-        )?;
+        let out = run_with_timeout(child, prompt(&worktree.path).into_bytes(), self.timeout)?;
         interpret(&out.stdout, &out.stderr, out.status.success())
+    }
+}
+
+impl Analyst for ClaudeAnalyst {
+    fn summarize(&self, request: &SummaryRequest) -> Result<Summary, AnalystError> {
+        let answer = self.ask(
+            &request.repo,
+            &request.base,
+            &request.head,
+            SCHEMA,
+            |tree| prompt(request, tree),
+        )?;
+        answer["summary"]
+            .as_str()
+            .map(|text| Summary { text: text.into() })
+            .ok_or_else(|| AnalystError::Failed("claude gave an answer without a summary".into()))
+    }
+
+    fn group(&self, request: &GroupRequest) -> Result<Grouping, AnalystError> {
+        let answer = self.ask(
+            &request.repo,
+            &request.base,
+            &request.head,
+            GROUPS_SCHEMA,
+            |tree| groups_prompt(request, tree),
+        )?;
+        parse_groups(&answer)
+            .ok_or_else(|| AnalystError::Failed("claude gave an answer without groups".into()))
     }
 }

@@ -53,4 +53,44 @@ impl std::error::Error for AnalystError {}
 pub trait Analyst: Send + Sync {
     /// Summarize the Range. May take minutes; callers run it in the background.
     fn summarize(&self, request: &SummaryRequest) -> Result<Summary, AnalystError>;
+
+    /// Split the changed files of the Range into Groups. May take minutes;
+    /// callers run it in the background.
+    fn group(&self, _request: &GroupRequest) -> Result<Grouping, AnalystError> {
+        Err(AnalystError::Failed(
+            "this Analyst cannot group files".into(),
+        ))
+    }
+}
+
+/// What the Analyst is asked to split into Groups.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupRequest {
+    /// The clone holding the Range.
+    pub repo: PathBuf,
+    pub base: String,
+    pub head: String,
+    /// Language of the names and descriptions, as a code: `ru`, `en`.
+    pub language: String,
+    /// Title and description of the pull request, when the Forge gave them.
+    pub pull_request: Option<PullRequest>,
+    /// Every file the Range changes.
+    pub files: Vec<String>,
+}
+
+/// One Group as the Analyst names it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Group {
+    pub name: String,
+    /// One line on what the files have in common.
+    pub description: String,
+    /// The changes need no close reading.
+    pub mechanical: bool,
+    pub files: Vec<String>,
+}
+
+/// The Analyst's Groups, in the recommended reading order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Grouping {
+    pub groups: Vec<Group>,
 }

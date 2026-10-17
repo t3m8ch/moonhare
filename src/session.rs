@@ -214,6 +214,7 @@ enum Focus {
 mod analysis;
 mod file_bar;
 mod file_picker;
+mod groups;
 mod marks;
 mod nav;
 mod unreviewed;
@@ -276,6 +277,7 @@ pub struct Session {
     pull_request: Option<PullRequest>,
     quit: bool,
     analysis: analysis::Analysis,
+    groups: groups::Groups,
 }
 
 impl Session {
@@ -435,6 +437,7 @@ impl Session {
             pull_request: None,
             quit: false,
             analysis: Default::default(),
+            groups: Default::default(),
         };
         session.load_selected();
         session.sync_view();
@@ -527,9 +530,15 @@ impl Session {
             .saturating_sub(2 + marks::PROGRESS_ROWS) as usize
     }
 
+    /// The first sidebar row shown: scrolled so the selected file is visible.
     fn sidebar_offset(&self) -> usize {
         let cap = self.sidebar_capacity().max(1);
-        (self.selected + 1).saturating_sub(cap)
+        let at = self
+            .sidebar_rows()
+            .iter()
+            .position(|r| *r == groups::Row::File(self.selected))
+            .unwrap_or(self.selected);
+        (at + 1).saturating_sub(cap)
     }
 
     // ------------------------------------------------------------ data
@@ -786,7 +795,7 @@ impl Session {
         }
 
         self.message = None;
-        if self.analysis_key(key) {
+        if self.analysis_key(key) || self.groups_key(key) {
             return;
         }
         if let Some(cursor) = self.file_picker {
@@ -1021,9 +1030,11 @@ impl Session {
                 let area = self.files_area();
                 // Row 0 of the sidebar is its border.
                 if mouse.row > area.y {
-                    let index = self.sidebar_offset() + (mouse.row - area.y - 1) as usize;
+                    let at = self.sidebar_offset() + (mouse.row - area.y - 1) as usize;
                     if ((mouse.row - area.y - 1) as usize) < self.sidebar_capacity() {
-                        self.select(index);
+                        if let Some(groups::Row::File(index)) = self.sidebar_rows().get(at) {
+                            self.select(*index);
+                        }
                     }
                 }
             }
@@ -1190,20 +1201,28 @@ impl Session {
 
     fn render_files(&self, buf: &mut Buffer) {
         let area = self.files_area();
-        draw_box(buf, area, &format!(" Files ({}) ", self.files.len()));
+        draw_box(
+            buf,
+            area,
+            &format!(" Files ({}){} ", self.files.len(), self.groups_note()),
+        );
         let width = area.width as usize;
         let inner = width.saturating_sub(2);
         let offset = self.sidebar_offset();
         self.render_progress(buf, area);
-        for (row, (i, file)) in self
-            .files
-            .iter()
-            .enumerate()
+        for (row, shown) in self
+            .sidebar_rows()
+            .into_iter()
             .skip(offset)
             .take(self.sidebar_capacity())
             .enumerate()
         {
             let y = area.y + 1 + row as u16;
+            let groups::Row::File(i) = shown else {
+                self.render_group_row(buf, area.x + 1, y, inner, shown);
+                continue;
+            };
+            let file = &self.files[i];
             let selected = i == self.selected;
             let color = match file.status {
                 Status::Added => Color::Indexed(114),
@@ -1493,6 +1512,7 @@ impl Session {
                 self.scope_label(),
             ),
         };
+        let text = self.groups_status(&text);
         let text = self.analysis_status(&text);
         let text = match &self.warning {
             Some(w) => format!("{text}  {w}"),
