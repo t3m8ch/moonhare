@@ -21,10 +21,11 @@ impl Session {
     /// Where the picker box is: about nine tenths of the screen.
     pub(super) fn file_picker_area(&self) -> Rect {
         let (w, h) = (self.size.0, self.size.1.saturating_sub(BOTTOM_ROWS));
-        let width = (w * 9 / 10)
+        let nine_tenths = |n: u16| (u32::from(n) * 9 / 10) as u16;
+        let width = nine_tenths(w)
             .clamp(MIN_WIDTH, MAX_WIDTH)
             .min(w.saturating_sub(2));
-        let height = (h * 9 / 10).max(h.min(10)).min(h);
+        let height = nine_tenths(h).max(h.min(10)).min(h);
         Rect::new((w - width) / 2, (h - height) / 2, width, height)
     }
 
@@ -35,10 +36,12 @@ impl Session {
             .saturating_sub(CHROME_ROWS + 1) as usize
     }
 
+    /// The visible rows of the picker's tree.
     pub(super) fn picker_rows(&self) -> Vec<Row> {
         self.tree_rows((self.file_picker_area().width as usize).saturating_sub(3))
     }
 
+    /// The first row the picker shows: the cursor stays in view.
     fn picker_offset(&self, rows: &[Row], at: &At) -> usize {
         let cursor = self.picker_cursor(rows, at).unwrap_or(0);
         file_panel::offset_for(cursor, self.picker_capacity())

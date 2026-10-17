@@ -131,14 +131,15 @@ fn files_marked_generated_by_attributes_are_mechanical() {
         row_index(&screen, "gen/keep.rs") < row_index(&screen, "gen/api.rs"),
         "{screen}"
     );
-    // The tree: .gitattributes, gen/ with keep.rs and then api.rs, src/lib.rs.
-    // The generated file is last in its directory.
+    // Files: .gitattributes, gen/keep.rs, src/lib.rs, then gen/api.rs in a
+    // tree of its own after the ordinary files.
     h.keys("]f");
     assert!(h.screen().contains("handwritten-body"), "{}", h.screen());
-    h.keys("]f");
+    h.keys("]f]f");
     let screen = h.screen();
     assert!(!screen.contains("generated-body"), "{screen}");
     assert!(screen.contains("generated"), "{screen}");
+    assert!(screen.contains("api.rs"), "{screen}");
 }
 
 #[test]

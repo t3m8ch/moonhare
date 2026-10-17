@@ -500,3 +500,64 @@ fn from_the_diff_space_i_describes_the_group_of_the_open_file() {
     h.keys("j").keys("q");
     assert!(!h.screen().contains("The end."));
 }
+
+#[test]
+fn a_fold_survives_the_chain_being_split_and_joined_again() {
+    let fx = deep_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    // Narrow: `src`, `features`, `course`... each a node; fold `features`.
+    h.keys(":sidebar 20<CR><Tab><Tab>jjh");
+    assert!(!sidebar(&mut h, 20).contains("del.ts"), "{}", h.screen());
+    // Wide: the node `src/features/course` joins it, and stays folded.
+    h.keys(":sidebar<CR>");
+    let side = sidebar(&mut h, 32);
+    assert!(row_of(&side, "src/features/course").contains('▸'), "{side}");
+    assert!(!side.contains("model.ts"), "{side}");
+    // Unfolding the joined node unfolds every directory in it.
+    h.keys("l");
+    h.keys(":sidebar 20<CR>");
+    // So narrow, model.ts is cut to its end.
+    assert!(sidebar(&mut h, 20).contains("del.ts"), "{}", h.screen());
+}
+
+#[test]
+fn h_on_a_file_at_the_root_does_not_scroll_the_diff() {
+    let fx = Fixture::new();
+    fx.write("README.md", "x\n").commit("initial");
+    fx.branch("feature");
+    fx.write("README.md", &format!("{}\n", "wide ".repeat(80)))
+        .commit("wide line");
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("ll<Tab><Tab>h<Tab>");
+    let before = h.screen();
+    h.keys("<Tab><Tab>h<Tab>");
+    assert_eq!(h.screen(), before);
+}
+
+#[test]
+fn mechanical_files_keep_coming_last_in_a_tree_of_their_own() {
+    let fx = Fixture::new();
+    fx.write("README.md", "x\n").commit("initial");
+    fx.branch("feature");
+    fx.write("web/package-lock.json", "{}\n")
+        .write("web/app.js", "app\n")
+        .write("src/main.rs", "fn main() {}\n")
+        .commit("files");
+    let mut h = Harness::open(&fx, 160, 30);
+    let side = sidebar(&mut h, 32);
+    assert!(
+        position(&side, "main.rs") < position(&side, "app.js"),
+        "{side}"
+    );
+    assert!(
+        position(&side, "app.js") < position(&side, "package-lock.json"),
+        "{side}"
+    );
+    assert_eq!(side.matches("▾ web").count(), 2, "{side}");
+    h.keys("]f]f");
+    assert!(
+        file_bar(&mut h).contains("package-lock.json"),
+        "{}",
+        h.screen()
+    );
+}

@@ -8,8 +8,21 @@ use std::ops::Range;
 use super::*;
 use crate::file_tree::{self, Line};
 
-/// A directory of the tree: the Group it is drawn in and its path.
-pub(super) type DirKey = (Option<usize>, String);
+/// One tree of the panel: the files of a Group (`None`: of the whole list
+/// when there are no Groups), the ordinary ones or the Mechanical ones, which
+/// keep coming last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) struct Tree {
+    group: Option<usize>,
+    mechanical: bool,
+}
+
+/// A directory of the panel: the tree it is drawn in and its path.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(super) struct DirKey {
+    tree: Tree,
+    path: String,
+}
 
 /// Where a cursor in the tree stands.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,16 +37,16 @@ pub(super) enum At {
 pub(super) enum Row {
     /// The name of Group `n` and its progress.
     Header(usize),
-    /// A row of the tree of a Group (`None`: the tree of all files). File
-    /// indices are into the displayed list.
+    /// A row of one of the trees. File indices are into the displayed list.
     Tree {
-        group: Option<usize>,
+        tree: Tree,
         line: Line,
         folded: bool,
     },
 }
 
 impl Row {
+    /// Where a cursor on this row stands; a Group header is no stop.
     pub(super) fn at(&self) -> Option<At> {
         match self {
             Row::Header(_) => None,
@@ -42,32 +55,45 @@ impl Row {
                 ..
             } => Some(At::File(*index)),
             Row::Tree {
-                group,
+                tree,
                 line: Line::Dir { path, .. },
                 ..
-            } => Some(At::Dir((*group, path.clone()))),
+            } => Some(At::Dir(DirKey {
+                tree: *tree,
+                path: path.clone(),
+            })),
         }
     }
 
+    /// The Group the row belongs to.
     pub(super) fn group(&self) -> Option<usize> {
         match self {
             Row::Header(n) => Some(*n),
-            Row::Tree { group, .. } => *group,
+            Row::Tree { tree, .. } => tree.group,
         }
     }
 
-    fn dir_key(&self) -> Option<(DirKey, bool)> {
+    /// Whether the row is a directory, and whether it is folded.
+    fn folded(&self) -> Option<bool> {
         match self {
             Row::Tree {
-                group,
-                line: Line::Dir { path, .. },
+                line: Line::Dir { .. },
                 folded,
-            } => Some(((*group, path.clone()), *folded)),
+                ..
+            } => Some(*folded),
             _ => None,
+        }
+    }
+
+    fn tree(&self) -> Option<Tree> {
+        match self {
+            Row::Tree { tree, .. } => Some(*tree),
+            Row::Header(_) => None,
         }
     }
 }
 
+/// The state of the file panel the sidebar and the picker share.
 #[derive(Default)]
 pub(super) struct FilePanel {
     /// The sidebar cursor stands on this directory; `None`: on the open file.
@@ -95,12 +121,11 @@ fn cursor_row(rows: &[Row], at: &At, open_file: usize) -> Option<usize> {
     }
     let file = match at {
         At::File(i) => *i,
-        At::Dir((group, path)) => {
+        At::Dir(dir) => {
             // A wider row joined the directory into a longer node.
-            let inside = format!("{path}/");
             let joined = rows.iter().position(|r| {
-                matches!(r, Row::Tree { group: g, line: Line::Dir { path: p, .. }, .. }
-                    if g == group && p.starts_with(&inside))
+                matches!(r, Row::Tree { tree, line, .. }
+                    if *tree == dir.tree && line.dirs().contains(&dir.path.as_str()))
             });
             if joined.is_some() {
                 return joined;
@@ -130,10 +155,10 @@ fn motion(rows: &[Row], cursor: usize, code: KeyCode, n: usize, half: usize) -> 
         Row::Header(_) => 0,
     };
     let parent = || {
-        let (group, d) = (rows[cursor].group(), depth(&rows[cursor]));
+        let (tree, d) = (rows[cursor].tree(), depth(&rows[cursor]));
         rows[..cursor]
             .iter()
-            .rposition(|r| r.dir_key().is_some() && r.group() == group && depth(r) < d)
+            .rposition(|r| r.folded().is_some() && r.tree() == tree && depth(r) < d)
     };
     Some(match (code, &rows[cursor]) {
         (KeyCode::Char('j') | KeyCode::Down, _) => Motion::Go(stops[(here + n).min(last)]),
@@ -143,19 +168,19 @@ fn motion(rows: &[Row], cursor: usize, code: KeyCode, n: usize, half: usize) -> 
         (KeyCode::PageUp, _) => Motion::Go(stops[here.saturating_sub(half)]),
         (KeyCode::Char('G'), _) => Motion::Go(stops[last]),
         (KeyCode::Home, _) => Motion::Go(stops[0]),
-        (KeyCode::Char('h') | KeyCode::Left, row) => match row.dir_key() {
-            Some((_, false)) => Motion::Fold(cursor, true),
-            Some((_, true)) => Motion::Go(parent()?),
+        (KeyCode::Char('h') | KeyCode::Left, row) => match row.folded() {
+            Some(false) => Motion::Fold(cursor, true),
+            Some(true) => Motion::Go(parent()?),
             None => Motion::Fold(parent()?, true),
         },
-        (KeyCode::Char('l') | KeyCode::Right, row) => match (row.dir_key(), row.at()) {
-            (Some((_, true)), _) => Motion::Fold(cursor, false),
-            (Some((_, false)), _) => Motion::Go(stops[(here + 1).min(last)]),
+        (KeyCode::Char('l') | KeyCode::Right, row) => match (row.folded(), row.at()) {
+            (Some(true), _) => Motion::Fold(cursor, false),
+            (Some(false), _) => Motion::Go(stops[(here + 1).min(last)]),
             (None, Some(At::File(i))) => Motion::Open(i),
             _ => return None,
         },
-        (KeyCode::Enter, row) => match (row.dir_key(), row.at()) {
-            (Some((_, folded)), _) => Motion::Fold(cursor, !folded),
+        (KeyCode::Enter, row) => match (row.folded(), row.at()) {
+            (Some(folded), _) => Motion::Fold(cursor, !folded),
             (None, Some(At::File(i))) => Motion::Open(i),
             _ => return None,
         },
@@ -177,66 +202,75 @@ pub(super) fn offset_for(at: usize, capacity: usize) -> usize {
 }
 
 impl Session {
-    /// Runs of the displayed list that share a Group: one tree each. Without
-    /// Groups the whole list is one tree.
-    fn group_runs(&self) -> Vec<(Option<usize>, Range<usize>)> {
-        let mut runs: Vec<(Option<usize>, Range<usize>)> = Vec::new();
-        for (i, file) in self.files.iter().enumerate() {
-            let group = self.group_of(&file.path);
+    /// The tree `file` is drawn in.
+    fn tree_of(&self, file: &ChangedFile) -> Tree {
+        Tree {
+            group: self.group_of(&file.path),
+            mechanical: file.mechanical.is_some(),
+        }
+    }
+
+    /// Runs of `files` drawn in the same tree. The files come Group by Group,
+    /// the Mechanical ones last in each.
+    fn tree_runs(&self, files: &[ChangedFile]) -> Vec<(Tree, Range<usize>)> {
+        let mut runs: Vec<(Tree, Range<usize>)> = Vec::new();
+        for (i, file) in files.iter().enumerate() {
+            let tree = self.tree_of(file);
             match runs.last_mut() {
-                Some((g, run)) if *g == group => run.end = i + 1,
-                _ => runs.push((group, i..i + 1)),
+                Some((t, run)) if *t == tree => run.end = i + 1,
+                _ => runs.push((tree, i..i + 1)),
             }
         }
         runs
     }
 
-    /// The files reordered as their trees show them, Group by Group.
+    /// The files reordered as their trees show them.
     pub(super) fn in_tree_order(&self, files: Vec<ChangedFile>) -> Vec<ChangedFile> {
         let mut out = Vec::with_capacity(files.len());
-        let mut start = 0;
-        while start < files.len() {
-            let group = self.group_of(&files[start].path);
-            let end = (start..files.len())
-                .find(|&i| self.group_of(&files[i].path) != group)
-                .unwrap_or(files.len());
-            let paths: Vec<&str> = files[start..end].iter().map(|f| f.path.as_str()).collect();
+        for (_, run) in self.tree_runs(&files) {
+            let paths: Vec<&str> = files[run.clone()].iter().map(|f| f.path.as_str()).collect();
             out.extend(
                 file_tree::order(&paths)
                     .into_iter()
-                    .map(|i| files[start + i].clone()),
+                    .map(|i| files[run.start + i].clone()),
             );
-            start = end;
         }
         out
+    }
+
+    /// Whether the directory node `line` of `tree` is folded.
+    fn is_folded(&self, tree: Tree, line: &Line) -> bool {
+        line.dirs().into_iter().any(|path| {
+            self.panel.folded.contains(&DirKey {
+                tree,
+                path: path.to_string(),
+            })
+        })
     }
 
     /// The visible rows of the panel for rows of `width` columns after the
     /// cursor mark.
     pub(super) fn tree_rows(&self, width: usize) -> Vec<Row> {
         let mut rows = Vec::new();
-        for (group, run) in self.group_runs() {
-            if let Some(g) = group {
+        let mut last_group = None;
+        for (tree, run) in self.tree_runs(&self.files) {
+            if let Some(g) = tree.group.filter(|&g| last_group != Some(g)) {
                 rows.push(Row::Header(g));
+                last_group = Some(g);
             }
             let paths: Vec<&str> = self.files[run.clone()]
                 .iter()
                 .map(|f| f.path.as_str())
                 .collect();
             let lines = file_tree::build(&paths, width);
-            let folded = |path: &str| self.panel.folded.contains(&(group, path.to_string()));
-            for line in file_tree::visible(&lines, folded) {
+            for line in file_tree::visible(&lines, |l| self.is_folded(tree, l)) {
                 let mut line = line.clone();
                 match &mut line {
                     Line::File { index, .. } => *index += run.start,
                     Line::Dir { files, .. } => files.iter_mut().for_each(|i| *i += run.start),
                 }
-                let folded = matches!(&line, Line::Dir { path, .. } if folded(path));
-                rows.push(Row::Tree {
-                    group,
-                    line,
-                    folded,
-                });
+                let folded = self.is_folded(tree, &line);
+                rows.push(Row::Tree { tree, line, folded });
             }
         }
         rows
@@ -247,6 +281,7 @@ impl Session {
         (self.files_area().width as usize).saturating_sub(3)
     }
 
+    /// The visible rows of the sidebar's file panel.
     pub(super) fn sidebar_rows(&self) -> Vec<Row> {
         self.tree_rows(self.sidebar_tree_width())
     }
@@ -271,21 +306,36 @@ impl Session {
 
     /// Selecting a file shows it: the directories above it unfold.
     pub(super) fn unfold_to(&mut self, index: usize) {
-        let Some(path) = self.files.get(index).map(|f| f.path.clone()) else {
+        let Some(file) = self.files.get(index) else {
             return;
         };
-        let group = self.group_of(&path);
-        for dir in file_tree::ancestors(&path) {
-            self.panel.folded.remove(&(group, dir.to_string()));
+        let tree = self.tree_of(file);
+        for dir in file_tree::ancestors(&file.path) {
+            self.panel.folded.remove(&DirKey {
+                tree,
+                path: dir.to_string(),
+            });
         }
     }
 
-    fn set_folded(&mut self, key: DirKey, folded: bool) {
+    /// Fold or unfold the directory of `row`; returns where a cursor on it
+    /// stands. Unfolding forgets a fold of any directory the node joins.
+    fn fold_row(&mut self, row: &Row, folded: bool) -> Option<At> {
+        let (Row::Tree { tree, line, .. }, Some(at)) = (row, row.at()) else {
+            return None;
+        };
+        let mut keys = line.dirs().into_iter().map(|path| DirKey {
+            tree: *tree,
+            path: path.to_string(),
+        });
         if folded {
-            self.panel.folded.insert(key);
+            self.panel.folded.extend(keys.next_back());
         } else {
-            self.panel.folded.remove(&key);
+            keys.for_each(|key| {
+                self.panel.folded.remove(&key);
+            });
         }
+        Some(at)
     }
 
     /// Put the sidebar cursor on `at`; a file is opened in the diff.
@@ -296,18 +346,21 @@ impl Session {
         }
     }
 
-    /// A click (or `Enter`) on row `row` of the sidebar.
+    /// A click on row `row` of the sidebar: a file opens, a directory folds
+    /// or unfolds, a Group header opens its first file.
     pub(super) fn click_sidebar_row(&mut self, row: &Row) {
-        match row {
-            Row::Header(n) => self.open_group(*n),
-            _ => match (row.dir_key(), row.at()) {
-                (Some((key, folded)), _) => {
-                    self.set_folded(key.clone(), !folded);
-                    self.panel.dir = Some(key);
+        match (row, row.folded()) {
+            (Row::Header(n), _) => self.open_group(*n),
+            (_, Some(folded)) => {
+                if let Some(at) = self.fold_row(row, !folded) {
+                    self.put_sidebar(at);
                 }
-                (None, Some(at)) => self.put_sidebar(at),
-                _ => {}
-            },
+            }
+            _ => {
+                if let Some(at) = row.at() {
+                    self.put_sidebar(at);
+                }
+            }
         }
     }
 
@@ -358,7 +411,12 @@ impl Session {
             found
         };
         let Some(found) = found else {
-            return false;
+            // `h` with nothing to fold above is still the panel's key: it
+            // must not scroll the diff behind it.
+            return matches!(
+                key.code,
+                KeyCode::Char('h' | 'l') | KeyCode::Left | KeyCode::Right
+            );
         };
         match found {
             Motion::Go(r) => {
@@ -367,9 +425,8 @@ impl Session {
                 }
             }
             Motion::Fold(r, folded) => {
-                if let Some((key, _)) = rows[r].dir_key() {
-                    self.set_folded(key.clone(), folded);
-                    self.panel.dir = Some(key);
+                if let Some(at) = self.fold_row(&rows[r], folded) {
+                    self.put_sidebar(at);
                 }
             }
             Motion::Open(i) => {
@@ -412,9 +469,8 @@ impl Session {
         match found {
             Some(Motion::Go(r)) => self.file_picker = rows[r].at().or(Some(at)),
             Some(Motion::Fold(r, folded)) => {
-                if let Some((key, _)) = rows[r].dir_key() {
-                    self.set_folded(key.clone(), folded);
-                    self.file_picker = Some(At::Dir(key));
+                if let Some(at) = self.fold_row(&rows[r], folded) {
+                    self.file_picker = Some(at);
                 }
             }
             Some(Motion::Open(i)) => {
@@ -447,10 +503,11 @@ impl Session {
                 self.file_picker = None;
                 self.open_group(*n);
             }
-            _ => match (row.dir_key(), row.at()) {
-                (Some((key, folded)), _) => {
-                    self.set_folded(key.clone(), !folded);
-                    self.file_picker = Some(At::Dir(key));
+            _ => match (row.folded(), row.at()) {
+                (Some(folded), _) => {
+                    if let Some(at) = self.fold_row(row, !folded) {
+                        self.file_picker = Some(at);
+                    }
                 }
                 (None, Some(At::File(i))) => {
                     self.file_picker = None;
@@ -537,8 +594,8 @@ impl Session {
                     let progress = format!("{done}/{}", files.len());
                     let fold = if *folded { '▸' } else { '▾' };
                     let head = format!("{marker}{}{fold} {label}", " ".repeat(*indent));
-                    let room = width.saturating_sub(progress.len() + 1);
-                    let line = format!("{}{progress} ", pad(&fit(&head, room, false), room));
+                    let room = width.saturating_sub(progress.len() + 2);
+                    let line = format!("{} {progress} ", pad(&fit(&head, room, false), room));
                     buf.set_stringn(x, y, &line, width, style.fg(Color::Indexed(110)));
                 }
             }
@@ -573,6 +630,7 @@ impl Session {
 
     // ------------------------------------------------------- description
 
+    /// Whether the description of a Group is open.
     pub(super) fn group_info_open(&self) -> bool {
         self.panel.info.is_some()
     }
@@ -614,6 +672,7 @@ impl Session {
         true
     }
 
+    /// The description, wrapped to its box.
     pub(super) fn group_info_lines(&self) -> Vec<String> {
         let Some((n, _)) = self.panel.info else {
             return Vec::new();
@@ -624,10 +683,12 @@ impl Session {
         )
     }
 
+    /// The scroll of the open description.
     pub(super) fn group_info_scroll_mut(&mut self) -> Option<&mut scroll::Scroll> {
         self.panel.info.as_mut().map(|(_, scroll)| scroll)
     }
 
+    /// The description overlay of `Space i`.
     pub(super) fn render_group_info(&self, buf: &mut Buffer) {
         let Some((n, scroll)) = &self.panel.info else {
             return;
@@ -635,11 +696,7 @@ impl Session {
         let area = self.overlay_area();
         clear_area(buf, area);
         let (name, _, _) = self.group_text(*n);
-        draw_box(
-            buf,
-            area,
-            &format!(" Group {} {name} (Esc закрыть) ", n + 1),
-        );
+        draw_box(buf, area, &format!(" Group {} {name} (Esc close) ", n + 1));
         scroll::render_lines(buf, area, &self.group_info_lines(), scroll);
     }
 }

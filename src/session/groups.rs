@@ -297,7 +297,11 @@ impl Session {
     /// Groups: Group by Group, and inside a Group as the Analyst listed them.
     pub(super) fn in_group_order(&self, mut files: Vec<ChangedFile>) -> Vec<ChangedFile> {
         if self.grouping().is_some() {
-            files.sort_by_key(|f| self.reading_place(&f.path).unwrap_or((usize::MAX, 0)));
+            files.sort_by_key(|f| {
+                let (group, rank) = self.reading_place(&f.path).unwrap_or((usize::MAX, 0));
+                // Mechanical files stay last in their Group.
+                (group, f.mechanical.is_some(), rank)
+            });
         }
         files
     }

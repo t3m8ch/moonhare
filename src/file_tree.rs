@@ -30,14 +30,17 @@ pub enum Line {
         indent: usize,
         /// The segments of the node, joined with `/`, fitted to the row.
         label: String,
-        /// The full path of the directory the node ends at: what folding
-        /// remembers.
+        /// The full path of the directory the node ends at.
         path: String,
+        /// How many directories the node stands for (`a/b/c` is three).
+        segments: usize,
         /// The input indices of every file under the node, in tree order.
         files: Vec<usize>,
     },
+    /// A file: a leaf of the tree.
     File {
         depth: usize,
+        /// Columns the row is indented by.
         indent: usize,
         /// The file name, fitted to the row.
         name: String,
@@ -47,19 +50,33 @@ pub enum Line {
 }
 
 impl Line {
+    /// The level of the row in the tree, 0 at the root.
     pub fn depth(&self) -> usize {
         match self {
             Line::Dir { depth, .. } | Line::File { depth, .. } => *depth,
         }
     }
+
+    /// The full paths of the directories a directory node stands for,
+    /// outermost first; none for a file. A fold of any of them folds the
+    /// node, so a fold survives the node being joined or split by a resize.
+    pub fn dirs(&self) -> Vec<&str> {
+        let Line::Dir { path, segments, .. } = self else {
+            return Vec::new();
+        };
+        let mut all = ancestors(path);
+        all.push(path);
+        all.split_off(all.len().saturating_sub(*segments))
+    }
 }
 
-/// The columns `done/total` takes at the end of a directory row, with the
-/// space in front of it.
+/// The columns `done/total` takes at the end of a directory row, with a
+/// space on either side of it.
 pub fn progress_width(total: usize) -> usize {
-    2 * total.to_string().len() + 2
+    2 * total.to_string().len() + 3
 }
 
+/// A directory while the tree is built.
 #[derive(Default)]
 struct Node {
     name: String,
@@ -67,6 +84,7 @@ struct Node {
     dirs: HashMap<String, usize>,
 }
 
+/// What a directory holds, in the order it was first seen.
 #[derive(Clone, Copy)]
 enum Child {
     Dir(usize),
@@ -90,9 +108,9 @@ pub fn order(paths: &[&str]) -> Vec<usize> {
     out
 }
 
-/// The rows left when the directories `collapsed` says are folded hide
+/// The rows left when the directory nodes `collapsed` says are folded hide
 /// what is under them.
-pub fn visible(lines: &[Line], collapsed: impl Fn(&str) -> bool) -> Vec<&Line> {
+pub fn visible(lines: &[Line], collapsed: impl Fn(&Line) -> bool) -> Vec<&Line> {
     let mut out = Vec::new();
     let mut hidden_below: Option<usize> = None;
     for line in lines {
@@ -102,8 +120,8 @@ pub fn visible(lines: &[Line], collapsed: impl Fn(&str) -> bool) -> Vec<&Line> {
             }
             hidden_below = None;
         }
-        if let Line::Dir { path, depth, .. } = line {
-            if collapsed(path) {
+        if let Line::Dir { depth, .. } = line {
+            if collapsed(line) {
                 hidden_below = Some(*depth);
             }
         }
@@ -117,6 +135,7 @@ pub fn ancestors(path: &str) -> Vec<&str> {
     path.match_indices('/').map(|(i, _)| &path[..i]).collect()
 }
 
+/// The directories of `paths`, the root first.
 fn trie(paths: &[&str]) -> Vec<Node> {
     let mut nodes = vec![Node::default()];
     for (index, path) in paths.iter().enumerate() {
@@ -143,6 +162,7 @@ fn trie(paths: &[&str]) -> Vec<Node> {
     nodes
 }
 
+/// The files under directory `node`, in tree order.
 fn files_under(nodes: &[Node], node: usize, out: &mut Vec<usize>) {
     for child in &nodes[node].children {
         match *child {
@@ -152,11 +172,13 @@ fn files_under(nodes: &[Node], node: usize, out: &mut Vec<usize>) {
     }
 }
 
+/// The indent of a row at `depth` in rows of `width` columns.
 fn indent_of(depth: usize, width: usize) -> usize {
     // A deep tree in a narrow row keeps half of it for the names.
     (depth * INDENT).min(width / 2)
 }
 
+/// The rows of what directory `node` holds, at `depth`, under `parent`.
 fn emit(
     nodes: &[Node],
     node: usize,
@@ -212,6 +234,7 @@ fn emit(
                         indent,
                         label: fit_head(&label, room),
                         path: path.clone(),
+                        segments: take,
                         files: files.clone(),
                     });
                     rest = &rest[take..];
@@ -302,7 +325,7 @@ mod tests {
     #[test]
     fn a_chain_too_wide_for_the_row_is_split_into_nested_nodes() {
         let paths = ["src/features/course/features/access/api/reviews.ts"];
-        // 26 columns: 2 for the fold mark, 4 for " 0/1", 20 left for the name.
+        // 26 columns: 2 for the fold mark, 5 for " 0/1 ", 19 left for the name.
         let lines = draw(&paths, 26);
         assert_eq!(
             lines,
@@ -320,7 +343,7 @@ mod tests {
 
     #[test]
     fn the_split_parts_remember_their_full_paths() {
-        let lines = build(&["aaa/bbb/ccc/f.rs"], 13);
+        let lines = build(&["aaa/bbb/ccc/f.rs"], 14);
         let paths: Vec<&str> = lines
             .iter()
             .filter_map(|l| match l {
@@ -334,8 +357,8 @@ mod tests {
     #[test]
     fn only_a_segment_too_long_for_its_row_is_cut() {
         let lines = draw(&["averyveryverylongdirectoryname/x.rs"], 20);
-        // 14 columns are left for the name: 20, less the fold mark and " 0/1".
-        assert_eq!(lines[0], "averyveryvery…/");
+        // 13 columns are left for the name: 20, less the fold mark and " 0/1 ".
+        assert_eq!(lines[0], "averyveryver…/");
     }
 
     #[test]
@@ -420,17 +443,28 @@ mod tests {
                 })
                 .collect()
         };
+        let folded = |dir: &'static str| move |l: &Line| l.dirs().contains(&dir);
         assert_eq!(
-            names(visible(&lines, |p| p == "src/a")),
+            names(visible(&lines, folded("src/a"))),
             ["src/", "a/", "b.rs", "top.rs"]
         );
-        assert_eq!(names(visible(&lines, |p| p == "src")), ["src/", "top.rs"]);
+        assert_eq!(names(visible(&lines, folded("src"))), ["src/", "top.rs"]);
     }
 
     #[test]
     fn a_file_name_too_long_keeps_its_end() {
         let lines = draw(&["a_really_long_file_name.rs"], 14);
         assert_eq!(lines, ["…e_name.rs"]);
+    }
+
+    #[test]
+    fn a_node_stands_for_every_directory_it_joins() {
+        let wide = build(&["aaa/bbb/ccc/f.rs"], WIDE);
+        assert_eq!(wide[0].dirs(), ["aaa", "aaa/bbb", "aaa/bbb/ccc"]);
+        let narrow = build(&["aaa/bbb/ccc/f.rs"], 14);
+        assert_eq!(narrow[0].dirs(), ["aaa", "aaa/bbb"]);
+        assert_eq!(narrow[1].dirs(), ["aaa/bbb/ccc"]);
+        assert!(narrow[2].dirs().is_empty());
     }
 
     #[test]
