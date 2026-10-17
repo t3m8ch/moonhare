@@ -156,6 +156,11 @@ impl Review {
         Ok(review)
     }
 
+    /// The directory the Review keeps its records in.
+    pub fn dir(&self) -> &std::path::Path {
+        &self.dir
+    }
+
     pub fn is_marked(&self, change: &FileChange) -> bool {
         self.marked.contains_key(&Self::key(change))
     }
@@ -246,7 +251,9 @@ impl Review {
     pub fn reset(&mut self, repo: &Repo) -> Result<(), String> {
         self.marked.clear();
         self.by_path.clear();
-        match std::fs::remove_dir_all(&self.dir) {
+        // Only the marks go: Comments live in the same directory and are
+        // the Reviewer's own words, which a reset must not destroy.
+        match std::fs::remove_file(self.dir.join("marks")) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => return Err(io_error("cannot reset the Review", e)),

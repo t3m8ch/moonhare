@@ -6,11 +6,15 @@ use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use crate::analyst::{
-    Analyst, AnalystError, ExplainRequest, ExplainTarget, Explanation, Summary, SummaryRequest,
+    Analyst, AnalystError, ExplainRequest, ExplainTarget, Explanation, Group, GroupRequest,
+    Grouping, Summary, SummaryRequest,
 };
 
 /// The shape the answer must have; `claude` validates it.
 const SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"string"}},"required":["summary"],"additionalProperties":false}"#;
+
+/// The shape of the Groups; `claude` validates it.
+const GROUPS_SCHEMA: &str = r#"{"type":"object","properties":{"groups":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"description":{"type":"string"},"mechanical":{"type":"boolean"},"files":{"type":"array","items":{"type":"string"}}},"required":["name","description","mechanical","files"],"additionalProperties":false}}},"required":["groups"],"additionalProperties":false}"#;
 
 /// The shape of an explanation.
 const EXPLAIN_SCHEMA: &str = r#"{"type":"object","properties":{"explanation":{"type":"string"}},"required":["explanation"],"additionalProperties":false}"#;
@@ -160,6 +164,54 @@ fn prompt(request: &SummaryRequest, tree: &Path) -> String {
     )
 }
 
+fn groups_prompt(request: &GroupRequest, tree: &Path) -> String {
+    let files: String = request.files.iter().map(|f| format!("- {f}\n")).collect();
+    let range = format!("{}..{}", request.base, request.head);
+    let commits = git_text(&request.repo, &["log", "--format=%h %s", &range, "--"]);
+    let pull_request = request.pull_request.as_ref().map_or(String::new(), |pr| {
+        format!(
+            "Pull request #{}: {}\n\n{}\n\n",
+            pr.number, pr.title, pr.body
+        )
+    });
+    format!(
+        "You are the Analyst of a code review tool. Split the files the change \
+         below touches into groups that belong together logically, for a human who is \
+         about to review it. Every file listed must be in exactly one group. Give each \
+         group a short name and a one-line description, mark it mechanical when its changes \
+         need no close reading (generated files, lockfiles, bulk renames), and list the \
+         groups in the order the human should read them. The files at the head of the \
+         change are in {tree}; you may read and search them, nothing else.\n\n\
+         Language: {language}\n\n\
+         {pull_request}\
+         Files:\n{files}\n\
+         Commits:\n{commits}",
+        language = request.language,
+        tree = tree.display(),
+    )
+}
+
+fn parse_groups(answer: &serde_json::Value) -> Option<Grouping> {
+    let text = |g: &serde_json::Value, field: &str| Some(g[field].as_str()?.to_string());
+    let groups = answer
+        .as_array()?
+        .iter()
+        .map(|g| {
+            Some(Group {
+                name: text(g, "name")?,
+                description: text(g, "description")?,
+                mechanical: g["mechanical"].as_bool()?,
+                files: g["files"]
+                    .as_array()?
+                    .iter()
+                    .map(|f| f.as_str().map(String::from))
+                    .collect::<Option<_>>()?,
+            })
+        })
+        .collect::<Option<_>>()?;
+    Some(Grouping { groups })
+}
+
 fn explain_prompt(request: &ExplainRequest, tree: &Path) -> String {
     let (what, path, hunk) = match &request.target {
         ExplainTarget::Hunk { path, text } => ("this hunk", path, format!("Hunk:\n{text}\n")),
@@ -272,7 +324,7 @@ fn interpret(
     stderr: &[u8],
     success: bool,
     field: &str,
-) -> Result<String, AnalystError> {
+) -> Result<serde_json::Value, AnalystError> {
     let reply: Option<serde_json::Value> = serde_json::from_slice(stdout).ok();
     let said = reply
         .as_ref()
@@ -292,8 +344,8 @@ fn interpret(
     }
     reply
         .as_ref()
-        .and_then(|r| r["structured_output"][field].as_str())
-        .map(str::to_string)
+        .map(|r| r["structured_output"][field].clone())
+        .filter(|v| !v.is_null())
         .ok_or_else(|| AnalystError::Failed(format!("claude gave an answer without a {field}")))
 }
 
@@ -308,7 +360,7 @@ impl ClaudeAnalyst {
         schema: &str,
         field: &str,
         prompt: impl FnOnce(&Path) -> String,
-    ) -> Result<String, AnalystError> {
+    ) -> Result<serde_json::Value, AnalystError> {
         // `--` cannot end the options in front of a revision, so refuse
         // anything that git could take for one.
         if [base, head].iter().any(|rev| rev.starts_with('-')) {
@@ -365,6 +417,14 @@ impl ClaudeAnalyst {
     }
 }
 
+/// The answer's `field` as text.
+fn as_text(answer: serde_json::Value, field: &str) -> Result<String, AnalystError> {
+    answer
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| AnalystError::Failed(format!("claude gave an answer without a {field}")))
+}
+
 impl Analyst for ClaudeAnalyst {
     fn summarize(&self, request: &SummaryRequest) -> Result<Summary, AnalystError> {
         self.ask(
@@ -375,6 +435,7 @@ impl Analyst for ClaudeAnalyst {
             "summary",
             |tree| prompt(request, tree),
         )
+        .and_then(|a| as_text(a, "summary"))
         .map(|text| Summary { text })
     }
 
@@ -387,6 +448,20 @@ impl Analyst for ClaudeAnalyst {
             "explanation",
             |tree| explain_prompt(request, tree),
         )
+        .and_then(|a| as_text(a, "explanation"))
         .map(|text| Explanation { text })
+    }
+
+    fn group(&self, request: &GroupRequest) -> Result<Grouping, AnalystError> {
+        let answer = self.ask(
+            &request.repo,
+            &request.base,
+            &request.head,
+            GROUPS_SCHEMA,
+            "groups",
+            |tree| groups_prompt(request, tree),
+        )?;
+        parse_groups(&answer)
+            .ok_or_else(|| AnalystError::Failed("claude gave an answer without groups".into()))
     }
 }

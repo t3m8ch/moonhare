@@ -6,7 +6,8 @@ impl Session {
     /// The files of the Scope that the filter lets through: all of them, or
     /// only those not fully Reviewed.
     pub(super) fn visible_files(&self) -> Vec<ChangedFile> {
-        self.scope_files
+        let files = self
+            .scope_files
             .iter()
             .filter(|f| {
                 !self.unreviewed_only
@@ -21,7 +22,8 @@ impl Session {
                 }
                 f
             })
-            .collect()
+            .collect();
+        self.in_group_order(files)
     }
 
     /// `Space u`: switch the filter, keeping the selected file when it stays.
