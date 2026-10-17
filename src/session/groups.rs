@@ -6,7 +6,7 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
 use super::*;
-use crate::analyst::{Analyst, AnalystError, GroupRequest, Grouping};
+use crate::analyst::{Analyst, AnalystError, DiagramSubject, GroupRequest, Grouping};
 
 type Key = (String, String);
 
@@ -205,6 +205,21 @@ impl Session {
                 .copied()
                 .unwrap_or(placed.grouping.groups.len()),
         )
+    }
+
+    /// The Group `path` is in, as the subject of a diagram.
+    pub(super) fn group_subject(&self, path: &str) -> Option<DiagramSubject> {
+        let n = self.group_of(path)?;
+        let files = self
+            .range_files
+            .iter()
+            .filter(|f| self.group_of(&f.path) == Some(n))
+            .map(|f| f.path.clone())
+            .collect();
+        Some(DiagramSubject::Group {
+            name: self.group_text(n).0,
+            files,
+        })
     }
 
     /// Name, description and Mechanical mark of Group `n`.

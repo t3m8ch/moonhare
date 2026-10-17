@@ -68,9 +68,10 @@ impl Default for Diagrams {
 impl Session {
     /// `:diagram`. Returns whether `command` was one of the diagram's.
     pub(super) fn diagram_command(&mut self, command: &str) -> bool {
-        let here = match command {
-            "diagram" => false,
-            "diagram here" => true,
+        let (here, group) = match command {
+            "diagram" => (false, false),
+            "diagram here" => (true, false),
+            "diagram group" => (false, true),
             _ => return false,
         };
         let Some(analyst) = self.analyst_handle() else {
@@ -83,6 +84,13 @@ impl Session {
         };
         let path = file.path.clone();
         let subject = match (here, self.new_cursor_line()) {
+            _ if group => match self.group_subject(&path) {
+                Some(subject) => subject,
+                None => {
+                    self.message = Some("The file is in no Group: no diagram for one.".into());
+                    return true;
+                }
+            },
             (true, Some(line)) => DiagramSubject::Fragment { path, line },
             _ => DiagramSubject::File { path },
         };
@@ -266,8 +274,11 @@ impl Session {
         };
         let area = self.overlay_area();
         clear_area(buf, area);
-        let (DiagramSubject::File { path } | DiagramSubject::Fragment { path, .. }) = &key.2;
-        draw_box(buf, area, &format!(" Diagram: {path} "));
+        let what = match &key.2 {
+            DiagramSubject::File { path } | DiagramSubject::Fragment { path, .. } => path,
+            DiagramSubject::Group { name, .. } => name,
+        };
+        draw_box(buf, area, &format!(" Diagram: {what} "));
         let inner_w = self.overlay_text_width();
         let rows = area.height.saturating_sub(2) as usize;
         for (row, line) in self

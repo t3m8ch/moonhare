@@ -427,6 +427,29 @@ fn draws_a_diagram_through_the_same_sandboxed_claude() {
 }
 
 #[test]
+fn a_group_diagram_prompt_carries_the_diff_of_every_file_of_the_group() {
+    let fx = feature_branch();
+    let reply = serde_json::json!({
+        "type": "result", "is_error": false, "result": "",
+        "structured_output": { "mermaid": "graph LR\n A --> B" }
+    })
+    .to_string();
+    let fake = FakeClaude::replying(&reply);
+    let mut diagram = diagram_request(&fx);
+    diagram.subject = DiagramSubject::Group {
+        name: "Core".into(),
+        files: vec!["src/a.rs".into(), "src/b.rs".into()],
+    };
+    fake.analyst().diagram(&diagram).unwrap();
+
+    let prompt = fake.recorded("stdin");
+    assert!(prompt.contains("Core"), "{prompt}");
+    assert!(prompt.contains("+fn a()"), "{prompt}");
+    assert!(prompt.contains("+fn b()"), "{prompt}");
+    assert!(!prompt.contains("README"), "{prompt}");
+}
+
+#[test]
 fn a_diagram_answer_without_mermaid_is_a_failure() {
     let fx = feature_branch();
     let fake = FakeClaude::replying(&success("only a summary"));

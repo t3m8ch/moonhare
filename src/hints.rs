@@ -81,7 +81,7 @@ const PLAIN: &[(&str, &str)] = &[
     ),
     (
         ":diagram",
-        "диаграмма файла под курсором (:diagram here: фрагмента)",
+        "диаграмма файла под курсором (:diagram here: фрагмента, :diagram group: группы)",
     ),
     (
         "h/l, j/k, y, q",
