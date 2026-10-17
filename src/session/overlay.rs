@@ -21,6 +21,10 @@ impl Session {
             buf.set_stringn(0, y, format!(":{cmd}█"), width, Style::new().fg(FG));
             return;
         }
+        if let Mode::Search(query) = &self.mode {
+            buf.set_stringn(0, y, format!("/{query}█"), width, Style::new().fg(FG));
+            return;
+        }
         let context = match (self.pending, self.window(), self.commit_anchor) {
             (Some(prefix), ..) => hints::Context::Pending(prefix),
             (None, Focus::Commits, Some(_)) => hints::Context::CommitsVisual,
