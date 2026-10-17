@@ -14,8 +14,8 @@ type Key = (String, String);
 type Answer = (Key, Result<Summary, AnalystError>);
 
 pub(super) struct Analysis {
-    analyst: Option<Arc<dyn Analyst>>,
-    language: String,
+    pub(super) analyst: Option<Arc<dyn Analyst>>,
+    pub(super) language: String,
     /// Head of the Range the Summary is built for.
     head: String,
     cache: HashMap<Key, Summary>,
@@ -155,6 +155,7 @@ impl Session {
         while let Ok(answer) = self.analysis.receiver.try_recv() {
             self.take_answer(answer);
         }
+        self.take_explanations();
     }
 
     /// Whether the Analyst still owes an answer.
@@ -170,6 +171,7 @@ impl Session {
                 Err(_) => break,
             }
         }
+        self.wait_for_explanations();
     }
 
     /// Keys of the Summary overlay and the one that opens it; returns whether
@@ -267,7 +269,7 @@ impl Session {
 }
 
 /// Break `text` into lines of at most `width` characters, at spaces.
-fn wrap(text: &str, width: usize) -> Vec<String> {
+pub(super) fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
     for paragraph in text.lines() {
         let mut line = String::new();
