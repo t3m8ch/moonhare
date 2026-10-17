@@ -762,6 +762,8 @@ impl Session {
             .flatten()
             .map(|item| self.item_lines(item));
         self.dirty = false;
+        // View indexes mean something else in a new file, Scope or layout.
+        self.visual = None;
         self.view_layout = layout;
         self.inline = Vec::new();
         let mut changed = Vec::new();

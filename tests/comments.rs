@@ -323,6 +323,24 @@ fn comments_clear_asks_first_and_then_removes_every_comment_for_good() {
     assert!(!h.screen().contains("precious"), "{}", h.screen());
 }
 
+#[test]
+fn visual_selection_does_not_outlive_the_file_it_was_made_in() {
+    let fx = support::Fixture::new();
+    fx.write("README.md", "x\n").commit("initial");
+    fx.branch("feature");
+    let long: String = (1..=100).map(|i| format!("line {i:03}\n")).collect();
+    fx.write("a_long.txt", &long)
+        .write("b_short.txt", "one\ntwo\n")
+        .commit("add files");
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("80jv]fc");
+    // No panic, and the selection is gone: the editor opens on a single line.
+    h.keys("inote<Esc><CR>");
+    let screen = h.screen();
+    assert!(screen.contains("Comment · open · new 1"), "{screen}");
+    assert!(!screen.contains("new 1-"), "{screen}");
+}
+
 /// The mode badge at the start of the status line.
 fn badge(h: &mut Harness) -> String {
     let screen = h.screen();

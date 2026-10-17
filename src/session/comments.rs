@@ -297,7 +297,7 @@ impl Session {
         let (mut start, mut end) = (line, line);
         if let Some(anchor) = self.visual.take() {
             let (lo, hi) = (anchor.min(self.vp.cursor), anchor.max(self.vp.cursor));
-            let lines = (lo..=hi).filter_map(|i| match self.view.items[i] {
+            let lines = (lo..=hi).filter_map(|i| match *self.view.items.get(i)? {
                 Item::Line(e) => {
                     let (old, new) = self.entry_lines(e);
                     match side {
