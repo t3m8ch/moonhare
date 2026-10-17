@@ -311,3 +311,36 @@ fn jumping_to_a_commit_inside_a_folded_round_opens_the_round() {
     assert_eq!(title(&h.screen()), "Commits 1/120");
     assert!(h.screen().contains("step 1 "), "{}", h.screen());
 }
+
+#[test]
+fn hundreds_of_commits_survive_every_key_click_and_size_without_panics_or_lag() {
+    let fx = long_branch(150);
+    copy_one_prompt(&fx);
+    add_commits(&fx, 151, 300, |n| format!("step {n}"));
+    let started = std::time::Instant::now();
+    for (w, hgt) in [(160, 60), (80, 16), (160, 12)] {
+        let mut h = Harness::open(&fx, w, hgt);
+        h.keys("<Tab>");
+        for keys in [
+            "<C-d><C-d><C-u>zc<C-d>za<C-u><C-u><C-u>jjjj",
+            "/step 2<CR>nnnNNN/<CR>zo",
+            ":scope 299-300<CR><C-d><C-d>zcN",
+            "<Space>c<C-d><C-d><C-u>/step<CR>n<Esc>",
+            "G]c]c[c[c",
+        ] {
+            h.keys(keys);
+            h.screen();
+            for row in 0..hgt {
+                h.click(3, row);
+                h.screen();
+            }
+        }
+        h.resize(w, hgt / 2 + 3);
+        h.screen();
+    }
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(60),
+        "frames for 300 commits are slow: {:?}",
+        started.elapsed()
+    );
+}
