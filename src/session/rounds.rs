@@ -11,6 +11,23 @@ pub(super) const HEADER: usize = usize::MAX;
 pub(super) enum ListRow {
     Header(String),
     Commit(usize),
+    /// A folded Round: "Round 1, 60 commits" standing for commits `start..end`.
+    Folded {
+        title: String,
+        start: usize,
+        end: usize,
+    },
+}
+
+impl ListRow {
+    /// Whether the row shows commit `index`, on its own or folded.
+    pub(super) fn holds(&self, index: usize) -> bool {
+        match self {
+            ListRow::Commit(i) => *i == index,
+            ListRow::Folded { start, end, .. } => (*start..*end).contains(&index),
+            ListRow::Header(_) => false,
+        }
+    }
 }
 
 /// The commits `start..end` of one Round.
@@ -59,6 +76,15 @@ impl Session {
         }
         let mut rows = Vec::with_capacity(self.commits.len() + spans.len());
         for span in spans {
+            if self.list.is_folded(span.number) {
+                let n = span.end - span.start;
+                rows.push(ListRow::Folded {
+                    title: format!("Round {}, {n} commit{}", span.number, if n == 1 { "" } else { "s" }),
+                    start: span.start,
+                    end: span.end,
+                });
+                continue;
+            }
             rows.push(ListRow::Header(span.title));
             rows.extend((span.start..span.end).map(ListRow::Commit));
         }

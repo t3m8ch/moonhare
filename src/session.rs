@@ -1287,6 +1287,14 @@ impl Session {
                     .into_iter()
                     .map(|row| match row {
                         rounds::ListRow::Header(title) => (HEADER, format!("── {title}"), false),
+                        rounds::ListRow::Folded { title, start, end } => {
+                            let position = match self.commit_cursor {
+                                n if (start + 1..=end).contains(&n) => n,
+                                _ => start + 1,
+                            };
+                            let in_scope = (start..end).any(|i| self.in_scope(i));
+                            (position, format!("▸ {title}"), in_scope)
+                        }
                         rounds::ListRow::Commit(i) => {
                             let c = &self.commits[i];
                             let sha = &c.sha[..7.min(c.sha.len())];

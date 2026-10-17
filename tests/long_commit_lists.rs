@@ -229,3 +229,33 @@ fn n_and_slash_in_the_diff_do_not_touch_the_commit_list() {
     h.keys("/step<CR>n");
     assert_eq!(title(&h.screen()), "Commits 100");
 }
+
+#[test]
+fn za_folds_a_round_into_one_row_and_the_scope_stays_as_it_was() {
+    let fx = two_rounds();
+    let mut h = Harness::open(&fx, 160, 60);
+    h.keys("<Tab>:scope 5<CR>");
+    assert!(h.screen().contains("step 12"), "{}", h.screen());
+
+    h.keys("zc");
+    let screen = h.screen();
+    assert!(screen.contains("Round 1, 60 commits"), "{screen}");
+    assert!(!screen.contains("step 12"), "{screen}");
+    assert!(screen.contains("Round 2, after Prompt #1"), "{screen}");
+    assert!(screen.contains("step 61"), "{screen}");
+    assert!(screen.contains("scope:5"), "{screen}");
+    // The folded row carries the Scope mark of the commit hidden in it.
+    let folded = screen.lines().find(|l| l.contains("Round 1, 60")).unwrap();
+    assert!(folded.contains('●'), "{screen}");
+
+    h.keys("zo");
+    let screen = h.screen();
+    assert!(screen.contains("step 12"), "{screen}");
+    assert!(!screen.contains("Round 1, 60 commits"), "{screen}");
+
+    // `za` toggles.
+    h.keys("za");
+    assert!(h.screen().contains("Round 1, 60 commits"), "{}", h.screen());
+    h.keys("za");
+    assert!(h.screen().contains("step 12"), "{}", h.screen());
+}

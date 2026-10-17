@@ -15,6 +15,14 @@ pub(super) struct State {
     top: Cell<usize>,
     /// The last `/` search, which `n` and `N` repeat.
     query: Option<String>,
+    /// The numbers of the folded Rounds.
+    folded: std::collections::BTreeSet<usize>,
+}
+
+impl State {
+    pub(super) fn is_folded(&self, round: usize) -> bool {
+        self.folded.contains(&round)
+    }
 }
 
 /// The part of the commit list that is on screen.
@@ -30,10 +38,18 @@ impl Session {
     /// whether the key was used.
     pub(super) fn list_key(&mut self, key: KeyEvent) -> bool {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        if self.pending == Some('z') {
+            self.pending = None;
+            if let KeyCode::Char(c) = key.code {
+                self.fold_command(c);
+            }
+            return true;
+        }
         if self.pending.is_some() {
             return false;
         }
         match key.code {
+            KeyCode::Char('z') if !ctrl => self.pending = Some('z'),
             KeyCode::Char('/') if !ctrl => self.mode = Mode::Search(String::new()),
             KeyCode::Char('n') if !ctrl => self.jump_to_match(true),
             KeyCode::Char('N') if !ctrl => self.jump_to_match(false),
@@ -110,6 +126,7 @@ impl Session {
             return;
         };
         self.commit_cursor = hits[k] + 1;
+        self.reveal_commit(hits[k]);
         self.message = Some(format!("/{query} [{}/{}]", k + 1, hits.len()));
     }
 
@@ -128,10 +145,7 @@ impl Session {
     pub(super) fn shown_rows(&self, capacity: usize) -> Shown {
         let rows = self.list_rows();
         let at = (self.commit_cursor > 0)
-            .then(|| {
-                let cursor = ListRow::Commit(self.commit_cursor - 1);
-                rows.iter().position(|r| *r == cursor)
-            })
+            .then(|| rows.iter().position(|r| r.holds(self.commit_cursor - 1)))
             .flatten();
         let mut top = match at {
             Some(_) => self.list.top.get().min(rows.len().saturating_sub(1)),
@@ -193,8 +207,52 @@ impl Session {
             }
             k -= 1;
         }
-        if let Some(ListRow::Commit(i)) = shown.rows.get(k) {
-            self.commit_cursor = i + 1;
+        match shown.rows.get(k) {
+            Some(ListRow::Commit(i)) => self.commit_cursor = i + 1,
+            Some(ListRow::Folded { start, .. }) => {
+                // Clicking a folded Round opens it.
+                self.commit_cursor = start + 1;
+                self.fold_command('o');
+            }
+            _ => {}
+        }
+    }
+
+    /// `za`, `zo` and `zc` on the Round the cursor stands in.
+    fn fold_command(&mut self, command: char) {
+        let spans = self.spans();
+        if spans.is_empty() {
+            self.message = Some("No Rounds yet: they start with the first Prompt".into());
+            return;
+        }
+        let Some(span) = (self.commit_cursor > 0)
+            .then(|| spans.iter().find(|s| (s.start..s.end).contains(&(self.commit_cursor - 1))))
+            .flatten()
+        else {
+            self.message = Some("Put the cursor on a commit to fold its Round".into());
+            return;
+        };
+        let fold = match command {
+            'a' => !self.list.is_folded(span.number),
+            'c' => true,
+            'o' => false,
+            _ => return,
+        };
+        if fold {
+            self.list.folded.insert(span.number);
+            // The cursor stands on the folded row, at the Round's first commit.
+            self.commit_cursor = span.start + 1;
+        } else {
+            self.list.folded.remove(&span.number);
+        }
+    }
+
+    /// Unfold the Round that holds commit `index`, so the cursor can show it.
+    pub(super) fn reveal_commit(&mut self, index: usize) {
+        for span in self.spans() {
+            if (span.start..span.end).contains(&index) {
+                self.list.folded.remove(&span.number);
+            }
         }
     }
 
@@ -218,8 +276,10 @@ impl Session {
     pub(super) fn stops(&self) -> Vec<usize> {
         let mut stops = vec![0];
         for row in self.list_rows() {
-            if let ListRow::Commit(i) = row {
-                stops.push(i + 1);
+            match row {
+                ListRow::Commit(i) => stops.push(i + 1),
+                ListRow::Folded { start, .. } => stops.push(start + 1),
+                ListRow::Header(_) => {}
             }
         }
         stops
@@ -228,7 +288,10 @@ impl Session {
     /// Move the commit-list cursor `delta` stops, staying inside the list.
     pub(super) fn step_list(&mut self, delta: isize) {
         let stops = self.stops();
-        let at = stops.binary_search(&self.commit_cursor).unwrap_or(0);
+        // A cursor hidden in a folded Round stands on the Round's row.
+        let at = stops
+            .partition_point(|&s| s <= self.commit_cursor)
+            .saturating_sub(1);
         // A selection holds commits only: the Range row is out of reach.
         let floor = usize::from(self.commit_anchor.is_some());
         let to = at
