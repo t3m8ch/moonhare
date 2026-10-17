@@ -216,6 +216,7 @@ enum Focus {
 
 mod analysis;
 mod comments;
+mod copy;
 mod diagram;
 mod explain;
 mod file_bar;
@@ -223,6 +224,7 @@ mod file_picker;
 mod groups;
 mod marks;
 mod mechanical_view;
+mod mouse;
 mod nav;
 mod overlay;
 mod prompt;
@@ -317,6 +319,7 @@ pub struct Session {
     prompt_view: Option<(String, usize)>,
     /// The Prompts copied so far, which cut the commits into Rounds.
     prompts: crate::rounds::Prompts,
+    mouse: mouse::Mouse,
 }
 
 impl Session {
@@ -486,6 +489,7 @@ impl Session {
             terminal_out: Vec::new(),
             prompt_view: None,
             prompts: crate::rounds::Prompts::open(&review_dir),
+            mouse: mouse::Mouse::default(),
         };
         session.load_selected();
         session.sync_view();
@@ -1147,6 +1151,9 @@ impl Session {
             || self.confirm_clear
             || self.prompt_view.is_some()
         {
+            return;
+        }
+        if self.diff_mouse(mouse) {
             return;
         }
         let at = |area: Rect| area.contains((mouse.column, mouse.row).into());
