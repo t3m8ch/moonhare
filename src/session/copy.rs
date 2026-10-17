@@ -122,6 +122,10 @@ impl Session {
     /// `what` names it in the message.
     pub(super) fn copy_to_clipboard(&mut self, text: &str, what: &str) {
         let text = crate::clipboard::sanitize(text);
+        if text.is_empty() {
+            self.message = Some("Nothing to copy".into());
+            return;
+        }
         match crate::clipboard::osc52_limited(&text) {
             Some(sequence) => {
                 self.terminal_out.push(sequence);

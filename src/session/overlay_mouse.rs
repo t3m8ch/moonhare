@@ -14,6 +14,8 @@ pub(super) struct TextSelection {
     rect: Rect,
     anchor: (u16, u16),
     head: (u16, u16),
+    /// A double or triple click picked it: copy even a single cell.
+    span: bool,
 }
 
 impl TextSelection {
@@ -121,6 +123,7 @@ impl Session {
                             rect,
                             anchor: at,
                             head: at,
+                            span: false,
                         });
                     }
                 }
@@ -134,8 +137,8 @@ impl Session {
                 self.mouse.text_press = false;
                 // A plain click selects nothing.
                 let current = self.overlay_text_rect();
-                if let Some(selection) =
-                    (self.mouse.text).filter(|s| s.anchor != s.head && Some(s.rect) == current)
+                if let Some(selection) = (self.mouse.text)
+                    .filter(|s| (s.span || s.anchor != s.head) && Some(s.rect) == current)
                 {
                     let text = self.selected_overlay_text(selection);
                     self.copy_to_clipboard(&text, "the selected text");
@@ -167,6 +170,7 @@ impl Session {
             rect,
             anchor: (rect.x + from as u16, at.1),
             head: (rect.x + to as u16 - 1, at.1),
+            span: true,
         });
     }
 

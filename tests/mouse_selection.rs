@@ -346,3 +346,51 @@ fn the_selection_is_dropped_when_the_scope_changes() {
         h.keys("]c");
     });
 }
+
+/// Nothing was copied and the Reviewer is told so.
+fn assert_nothing_to_copy(h: &mut Harness) {
+    assert!(h.copied().is_empty());
+    let screen = h.screen();
+    assert!(screen.contains("Nothing to copy"), "{screen}");
+    assert!(!screen.contains("Copied"), "{screen}");
+}
+
+#[test]
+fn a_drag_over_a_fold_copies_nothing() {
+    let fx = Fixture::new();
+    let body: String = (1..=30).map(|n| format!("line {n}\n")).collect();
+    fx.write("a.txt", &format!("top\n{body}bottom\n"))
+        .commit("initial");
+    fx.branch("feature");
+    fx.write("a.txt", &format!("TOP\n{body}BOTTOM\n"))
+        .commit("change");
+    let mut h = Harness::open(&fx, 100, 24);
+    let (x, y) = h.frame().find("unchanged lines").unwrap();
+    h.drag((x, y), (x + 5, y));
+    assert_nothing_to_copy(&mut h);
+}
+
+#[test]
+fn a_drag_over_the_empty_half_of_side_by_side_copies_nothing() {
+    let fx = changed_file();
+    let mut h = Harness::open(&fx, 160, 24);
+    let (_, y) = h.frame().find("extra").unwrap();
+    // `extra` is an added line: its left half is empty.
+    h.drag((40, y), (50, y));
+    assert_nothing_to_copy(&mut h);
+}
+
+#[test]
+fn a_drag_that_stays_in_one_cell_copies_nothing_but_a_one_character_word_still_does() {
+    let fx = changed_file();
+    let mut h = Harness::open(&fx, 100, 24);
+    let (x, y) = h.frame().find("extra").unwrap();
+    h.drag((x + 1, y), (x + 1, y));
+    assert!(h.copied().is_empty());
+    assert!(!h.screen().contains("Copied"), "{}", h.screen());
+
+    let (bx, by) = h.frame().find("alpha() {").unwrap();
+    h.wait(1000);
+    h.click(bx + 8, by).click(bx + 8, by);
+    assert_eq!(h.copied(), vec!["{".to_string()]);
+}

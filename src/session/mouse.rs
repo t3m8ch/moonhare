@@ -27,6 +27,8 @@ pub(super) struct Selection {
 pub(super) struct Press {
     anchor: Pos,
     half: Option<Side>,
+    /// Went down as a double or triple click: the span is already selected.
+    multi: bool,
 }
 
 /// A click, to tell double and triple clicks.
@@ -75,8 +77,13 @@ impl Session {
                 self.mouse.selection = None;
                 let half = self.half_at(mouse.column);
                 let anchor = self.pos_at(item, mouse.column, half);
-                self.mouse.press = Some(Press { anchor, half });
-                match self.count_click(mouse.column, mouse.row) {
+                let count = self.count_click(mouse.column, mouse.row);
+                self.mouse.press = Some(Press {
+                    anchor,
+                    half,
+                    multi: count >= 2,
+                });
+                match count {
                     2 => self.select_span(anchor, half, true),
                     3 => self.select_span(anchor, half, false),
                     _ => {}
@@ -87,12 +94,16 @@ impl Session {
                 if let (Some(press), Some(item)) =
                     (self.mouse.press, self.item_at_or_above(mouse.row))
                 {
-                    self.vp.cursor = item;
-                    self.mouse.selection = Some(Selection {
-                        anchor: press.anchor,
-                        head: self.pos_at(item, mouse.column, press.half),
-                        half: press.half,
-                    });
+                    if !press.multi {
+                        self.vp.cursor = item;
+                        let head = self.pos_at(item, mouse.column, press.half);
+                        // A hand that shakes during a click selects nothing.
+                        self.mouse.selection = (head != press.anchor).then_some(Selection {
+                            anchor: press.anchor,
+                            head,
+                            half: press.half,
+                        });
+                    }
                 }
                 true
             }

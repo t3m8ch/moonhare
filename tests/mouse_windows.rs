@@ -145,3 +145,17 @@ fn the_wheel_scrolls_the_help() {
     h.wheel_up(50, 10);
     assert!(h.screen().contains("hjkl везде"), "{}", h.screen());
 }
+
+#[test]
+fn in_an_overlay_a_one_character_word_is_copied_and_a_shaky_click_is_not() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("?");
+    let (x, y) = row_of(&mut h, "через Ctrl-w");
+    let dash = x + "через Ctrl".chars().count() as u16;
+    h.drag((dash, y), (dash, y));
+    assert!(h.copied().is_empty());
+    h.wait(1000);
+    h.click(dash, y).click(dash, y);
+    assert_eq!(h.copied(), vec!["-".to_string()]);
+}
