@@ -6,6 +6,7 @@
 //! that does not read back is a miss, never an error.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::SystemTime;
 
 use serde_json::{json, Value};
@@ -21,6 +22,12 @@ const HEADER: &str = "moonhare-analyst-cache";
 
 /// Entries kept; the least recently written go first.
 const MAX_ENTRIES: usize = 200;
+
+/// Larger files are not ours (or are damaged) and are not read.
+const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+
+/// Makes the name of a temporary file unique within the process.
+static WRITES: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone)]
 pub struct AnalystCache {
@@ -52,7 +59,11 @@ impl AnalystCache {
     }
 
     fn load(&self, key: &str) -> Option<Value> {
-        let text = std::fs::read_to_string(self.path(key)).ok()?;
+        let path = self.path(key);
+        if std::fs::metadata(&path).ok()?.len() > MAX_FILE_BYTES {
+            return None;
+        }
+        let text = std::fs::read_to_string(path).ok()?;
         let mut parts = text.splitn(3, '\n');
         let header = parts.next()?;
         let stored_key = parts.next()?;
@@ -70,7 +81,11 @@ impl AnalystCache {
             return;
         }
         let path = self.path(key);
-        let tmp = path.with_extension(format!("tmp{}", std::process::id()));
+        let tmp = path.with_extension(format!(
+            "tmp{}-{}",
+            std::process::id(),
+            WRITES.fetch_add(1, Ordering::Relaxed)
+        ));
         let text = format!("{HEADER} {FORMAT_VERSION}\n{key}\n{answer}");
         if std::fs::write(&tmp, text).is_err() || std::fs::rename(&tmp, &path).is_err() {
             let _ = std::fs::remove_file(&tmp);
@@ -85,6 +100,7 @@ impl AnalystCache {
         };
         let mut files: Vec<(SystemTime, PathBuf)> = entries
             .flatten()
+            .filter(|e| e.path().extension().is_none())
             .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
             .collect();
         if files.len() <= MAX_ENTRIES {

@@ -262,3 +262,29 @@ fn an_explanation_of_a_file_is_asked_again_once_its_content_changed() {
         "Summary and Groups for the new head, and the file"
     );
 }
+
+#[test]
+fn the_screen_says_cached_for_answers_read_from_disk() {
+    let fx = feature_branch();
+    let fake = FakeClaude::new();
+    let mut first = fake.session(&fx);
+    first.keys("<Space>s");
+    assert!(!first.screen().contains("cached"));
+    first.keys("<Esc>");
+
+    let mut second = fake.session(&fx);
+    assert!(
+        second.screen().contains("groups cached"),
+        "{}",
+        second.screen()
+    );
+    second.keys("<Space>s");
+    assert!(
+        second.screen().contains("Summary [ru] cached"),
+        "{}",
+        second.screen()
+    );
+    second.keys("<Esc>:analyze<CR>");
+    second.session().wait_for_analyst();
+    assert!(!second.screen().contains("groups cached"));
+}
