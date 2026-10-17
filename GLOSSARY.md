@@ -48,6 +48,11 @@ The Analyst's account of what a Range changes and why.
 _Russian_: саммари
 _Avoid_: walkthrough (that is CodeRabbit's), overview
 
+**Explanation**:
+The Analyst's answer, on demand, to "what does this hunk or file do and why". Unlike the Summary it is never built in the background.
+_Russian_: объяснение
+_Avoid_: comment, annotation
+
 **Mechanical**:
 Marks a file or Group whose changes need no close reading, such as generated files, lockfiles or bulk renames.
 _Russian_: механическое
