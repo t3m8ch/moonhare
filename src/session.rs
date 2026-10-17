@@ -244,6 +244,7 @@ pub struct Session {
     repo: Repo,
     range: Range,
     commits: Vec<Commit>,
+    list: long_list::State,
     scope: Scope,
     focus: Focus,
     /// Cursor in the commit list: 0 is the pinned "Весь Range" row, `n` is
@@ -440,6 +441,7 @@ impl Session {
             repo,
             range,
             commits,
+            list: Default::default(),
             scope: Scope::All,
             focus: Focus::Diff,
             commit_cursor: 0,
@@ -1161,25 +1163,7 @@ impl Session {
                 self.scroll_view(-(WHEEL_STEP as isize))
             }
             MouseEventKind::Down(_) if at(self.commits_area()) && !self.picker => {
-                let area = self.commits_area();
-                let row = (mouse.row - area.y) as usize;
-                let frame = self.range_frame_in(area.width - 2, area.height - 2).len();
-                let capacity = (area.height.saturating_sub(3) as usize).saturating_sub(frame);
-                // Row 0 is the border, row 1 the pinned "Весь Range" row, the
-                // Range Comments hang under it.
-                if row >= 1 && row <= capacity + 1 + frame {
-                    self.focus = Focus::Commits;
-                    match row {
-                        r if r <= 1 + frame => self.commit_cursor = 0,
-                        r => {
-                            // A Round header is not a commit: the click only focuses.
-                            let at = self.commit_offset(capacity) + r - 2 - frame;
-                            if let Some(rounds::ListRow::Commit(i)) = self.list_rows().get(at) {
-                                self.commit_cursor = i + 1;
-                            }
-                        }
-                    }
-                }
+                self.click_commits(mouse.row);
             }
             MouseEventKind::Down(_) if at(self.files_area()) && !self.picker => {
                 let area = self.files_area();
@@ -1274,15 +1258,6 @@ impl Session {
         }
     }
 
-    /// Index of the first list row (a commit or a Round header) shown when
-    /// `capacity` rows fit.
-    fn commit_offset(&self, capacity: usize) -> usize {
-        let cursor = (self.list_rows().iter())
-            .position(|r| *r == rounds::ListRow::Commit(self.commit_cursor.saturating_sub(1)))
-            .unwrap_or(0);
-        (cursor + 1).saturating_sub(capacity)
-    }
-
     /// Whether the commit list marks commit `index` as inside the Scope.
     fn in_scope(&self, index: usize) -> bool {
         matches!(self.scope, Scope::Commits { lo, hi } if (lo..=hi).contains(&index))
@@ -1293,19 +1268,17 @@ impl Session {
     fn render_commit_rows(&self, buf: &mut Buffer, area: Rect, show_cursor: bool) {
         let width = area.width as usize;
         let frame = self.range_frame_in(area.width, area.height);
-        let capacity = (area.height as usize)
-            .saturating_sub(1)
-            .saturating_sub(frame.len());
-        let offset = self.commit_offset(capacity);
+        let capacity = self.list_capacity(area.width, area.height);
+        let shown = self.shown_rows(capacity);
         let selection = self
             .commit_anchor
             .map(|a| (a.min(self.commit_cursor), a.max(self.commit_cursor)));
         let rows = std::iter::once((0, "▣ Весь Range".to_string(), self.scope == Scope::All))
+            .chain(shown.pinned.map(|span| (HEADER, format!("── {}", span.title), false)))
             .chain(
-                self.list_rows()
+                shown
+                    .rows
                     .into_iter()
-                    .skip(offset)
-                    .take(capacity)
                     .map(|row| match row {
                         rounds::ListRow::Header(title) => (HEADER, format!("── {title}"), false),
                         rounds::ListRow::Commit(i) => {
@@ -1349,17 +1322,23 @@ impl Session {
     }
 
     /// The `Space c` picker: the commit list in a box over the screen.
-    fn render_picker(&self, buf: &mut Buffer) {
+    /// The box of the `Space c` picker.
+    fn picker_area(&self) -> Rect {
         let width = self.size.0.saturating_sub(4).min(72);
         let frame = self.range_frame(width.saturating_sub(2) as usize).len() as u16;
         let height = (self.list_rows().len() as u16 + 4 + frame)
             .min(self.size.1.saturating_sub(BOTTOM_ROWS + 1));
-        let area = Rect::new(
+        Rect::new(
             (self.size.0 - width) / 2,
             (self.size.1 - BOTTOM_ROWS - height) / 2,
             width,
             height,
-        );
+        )
+    }
+
+    fn render_picker(&self, buf: &mut Buffer) {
+        let area = self.picker_area();
+        let width = area.width;
         buf.set_style(area, Style::new().fg(FG).bg(Color::Reset));
         for y in area.y..area.y + area.height {
             buf.set_string(area.x, y, " ".repeat(width as usize), Style::new().fg(FG));

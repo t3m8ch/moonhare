@@ -1,8 +1,27 @@
-//! Long commit lists: steps through the list by its height.
+//! Long commit lists: steps through the list by its height, and the part of
+//! the list that is on screen.
+
+use std::cell::Cell;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use super::*;
+use rounds::{ListRow, Span};
+
+/// What the long commit list remembers between keys and frames.
+#[derive(Default)]
+pub(super) struct State {
+    /// The list row at the top of the scrolling part when last drawn.
+    top: Cell<usize>,
+}
+
+/// The part of the commit list that is on screen.
+pub(super) struct Shown {
+    /// The Round the first row belongs to, pinned under the "Весь Range" row
+    /// once the list is scrolled.
+    pub pinned: Option<Span>,
+    pub rows: Vec<ListRow>,
+}
 
 impl Session {
     /// Keys of the commit list that only matter for long Ranges; returns
@@ -20,11 +39,103 @@ impl Session {
         true
     }
 
+    /// How many lines the scrolling part of the list has under the "Весь
+    /// Range" row and its Comments, inside a box of `inner_height` lines.
+    pub(super) fn list_capacity(&self, inner_width: u16, inner_height: u16) -> usize {
+        let frame = self.range_frame_in(inner_width, inner_height).len();
+        (inner_height as usize)
+            .saturating_sub(1)
+            .saturating_sub(frame)
+    }
+
+    /// The rows that fit in `capacity` lines, scrolled just far enough to
+    /// keep the cursor in view. A scrolled list gives one line to the header
+    /// of the Round it is scrolled into.
+    pub(super) fn shown_rows(&self, capacity: usize) -> Shown {
+        let rows = self.list_rows();
+        let at = (self.commit_cursor > 0)
+            .then(|| {
+                let cursor = ListRow::Commit(self.commit_cursor - 1);
+                rows.iter().position(|r| *r == cursor)
+            })
+            .flatten();
+        let mut top = match at {
+            Some(_) => self.list.top.get().min(rows.len().saturating_sub(1)),
+            None => 0,
+        };
+        let fit = |capacity: usize, top: usize| match at {
+            // Keep the header of the Round just above in view.
+            Some(at) if at < top && at > 0 && matches!(rows[at - 1], ListRow::Header(_)) => at - 1,
+            Some(at) if at < top => at,
+            Some(at) if at >= top + capacity => at + 1 - capacity,
+            _ => top,
+        };
+        top = fit(capacity, top);
+        let mut pinned = None;
+        if top > 0 && capacity > 1 {
+            if let Some(ListRow::Commit(_)) = rows.get(top) {
+                top = fit(capacity - 1, top);
+                if let Some(ListRow::Commit(c)) = rows.get(top) {
+                    pinned = self
+                        .spans()
+                        .into_iter()
+                        .find(|s| (s.start..s.end).contains(c));
+                }
+            }
+        }
+        self.list.top.set(top);
+        let take = capacity - usize::from(pinned.is_some());
+        Shown {
+            pinned,
+            rows: rows.into_iter().skip(top).take(take).collect(),
+        }
+    }
+
+    /// A click on screen row `screen_row` inside the commit list box: it
+    /// focuses the list and moves the cursor to what was clicked. Round
+    /// headers are not commits, so clicking one only focuses; the pinned
+    /// header goes to the first commit of its Round.
+    pub(super) fn click_commits(&mut self, screen_row: u16) {
+        let area = self.commits_area();
+        let row = (screen_row - area.y) as usize;
+        let frame = self.range_frame_in(area.width - 2, area.height - 2).len();
+        let capacity = self.list_capacity(area.width - 2, area.height - 2);
+        // Row 0 is the border, row 1 the pinned "Весь Range" row, the Range
+        // Comments hang under it.
+        if row < 1 || row > capacity + 1 + frame {
+            return;
+        }
+        self.focus = Focus::Commits;
+        if row <= 1 + frame {
+            self.commit_cursor = 0;
+            return;
+        }
+        let mut k = row - 2 - frame;
+        let shown = self.shown_rows(capacity);
+        if let Some(span) = &shown.pinned {
+            if k == 0 {
+                self.commit_cursor = span.start + 1;
+                return;
+            }
+            k -= 1;
+        }
+        if let Some(ListRow::Commit(i)) = shown.rows.get(k) {
+            self.commit_cursor = i + 1;
+        }
+    }
+
     /// Half of the rows the commit list shows, at least one.
     fn list_step(&self) -> usize {
-        let area = self.commits_area();
-        let frame = self.range_frame_in(area.width, area.height).len();
-        let rows = (area.height.saturating_sub(3) as usize).saturating_sub(frame);
+        let area = if self.picker {
+            self.picker_area()
+        } else {
+            self.commits_area()
+        };
+        let inner = if self.picker { 3 } else { 2 };
+        let rows = self.list_capacity(
+            area.width.saturating_sub(2),
+            area.height.saturating_sub(inner),
+        );
         (rows / 2).max(1)
     }
 
@@ -33,7 +144,7 @@ impl Session {
     pub(super) fn stops(&self) -> Vec<usize> {
         let mut stops = vec![0];
         for row in self.list_rows() {
-            if let rounds::ListRow::Commit(i) = row {
+            if let ListRow::Commit(i) = row {
                 stops.push(i + 1);
             }
         }

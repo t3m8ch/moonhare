@@ -95,3 +95,53 @@ fn ctrl_d_and_ctrl_u_step_the_commit_list_by_its_height() {
     }
     assert_eq!(title(&h.screen()), "Commits 100/100");
 }
+
+/// Copy a Prompt in a session of its own, so the next session finds Rounds.
+fn copy_one_prompt(fx: &Fixture) {
+    let mut h = Harness::open(fx, 160, 30);
+    h.keys("Cifresh one<Esc><CR>Y");
+    assert_eq!(h.session().take_terminal_output().len(), 1);
+}
+
+/// Sixty commits, a Prompt, sixty more: Round 1 and Round 2.
+fn two_rounds() -> Fixture {
+    let fx = long_branch(60);
+    copy_one_prompt(&fx);
+    add_commits(&fx, 61, 120, |n| format!("step {n}"));
+    fx
+}
+
+fn row_index(screen: &str, needle: &str) -> Option<usize> {
+    screen.lines().position(|l| l.contains(needle))
+}
+
+#[test]
+fn scrolling_keeps_the_range_row_and_the_current_round_header_on_top() {
+    let fx = two_rounds();
+    let mut h = Harness::open(&fx, 160, 60);
+    h.keys("<Tab>");
+
+    // Not scrolled: the Range row is followed by Round 1's own header, once.
+    let screen = h.screen();
+    let range = row_index(&screen, "▣ Весь Range").expect("range row");
+    assert!(
+        screen.lines().nth(range + 1).unwrap().contains("Round 1"),
+        "{screen}"
+    );
+    assert_eq!(screen.matches("Round 1").count(), 1, "{screen}");
+
+    // Scrolled deep into Round 2, its header is pinned under the Range row.
+    h.keys(":scope 120<CR>");
+    let screen = h.screen();
+    let range = row_index(&screen, "▣ Весь Range").expect("range row");
+    assert!(
+        screen
+            .lines()
+            .nth(range + 1)
+            .unwrap()
+            .contains("Round 2, after Prompt #1"),
+        "{screen}"
+    );
+    assert!(!screen.contains("Round 1"), "{screen}");
+    assert!(screen.contains("step 120"), "{screen}");
+}

@@ -13,27 +13,54 @@ pub(super) enum ListRow {
     Commit(usize),
 }
 
+/// The commits `start..end` of one Round.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct Span {
+    pub number: usize,
+    pub title: String,
+    pub start: usize,
+    pub end: usize,
+}
+
 impl Session {
     /// The Rounds of the Range's commits.
     fn rounds(&self) -> Vec<crate::rounds::Round> {
         crate::rounds::rounds(self.prompts.all(), &self.commits)
     }
 
+    /// The Rounds that have commits, with the commits they hold. Empty until
+    /// a Prompt exists.
+    pub(super) fn spans(&self) -> Vec<Span> {
+        if self.prompts.all().is_empty() {
+            return Vec::new();
+        }
+        let rounds = self.rounds();
+        let mut spans = Vec::new();
+        for (k, round) in rounds.iter().enumerate() {
+            let end = rounds.get(k + 1).map_or(self.commits.len(), |r| r.start);
+            if round.start < end {
+                spans.push(Span {
+                    number: round.number,
+                    title: round.title(),
+                    start: round.start,
+                    end,
+                });
+            }
+        }
+        spans
+    }
+
     /// The commits, each Round under a header once a Prompt exists. A Round
     /// without commits has no header of its own.
     pub(super) fn list_rows(&self) -> Vec<ListRow> {
-        if self.prompts.all().is_empty() {
+        let spans = self.spans();
+        if spans.is_empty() {
             return (0..self.commits.len()).map(ListRow::Commit).collect();
         }
-        let rounds = self.rounds();
-        let mut rows = Vec::new();
-        for (k, round) in rounds.iter().enumerate() {
-            let end = rounds.get(k + 1).map_or(self.commits.len(), |r| r.start);
-            if round.start >= end {
-                continue;
-            }
-            rows.push(ListRow::Header(round.title()));
-            rows.extend((round.start..end).map(ListRow::Commit));
+        let mut rows = Vec::with_capacity(self.commits.len() + spans.len());
+        for span in spans {
+            rows.push(ListRow::Header(span.title));
+            rows.extend((span.start..span.end).map(ListRow::Commit));
         }
         rows
     }
