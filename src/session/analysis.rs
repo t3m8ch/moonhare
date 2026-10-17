@@ -330,6 +330,7 @@ impl Session {
 
     /// Collect the answers that arrived. Called by the event loop.
     pub fn tick(&mut self) {
+        self.take_diffs();
         self.diagram_tick();
         while let Ok(answer) = self.analysis.receiver.try_recv() {
             self.take_answer(answer);
