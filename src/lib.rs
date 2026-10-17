@@ -1,6 +1,7 @@
 //! moonhare: a terminal tool for reviewing large changes written by coding agents.
 
 pub mod analyst;
+pub mod analyst_cache;
 pub mod claude;
 pub mod clipboard;
 pub mod color;

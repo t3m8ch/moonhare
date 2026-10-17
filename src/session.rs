@@ -312,6 +312,8 @@ pub struct Session {
     pull_request: Option<PullRequest>,
     quit: bool,
     analysis: analysis::Analysis,
+    /// The Analyst's answers kept on disk between runs.
+    analyst_cache: crate::analyst_cache::AnalystCache,
     reload: reload::Reload,
     diagrams: diagram::Diagrams,
     groups: groups::Groups,
@@ -489,6 +491,7 @@ impl Session {
             pull_request: None,
             quit: false,
             analysis: Default::default(),
+            analyst_cache: crate::analyst_cache::AnalystCache::new(&review_dir),
             reload: Default::default(),
             diagrams: Default::default(),
             groups: Default::default(),
