@@ -74,13 +74,16 @@ fn a_taller_terminal_shows_more_of_a_diff_scrolled_to_its_end() {
     fx.write("long.txt", "start\n").commit("initial");
     fx.branch("feature");
     let body: String = (1..=100).map(|i| format!("row {i}\n")).collect();
-    fx.write("long.txt", &format!("start\n{body}")).commit("grow");
+    fx.write("long.txt", &format!("start\n{body}"))
+        .commit("grow");
     let mut h = Harness::open(&fx, 160, 30);
     h.keys("G");
-    assert!(!h.screen().contains("row 50\n"), "{}", h.screen());
+    let shows = |screen: &str, row: &str| screen.lines().any(|l| l.ends_with(row));
+    let before = h.screen();
+    assert!(!shows(&before, "row 50"), "{before}");
     // Same layout, more rows: the end stays at the bottom, more shows above.
     h.resize(160, 70);
     let screen = h.screen();
-    assert!(screen.contains("row 50"), "{screen}");
-    assert!(screen.contains("row 100"), "{screen}");
+    assert!(shows(&screen, "row 50"), "{screen}");
+    assert!(shows(&screen, "row 100"), "{screen}");
 }

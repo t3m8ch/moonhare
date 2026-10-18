@@ -269,7 +269,15 @@ fn a_crashing_forge_fails_the_loading_screen_instead_of_spinning() {
 #[test]
 fn the_loading_screen_fits_any_terminal_size() {
     let (opening, gate) = opening(Ok(Some(pr())));
-    for (width, height) in [(1, 1), (40, 1), (300, 1), (40, 2), (300, 2), (2, 3), (1, 50)] {
+    for (width, height) in [
+        (1, 1),
+        (40, 1),
+        (300, 1),
+        (40, 2),
+        (300, 2),
+        (2, 3),
+        (1, 50),
+    ] {
         let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
         opening.render(&mut buf);
         let screen = text(&buf);
