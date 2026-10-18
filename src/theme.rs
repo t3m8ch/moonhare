@@ -206,7 +206,7 @@ pub static LIGHT: Theme = Theme {
     added_bg: Color::Indexed(194),
     added_fragment_bg: Color::Indexed(157),
     comment: Color::Indexed(94),
-    draft: Color::Indexed(130),
+    draft: Color::Indexed(88),
     status_added: Color::Indexed(22),
     status_deleted: Color::Indexed(124),
     status_modified: Color::Indexed(94),

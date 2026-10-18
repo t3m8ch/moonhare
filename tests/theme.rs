@@ -94,6 +94,19 @@ fn every_role_of_the_light_theme_reads_on_its_background() {
     assert!(failed.is_empty(), "{failed:#?}");
 }
 
+/// Light terminals are not all pure white: Solarized Light, a grey-white.
+#[test]
+fn the_light_theme_reads_on_off_white_terminals_too() {
+    for bg in [(0xfd, 0xf6, 0xe3), (0xf5, 0xf5, 0xf5)] {
+        let t = Theme {
+            terminal_bg: bg,
+            ..LIGHT
+        };
+        let failed = failures(&t);
+        assert!(failed.is_empty(), "{bg:x?}: {failed:#?}");
+    }
+}
+
 /// The dark theme keeps the look it has always had. Where that look falls
 /// short of the bar, the shortfall is listed here, so it can only shrink.
 #[test]
@@ -392,4 +405,77 @@ fn keys_that_do_not_belong_to_a_reply_end_the_swallowing() {
     // Esc is no part of a reply: it and what follows are keys again.
     h.keys("<Esc>:theme light<CR>");
     assert!(h.screen().contains("theme:light"), "{}", h.screen());
+}
+
+// ------------------------------------------------- a real terminal (pty)
+
+/// A pseudo-terminal in raw mode, as the query finds `/dev/tty`: the
+/// terminal's end and the program's end.
+#[cfg(unix)]
+fn pty() -> (std::fs::File, std::fs::File) {
+    use std::ffi::CStr;
+    use std::os::fd::{AsRawFd, FromRawFd};
+    use std::os::unix::fs::OpenOptionsExt;
+    // SAFETY: plain libc calls on the descriptor they return; every result
+    // is checked.
+    unsafe {
+        let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+        assert!(master >= 0, "posix_openpt");
+        assert_eq!(libc::grantpt(master), 0, "grantpt");
+        assert_eq!(libc::unlockpt(master), 0, "unlockpt");
+        let name = libc::ptsname(master);
+        assert!(!name.is_null(), "ptsname");
+        let name = CStr::from_ptr(name).to_str().unwrap().to_owned();
+        let master = std::fs::File::from_raw_fd(master);
+        let program = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(libc::O_NOCTTY)
+            .open(name)
+            .unwrap();
+        let mut raw: libc::termios = std::mem::zeroed();
+        assert_eq!(libc::tcgetattr(program.as_raw_fd(), &mut raw), 0);
+        libc::cfmakeraw(&mut raw);
+        assert_eq!(libc::tcsetattr(program.as_raw_fd(), libc::TCSANOW, &raw), 0);
+        (master, program)
+    }
+}
+
+/// Run the query on the program's end of a pty, in a thread, so a query
+/// that hangs fails the test instead of holding it.
+#[cfg(unix)]
+fn query_pty(
+    program: std::fs::File,
+    timeout: std::time::Duration,
+) -> (Option<Background>, std::time::Duration) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let started = std::time::Instant::now();
+        let mut output = program.try_clone().unwrap();
+        let got = theme::query_background_on(&program, &mut output, timeout);
+        let _ = tx.send((got, started.elapsed()));
+    });
+    rx.recv_timeout(timeout + std::time::Duration::from_secs(3))
+        .expect("the query never returned")
+}
+
+#[cfg(unix)]
+#[test]
+fn a_silent_pty_holds_the_start_no_longer_than_the_timeout() {
+    let (_terminal, program) = pty();
+    let (got, took) = query_pty(program, std::time::Duration::from_millis(100));
+    assert_eq!(got, None);
+    assert!(took < std::time::Duration::from_millis(600), "{took:?}");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_pty_that_answers_tells_its_background() {
+    use std::io::Write;
+    let (mut terminal, program) = pty();
+    terminal
+        .write_all(b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\\x1b[?62;22c")
+        .unwrap();
+    let (got, _) = query_pty(program, std::time::Duration::from_secs(2));
+    assert_eq!(got, Some(Background::Light));
 }

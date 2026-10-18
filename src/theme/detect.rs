@@ -64,41 +64,70 @@ pub fn detect(
 /// `timeout`. `None` when there is no terminal or it does not tell.
 #[cfg(unix)]
 pub fn query_background(timeout: std::time::Duration) -> Option<Background> {
-    use ratatui::crossterm::terminal;
+    use std::os::unix::fs::OpenOptionsExt;
+    // A descriptor of its own, non-blocking: a read never waits past the
+    // deadline even where the wait for input fails to.
     let mut tty = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
+        .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
         .open("/dev/tty")
         .ok()?;
-    let was_raw = terminal::is_raw_mode_enabled().unwrap_or(false);
-    if !was_raw {
-        terminal::enable_raw_mode().ok()?;
+    let _raw = RawMode::enable()?;
+    let input = tty.try_clone().ok()?;
+    query_background_on(&input, &mut tty, timeout)
+}
+
+/// Raw mode for as long as the query runs, also when it panics.
+#[cfg(unix)]
+struct RawMode {
+    was_raw: bool,
+}
+
+#[cfg(unix)]
+impl RawMode {
+    fn enable() -> Option<RawMode> {
+        use ratatui::crossterm::terminal;
+        let was_raw = terminal::is_raw_mode_enabled().unwrap_or(false);
+        if !was_raw {
+            terminal::enable_raw_mode().ok()?;
+        }
+        Some(RawMode { was_raw })
     }
-    let input = tty.try_clone().ok();
-    let got = input.and_then(|input| query_background_on(&input, &mut tty, timeout));
-    if !was_raw {
-        let _ = terminal::disable_raw_mode();
+}
+
+#[cfg(unix)]
+impl Drop for RawMode {
+    fn drop(&mut self) {
+        if !self.was_raw {
+            let _ = ratatui::crossterm::terminal::disable_raw_mode();
+        }
     }
-    got
 }
 
 /// Write the OSC 11 query to `output` and read the reply from `input`,
 /// waiting at most `timeout`. The query is followed by a request for the
 /// device attributes, which every terminal answers: once that answer is in,
 /// a terminal that has not told its background never will, and there is no
-/// need to wait out the timeout.
+/// need to wait out the timeout. Any failure to wait or read is "no reply".
+///
+/// The wait is `select(2)`: `poll(2)` does not work on terminals on macOS.
 #[cfg(unix)]
 pub fn query_background_on(
     input: &impl std::os::fd::AsFd,
     output: &mut impl std::io::Write,
     timeout: std::time::Duration,
 ) -> Option<Background> {
+    use std::io::ErrorKind;
     use std::os::fd::AsRawFd;
     use std::time::Instant;
 
     output.write_all(b"\x1b]11;?\x1b\\\x1b[c").ok()?;
     output.flush().ok()?;
     let fd = input.as_fd().as_raw_fd();
+    if fd >= libc::FD_SETSIZE as i32 {
+        return None;
+    }
     let deadline = Instant::now() + timeout;
     let mut reply = Vec::new();
     loop {
@@ -115,16 +144,25 @@ pub fn query_background_on(
         if left.is_zero() {
             return background_from_osc11(&text);
         }
-        let mut pfd = libc::pollfd {
-            fd,
-            events: libc::POLLIN,
-            revents: 0,
+        let mut wait = libc::timeval {
+            tv_sec: left.as_secs() as libc::time_t,
+            tv_usec: left.subsec_micros() as libc::suseconds_t,
         };
-        let ms = left.as_millis().clamp(1, i32::MAX as u128) as i32;
-        // SAFETY: one valid pollfd for the duration of the call.
-        let ready = unsafe { libc::poll(&mut pfd, 1, ms) };
+        // SAFETY: `set` is a valid fd_set and `fd` is below FD_SETSIZE.
+        let ready = unsafe {
+            let mut set: libc::fd_set = std::mem::zeroed();
+            libc::FD_ZERO(&mut set);
+            libc::FD_SET(fd, &mut set);
+            libc::select(
+                fd + 1,
+                &mut set,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut wait,
+            )
+        };
         if ready < 0 {
-            if std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted {
+            if std::io::Error::last_os_error().kind() == ErrorKind::Interrupted {
                 continue;
             }
             return None;
@@ -135,7 +173,18 @@ pub fn query_background_on(
         let mut chunk = [0u8; 256];
         // SAFETY: `chunk` is writable for its whole length.
         let n = unsafe { libc::read(fd, chunk.as_mut_ptr().cast(), chunk.len()) };
-        if n <= 0 {
+        if n < 0 {
+            match std::io::Error::last_os_error().kind() {
+                ErrorKind::Interrupted => continue,
+                // Told ready but nothing to read: wait a little and look again.
+                ErrorKind::WouldBlock => {
+                    std::thread::sleep(left.min(std::time::Duration::from_millis(5)));
+                    continue;
+                }
+                _ => return None,
+            }
+        }
+        if n == 0 {
             return background_from_osc11(&String::from_utf8_lossy(&reply));
         }
         reply.extend_from_slice(&chunk[..n as usize]);

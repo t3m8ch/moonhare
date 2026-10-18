@@ -20,6 +20,13 @@ fn main() -> ExitCode {
         }
     };
     let (width, height) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
+    // The query for the background holds the terminal in raw mode while the
+    // session opens: a panic in that time must not leave it there.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = ratatui::crossterm::terminal::disable_raw_mode();
+        hook(info);
+    }));
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let usage = || {
         eprintln!("usage: moonhare [--lang <code>] [--effort <low|medium|high|xhigh|max>] [--model <name>] [--theme <light|dark|auto>] [<branch> | <base>..<head> | --pr <number>]")
