@@ -7,6 +7,7 @@
 //! out of range.
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::text::Line;
 
 use super::*;
 
@@ -100,17 +101,35 @@ pub(super) fn render_lines(
     lines: &[String],
     scroll: &Scroll,
 ) {
+    let lines: Vec<Line> = lines.iter().map(|l| Line::raw(l.as_str())).collect();
+    render_styled(theme, buf, area, &lines, scroll);
+}
+
+/// [`render_lines`] for lines that carry their own styles; what has no
+/// colour of its own is drawn in the text colour.
+pub(super) fn render_styled(
+    theme: &Theme,
+    buf: &mut Buffer,
+    area: Rect,
+    lines: &[Line],
+    scroll: &Scroll,
+) {
     let rows = text_rows(area);
     let width = text_cols(area);
     let top = scroll.top(lines.len(), rows);
     for (i, line) in lines.iter().skip(top).take(rows).enumerate() {
-        buf.set_stringn(
-            area.x + 2,
-            area.y + 1 + i as u16,
-            line,
-            width,
-            Style::new().fg(theme.fg),
-        );
+        let (x, y) = (area.x + 2, area.y + 1 + i as u16);
+        let mut left = width;
+        let mut col = x;
+        for span in &line.spans {
+            if left == 0 {
+                break;
+            }
+            let style = Style::new().fg(theme.fg).patch(span.style);
+            let (end, _) = buf.set_stringn(col, y, span.content.as_ref(), left, style);
+            left = left.saturating_sub((end - col) as usize);
+            col = end;
+        }
     }
     if lines.len() > rows && area.height >= 2 {
         let shown = (top + rows).min(lines.len());
