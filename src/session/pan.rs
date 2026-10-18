@@ -42,8 +42,8 @@ impl Size {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default)]
 /// Where the view of a picture is: its first column and row.
+#[derive(Debug, Clone, Copy, Default)]
 pub(super) struct Pan {
     /// The first column shown; `None` until the Reviewer moves sideways: the
     /// view starts where the top of the picture is in sight.

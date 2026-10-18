@@ -493,6 +493,22 @@ fn big_steps_move_by_half_a_window_and_a_page() {
 }
 
 #[test]
+fn ctrl_with_r_or_o_neither_asks_again_nor_opens_outside() {
+    let fx = feature_branch();
+    let analyst = FakeAnalyst::drawing(&big_tree());
+    let mut h = review_with(&fx, &analyst);
+    open_big(&mut h);
+    h.keys("<C-r><C-o>");
+    h.session().wait_for_analyst();
+    assert_eq!(analyst.requests().len(), 1);
+    // No word of an SVG on the status line, the diagram still open.
+    let screen = h.screen();
+    let status = screen.lines().rev().nth(1).unwrap();
+    assert!(!status.contains("SVG"), "{screen}");
+    assert!(screen.contains("Diagram:"), "{screen}");
+}
+
+#[test]
 fn the_wheel_moves_down_and_shift_with_the_wheel_moves_sideways() {
     let (_fx, mut h) = big();
     h.keys("0gg");
@@ -604,7 +620,7 @@ fn dotted(screen: &str) -> bool {
 }
 
 #[test]
-fn the_overview_shows_the_whole_diagram_in_dots_with_the_frame_of_the_view() {
+fn the_minimap_shows_the_whole_diagram_in_dots_with_the_frame_of_the_view() {
     let (_fx, mut h) = big();
     h.keys("0gg--");
     let screen = h.screen();
@@ -613,7 +629,7 @@ fn the_overview_shows_the_whole_diagram_in_dots_with_the_frame_of_the_view() {
     assert!(screen.contains("обзор"), "{screen}");
     assert!(!screen.contains("колонки"), "{screen}");
 
-    // The frame of the view is lit, at the top left of the overview.
+    // The frame of the view is lit, at the top left of the minimap.
     let selection = moonhare::theme::DARK.selection_bg;
     let frame = h.frame();
     let lit: Vec<(u16, u16)> = (0..100)
@@ -642,7 +658,7 @@ fn the_overview_shows_the_whole_diagram_in_dots_with_the_frame_of_the_view() {
 }
 
 #[test]
-fn equals_leaves_the_overview_for_the_fitted_layout() {
+fn equals_leaves_the_minimap_for_the_fitted_layout() {
     let (_fx, mut h) = big();
     h.keys("--");
     assert!(dotted(&h.screen()));
@@ -676,9 +692,12 @@ fn the_summary_diagram_changes_density_too() {
     assert!(row(&h.screen()) > fitted, "{}", h.screen());
     h.keys("=-");
     assert!(row(&h.screen()) < fitted, "{}", h.screen());
-    // No overview inline: it is drawn in the diagram's own window.
+    // No minimap inline: f shows the diagram on the whole terminal, with one.
     h.keys("-");
     assert!(!dotted(&h.screen()), "{}", h.screen());
+    assert!(h.screen().contains("f has one"), "{}", h.screen());
+    h.keys("f--");
+    assert!(dotted(&h.screen()), "{}", h.screen());
 }
 
 #[test]
@@ -771,7 +790,7 @@ fn f_in_a_summary_without_a_diagram_says_so() {
 }
 
 #[test]
-fn markers_and_the_frame_of_the_overview_take_the_colours_of_either_theme() {
+fn markers_and_the_frame_of_the_minimap_take_the_colours_of_either_theme() {
     use moonhare::theme::{Background, Theme, DARK, LIGHT};
     for (background, theme) in [(Background::Dark, &DARK), (Background::Light, &LIGHT)] {
         let (_fx, mut h) = big();

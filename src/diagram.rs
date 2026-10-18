@@ -42,8 +42,8 @@ pub struct Room {
 /// cannot shrink.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum Density {
-    /// The whole diagram in Braille dots, without text: see [`overview`].
-    Overview,
+    /// The whole diagram in Braille dots, without text: see [`minimap`].
+    Minimap,
     /// Gaps closed up and labels wrapped short, whatever the room.
     Compact,
     /// The first layout that fits the room.
@@ -57,8 +57,8 @@ impl Density {
     /// One step denser (`-`), if there is one.
     pub fn denser(self) -> Option<Density> {
         match self {
-            Density::Overview => None,
-            Density::Compact => Some(Density::Overview),
+            Density::Minimap => None,
+            Density::Compact => Some(Density::Minimap),
             Density::Fit => Some(Density::Compact),
             Density::Roomy => Some(Density::Fit),
         }
@@ -67,7 +67,7 @@ impl Density {
     /// One step roomier (`+`), if there is one.
     pub fn roomier(self) -> Option<Density> {
         match self {
-            Density::Overview => Some(Density::Compact),
+            Density::Minimap => Some(Density::Compact),
             Density::Compact => Some(Density::Fit),
             Density::Fit => Some(Density::Roomy),
             Density::Roomy => None,
@@ -78,6 +78,7 @@ impl Density {
 /// What is done to the gaps of a drawn picture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Gaps {
+    /// Left as `mmdflux` drew them.
     AsDrawn,
     /// Runs of blank or line-only columns and rows cut down to this many.
     Squeeze(usize),
@@ -89,9 +90,11 @@ pub enum Gaps {
 /// to the picture.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Candidate {
+    /// The Mermaid text handed to `mmdflux`, rewritten to fit.
     pub source: String,
     /// Labels of edges are not wrapped at all (`mmdflux` wraps long ones).
     pub whole_labels: bool,
+    /// What is done to the gaps of the drawn picture.
     pub gaps: Gaps,
 }
 
@@ -127,8 +130,8 @@ pub fn draw_with(
 /// The diagram laid out for `room` at `density` (see [`Density`]): the
 /// first of the [`candidates`] that fits the width and the height, else the
 /// shortest that fits the width, else the narrowest; [`Density::Compact`]
-/// takes the narrowest of its own. [`Density::Overview`] is
-/// drawn as [`Density::Fit`]; [`overview`] makes dots of that.
+/// takes the narrowest of its own. [`Density::Minimap`] is
+/// drawn as [`Density::Fit`]; [`minimap`] makes dots of that.
 pub fn draw_in(mermaid: &str, room: Room, density: Density) -> Result<Vec<String>, String> {
     sandboxed(mermaid, move |text| fit(&text, room, density))
 }
@@ -562,12 +565,13 @@ fn copies(len: usize, keep: Option<usize>, repeats: impl Fn(usize) -> bool) -> V
 /// A picture shrunk to fit a room, in Braille dots: the shape of the boxes
 /// and the lines between them, no text.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Overview {
+pub struct Minimap {
+    /// The dots, a line for each row of the room.
     pub lines: Vec<String>,
     /// Where the part of the picture that `view` names is: the first column
     /// and row in cells, the columns and rows.
     pub frame: (usize, usize, usize, usize),
-    /// Columns (and rows) of the picture per cell of the overview.
+    /// Columns (and rows) of the picture per cell of the minimap.
     pub scale: f64,
 }
 
@@ -579,7 +583,7 @@ const STROKE_DOWN: &str = "│┃┆┇┊┋╎╏║├┤┼╟╢╫";
 /// `lines` drawn small enough for `room`, each cell of it 2×4 dots, with the
 /// frame of `view` (first column and row of the picture shown, columns and
 /// rows) on it. A picture that fits is drawn a character to a cell.
-pub fn overview(lines: &[String], room: Room, view: (usize, usize, usize, usize)) -> Overview {
+pub fn minimap(lines: &[String], room: Room, view: (usize, usize, usize, usize)) -> Minimap {
     let width = width_of(lines);
     let height = lines.len();
     let scale = (width as f64 / room.width.max(1) as f64)
@@ -647,7 +651,7 @@ pub fn overview(lines: &[String], room: Room, view: (usize, usize, usize, usize)
     let y = ((top as f64 / scale).floor() as usize).min(rows.saturating_sub(1));
     let w = (((left + shown_cols) as f64 / scale).ceil() as usize).clamp(x + 1, cols) - x;
     let h = (((top + shown_rows) as f64 / scale).ceil() as usize).clamp(y + 1, rows) - y;
-    Overview {
+    Minimap {
         lines,
         frame: (x, y, w, h),
         scale,
@@ -781,9 +785,9 @@ mod tests {
     }
 
     #[test]
-    fn the_overview_draws_boxes_and_lines_in_dots_without_text() {
+    fn the_minimap_draws_boxes_and_lines_in_dots_without_text() {
         let picture = strings(&["┌──┐", "│AB│", "└──┘"]);
-        let small = overview(
+        let small = minimap(
             &picture,
             Room {
                 width: 10,
@@ -805,7 +809,7 @@ mod tests {
     #[test]
     fn a_large_picture_is_shrunk_into_the_room_with_the_frame_of_the_view() {
         let picture: Vec<String> = (0..40).map(|_| "─".repeat(200)).collect();
-        let small = overview(
+        let small = minimap(
             &picture,
             Room {
                 width: 50,

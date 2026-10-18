@@ -35,6 +35,7 @@ const PICTURES: usize = 64;
 /// draws nothing it drew before.
 #[derive(Default)]
 struct Pictures {
+    /// The pictures drawn so far.
     drawn: RefCell<HashMap<PictureKey, Rc<Vec<String>>>>,
     /// Why a text could not be drawn: it is not tried again for another room,
     /// so a text that takes too long costs that time once.
@@ -101,6 +102,7 @@ pub(super) struct Diagrams {
     inline: Pan,
     /// How densely the diagrams of the Summary are laid out.
     inline_density: Density,
+    /// Pictures drawn so far, kept for the next frames.
     pictures: Pictures,
 }
 
@@ -397,8 +399,8 @@ impl Session {
     pub(super) fn summary_diagram_key(&mut self, key: KeyEvent) {
         if let Some(to) = self.density_key(key.code, self.diagrams.inline_density) {
             let to = match to {
-                Some(Density::Overview) => {
-                    self.message = Some(NO_INLINE_OVERVIEW.into());
+                Some(Density::Minimap) => {
+                    self.message = Some(NO_INLINE_MINIMAP.into());
                     return;
                 }
                 to => to,
@@ -542,17 +544,17 @@ impl Session {
         }
         let source = self.shown_mermaid().cloned();
         match key.code {
-            KeyCode::Char('r') => self.refresh_diagram(),
-            KeyCode::Char('y') => {
+            KeyCode::Char('r') if !ctrl => self.refresh_diagram(),
+            KeyCode::Char('y') if !ctrl => {
                 if let Some(source) = source {
                     self.copy_to_clipboard(&source, "the Mermaid source");
                 }
             }
-            KeyCode::Char('o') => match source {
+            KeyCode::Char('o') if !ctrl => match source {
                 Some(source) => self.open_outside(&source),
                 None => self.message = Some("The diagram has not come yet".into()),
             },
-            KeyCode::Enter if self.diagrams.density == Density::Overview => {
+            KeyCode::Enter if self.diagrams.density == Density::Minimap => {
                 self.diagrams.density = Density::Fit;
             }
             code => {
@@ -564,9 +566,9 @@ impl Session {
                 }
                 let lines = self.open_lines();
                 let view = self.diagram_view();
-                // In the overview a step moves the frame by a cell of it.
-                let steps = match self.overview_of(&lines) {
-                    Some(overview)
+                // In the minimap a step moves the frame by a cell of it.
+                let steps = match self.minimap_of(&lines) {
+                    Some(minimap)
                         if matches!(
                             code,
                             KeyCode::Char('h' | 'j' | 'k' | 'l')
@@ -576,7 +578,7 @@ impl Session {
                                 | KeyCode::Down
                         ) =>
                     {
-                        overview.scale.ceil() as usize
+                        minimap.scale.ceil() as usize
                     }
                     _ => 1,
                 };
@@ -608,15 +610,15 @@ impl Session {
         self.diagrams.density = to;
     }
 
-    /// The overview of `lines` with the frame of the view, when the overlay
-    /// shows the overview.
-    fn overview_of(&self, lines: &[String]) -> Option<crate::diagram::Overview> {
-        if self.diagrams.density != Density::Overview {
+    /// The minimap of `lines` with the frame of the view, when the overlay
+    /// shows the minimap.
+    fn minimap_of(&self, lines: &[String]) -> Option<crate::diagram::Minimap> {
+        if self.diagrams.density != Density::Minimap {
             return None;
         }
         let view = self.diagram_view();
         let pan = &self.diagrams.view;
-        Some(crate::diagram::overview(
+        Some(crate::diagram::minimap(
             lines,
             self.diagram_room(),
             (
@@ -741,23 +743,23 @@ impl Session {
             draw_box(self.theme(), buf, area, &title);
         }
         let lines = self.open_lines();
-        match self.overview_of(&lines) {
-            Some(overview) => self.render_overview(buf, &place, &overview),
+        match self.minimap_of(&lines) {
+            Some(minimap) => self.render_minimap(buf, &place, &minimap),
             None => pan::render(self.theme(), buf, &place, &lines, &self.diagrams.view),
         }
     }
 
-    /// The overview in the overlay: dots, the frame of the view lit, and what
+    /// The minimap in the overlay: dots, the frame of the view lit, and what
     /// the keys do on the border.
-    fn render_overview(
+    fn render_minimap(
         &self,
         buf: &mut Buffer,
         place: &pan::Place,
-        overview: &crate::diagram::Overview,
+        minimap: &crate::diagram::Minimap,
     ) {
         let theme = self.theme();
         let text = place.text;
-        for (i, line) in overview.lines.iter().enumerate().take(text.height as usize) {
+        for (i, line) in minimap.lines.iter().enumerate().take(text.height as usize) {
             buf.set_stringn(
                 text.x,
                 text.y + i as u16,
@@ -766,7 +768,7 @@ impl Session {
                 Style::new().fg(theme.fg),
             );
         }
-        let (x, y, w, h) = overview.frame;
+        let (x, y, w, h) = minimap.frame;
         for row in y..(y + h).min(text.height as usize) {
             for col in x..(x + w).min(text.width as usize) {
                 let cell = &mut buf[(text.x + col as u16, text.y + row as u16)];
@@ -789,7 +791,7 @@ impl Session {
         }
     }
 
-    /// The lines the open overlay shows; in the overview, those it is made of.
+    /// The lines the open overlay shows; in the minimap, those it is made of.
     pub(super) fn open_lines(&self) -> Vec<String> {
         self.open_lines_at(self.diagrams.density)
     }
@@ -854,17 +856,16 @@ fn write_svg(svg: &str) -> std::io::Result<std::path::PathBuf> {
     Ok(path)
 }
 
-/// The density a picture is drawn at: the overview is made of the fitted one.
+/// The density a picture is drawn at: the minimap is made of the fitted one.
 fn drawn_as(density: Density) -> Density {
     match density {
-        Density::Overview => Density::Fit,
+        Density::Minimap => Density::Fit,
         other => other,
     }
 }
 
 /// What `-` says in the Summary past its densest layout.
-const NO_INLINE_OVERVIEW: &str =
-    "The Summary shows no overview of its diagram: :diagram has one (-, -)";
+const NO_INLINE_MINIMAP: &str = "No minimap in the Summary: f has one (-, -)";
 
 /// What `r` says in an Explanation or a Diagram with no Analyst.
 pub(super) const NO_ANALYST_TO_REFRESH: &str = "No Analyst is configured: nothing to ask again";

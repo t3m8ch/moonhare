@@ -54,7 +54,7 @@ _Russian_: саммари
 _Avoid_: walkthrough (that is CodeRabbit's), overview
 
 **Diagram**:
-A sequence diagram or flowchart the Analyst draws, as Mermaid text, for a Group, a file or a fragment, or inside a Summary when the interaction of components changed. moonhare draws it with box-drawing characters, laid out to fit the window (a flowchart turned top-down, labels wrapped, gaps closed up), at a density the Reviewer can change down to an overview in Braille dots, or opens it as SVG in the system viewer; the Mermaid source, never rewritten, can always be copied.
+A sequence diagram or flowchart the Analyst draws, as Mermaid text, for a Group, a file or a fragment, or inside a Summary when the interaction of components changed. moonhare draws it with box-drawing characters, laid out to fit the window (a flowchart turned top-down, labels wrapped, gaps closed up), at a density the Reviewer can change down to a minimap in Braille dots, or opens it as SVG in the system viewer; the Mermaid source, never rewritten, can always be copied.
 _Russian_: диаграмма
 _Avoid_: picture, chart, graph
 
