@@ -14,6 +14,7 @@ pub mod forge;
 pub mod git;
 pub mod github;
 pub mod hints;
+pub mod markdown;
 pub mod mechanical;
 pub mod opening;
 pub mod prompt;
