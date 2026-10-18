@@ -16,12 +16,13 @@ use ratatui::crossterm::event::{
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::diff::{FileDiff, FileKind, Highlight, Side, Token};
+use crate::diff::{FileDiff, FileKind, Side, Token};
 use crate::fold::{fold, Folded, Item};
 use crate::forge::{Forge, PullRequest};
 use crate::git::{ChangedFile, Commit, GitError, Range, Repo, Status, Target};
 use crate::review::{self, FileChange, Mark, Review};
 use crate::special;
+use crate::theme::Theme;
 use crate::viewport::Viewport;
 use diagram::clear_area;
 pub use diffs::{silence_worker_panics, DiffEngine};
@@ -42,14 +43,6 @@ const BOTTOM_ROWS: u16 = 2;
 const WHEEL_STEP: usize = 3;
 /// Columns moved by one `h` / `l` press.
 const HSCROLL_STEP: usize = 8;
-
-const FG: Color = Color::Indexed(252);
-const DIM: Color = Color::Indexed(244);
-const ACCENT: Color = Color::Indexed(75);
-const REMOVED_BG: Color = Color::Indexed(52);
-const REMOVED_FRAGMENT_BG: Color = Color::Indexed(88);
-const ADDED_BG: Color = Color::Indexed(22);
-const ADDED_FRAGMENT_BG: Color = Color::Indexed(28);
 
 #[derive(Debug)]
 pub struct Error(pub String);
@@ -238,6 +231,7 @@ mod reload;
 mod rounds;
 mod scroll;
 mod sidebar;
+mod themes;
 mod unreviewed;
 mod windows;
 
@@ -310,6 +304,9 @@ pub struct Session {
     sidebar_custom: Option<u16>,
     /// Emit exact RGB instead of the 256-colour palette.
     truecolor: bool,
+    /// The theme the Reviewer asked for and the terminal background `auto`
+    /// follows.
+    theme_setting: themes::ThemeSetting,
     mode: Mode,
     pending: Option<char>,
     /// How long `pending` has been waiting.
@@ -516,6 +513,7 @@ impl Session {
             sidebar_manual: None,
             sidebar_custom: None,
             truecolor: false,
+            theme_setting: themes::ThemeSetting::default(),
             mode: Mode::Normal,
             pending: None,
             pending_for: std::time::Duration::ZERO,
@@ -983,6 +981,14 @@ impl Session {
 
     // ------------------------------------------------------------ events
 
+    /// The step of the event loop: `event` came `since` after the one
+    /// before. The time counts before the event does, so the event sees the
+    /// clock of when it came.
+    pub fn input(&mut self, since: std::time::Duration, event: Event) {
+        self.watch(since);
+        self.handle(event);
+    }
+
     pub fn handle(&mut self, event: Event) {
         let waiting = self.pending;
         match event {
@@ -1274,6 +1280,9 @@ impl Session {
                 self.confirm_clear = true;
                 self.message = Some("Delete all Comments for good? y / n".into());
             }
+            other if other.split_whitespace().next() == Some("theme") => {
+                self.theme_command(other["theme".len()..].trim())
+            }
             other if other.split_whitespace().next() == Some("set") => {
                 self.set_command(other["set".len()..].trim())
             }
@@ -1363,13 +1372,19 @@ impl Session {
 
     /// Everything but the highlight of text selected in an overlay.
     fn render_base(&self, buf: &mut Buffer) {
-        buf.set_style(buf.area, Style::new().fg(FG));
+        buf.set_style(buf.area, Style::new().fg(self.theme().fg));
         if self.too_small() {
             let msg = format!(
                 "Terminal too small: need at least {}x{}",
                 MIN_SIZE.0, MIN_SIZE.1
             );
-            buf.set_stringn(0, 0, &msg, self.size.0 as usize, Style::new().fg(FG));
+            buf.set_stringn(
+                0,
+                0,
+                &msg,
+                self.size.0 as usize,
+                Style::new().fg(self.theme().fg),
+            );
             return;
         }
         if self.sidebar_visible() {
@@ -1406,6 +1421,7 @@ impl Session {
     fn render_commits(&self, buf: &mut Buffer) {
         let area = self.commits_area();
         draw_box_focused(
+            self.theme(),
             buf,
             area,
             &self.commits_title(),
@@ -1474,12 +1490,18 @@ impl Session {
             let cursor = show_cursor && position == self.commit_cursor;
             let mark = if in_scope { '●' } else { ' ' };
             let line = format!("{}{mark} {text}", if cursor { '>' } else { ' ' });
-            let mut style = Style::new().fg(if position == HEADER { DIM } else { FG });
+            let mut style = Style::new().fg(if position == HEADER {
+                self.theme().dim
+            } else {
+                self.theme().fg
+            });
             if selection.is_some_and(|(lo, hi)| (lo..=hi).contains(&position)) {
-                style = style.bg(Color::Indexed(24));
+                style = style.bg(self.theme().selection_bg);
             }
             if cursor {
-                style = style.bg(Color::Indexed(238)).add_modifier(Modifier::BOLD);
+                style = style
+                    .bg(self.theme().cursor_bg)
+                    .add_modifier(Modifier::BOLD);
             }
             let y = area.y + row as u16 + if row > 0 { frame.len() as u16 } else { 0 };
             buf.set_style(Rect::new(area.x, y, area.width, 1), style);
@@ -1527,9 +1549,9 @@ impl Session {
 
     fn render_picker(&self, buf: &mut Buffer) {
         let area = self.picker_area();
-        buf.set_style(area, Style::new().fg(FG).bg(Color::Reset));
-        clear_area(buf, area);
-        draw_box(buf, area, " Pick a Scope ");
+        buf.set_style(area, Style::new().fg(self.theme().fg).bg(Color::Reset));
+        clear_area(self.theme(), buf, area);
+        draw_box(self.theme(), buf, area, " Pick a Scope ");
         let inner = self.picker_inner();
         self.render_commit_rows(buf, inner, true);
         let hint = "j/k move  v select  Enter apply  a whole Range  Esc close";
@@ -1539,13 +1561,14 @@ impl Session {
             area.y + area.height - 2,
             fit(hint, hint_w, false),
             hint_w,
-            Style::new().fg(DIM),
+            Style::new().fg(self.theme().dim),
         );
     }
 
     fn render_files(&self, buf: &mut Buffer) {
         let area = self.files_area();
         draw_box_focused(
+            self.theme(),
             buf,
             area,
             &format!(" Files ({}){} ", self.files.len(), self.groups_note()),
@@ -1584,7 +1607,7 @@ impl Session {
                 area.y + 1,
                 &msg,
                 w.saturating_sub(1),
-                Style::new().fg(DIM),
+                Style::new().fg(self.theme().dim),
             );
             return;
         };
@@ -1595,7 +1618,7 @@ impl Session {
                 area.y + 1,
                 &text,
                 w.saturating_sub(1),
-                Style::new().fg(DIM),
+                Style::new().fg(self.theme().dim),
             );
             return;
         };
@@ -1607,7 +1630,7 @@ impl Session {
                     area.y + 1,
                     e,
                     w.saturating_sub(1),
-                    Style::new().fg(Color::Red),
+                    Style::new().fg(self.theme().error),
                 );
                 return;
             }
@@ -1616,8 +1639,8 @@ impl Session {
         let d = &loaded.diff;
         let header = self.file_bar(file, d);
         let header_style = Style::new()
-            .fg(Color::Indexed(231))
-            .bg(Color::Indexed(236))
+            .fg(self.theme().header_fg)
+            .bg(self.theme().bar_bg)
             .add_modifier(Modifier::BOLD);
         buf.set_style(Rect::new(area.x, area.y, area.width, 1), header_style);
         buf.set_stringn(area.x, area.y, &header, w, header_style);
@@ -1634,7 +1657,7 @@ impl Session {
                 top,
                 "Binary file not shown",
                 w,
-                Style::new().fg(DIM),
+                Style::new().fg(self.theme().dim),
             );
             return;
         }
@@ -1682,7 +1705,12 @@ impl Session {
                     continue;
                 }
             };
-            buf.set_string(area.x + half as u16, y, "│", Style::new().fg(DIM));
+            buf.set_string(
+                area.x + half as u16,
+                y,
+                "│",
+                Style::new().fg(self.theme().dim),
+            );
             self.render_half(buf, l, Side::Old, row.old, row.new, area.x, y, half, digits);
             self.render_half(
                 buf,
@@ -1696,7 +1724,9 @@ impl Session {
                 digits,
             );
             if is_cursor {
-                let marker = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
+                let marker = Style::new()
+                    .fg(self.theme().accent)
+                    .add_modifier(Modifier::BOLD);
                 let gutter = (digits + 1) as u16;
                 buf.set_style(Rect::new(area.x, y, gutter, 1), marker);
                 buf.set_style(Rect::new(right_x, y, gutter, 1), marker);
@@ -1707,9 +1737,9 @@ impl Session {
 
     /// The placeholder row of a folded stretch of unchanged lines.
     fn render_fold(&self, buf: &mut Buffer, x: u16, y: u16, width: u16, len: usize, cursor: bool) {
-        let mut style = Style::new().fg(DIM).bg(Color::Indexed(235));
+        let mut style = Style::new().fg(self.theme().dim).bg(self.theme().fold_bg);
         if cursor {
-            style = style.fg(ACCENT).add_modifier(Modifier::BOLD);
+            style = style.fg(self.theme().accent).add_modifier(Modifier::BOLD);
         }
         buf.set_style(Rect::new(x, y, width, 1), style);
         let text = format!("  ⋯ {len} unchanged lines");
@@ -1733,22 +1763,41 @@ impl Session {
         let changed = l.line_changed(side, line, counterpart);
         let (bg, frag_bg) = match (side, changed) {
             (_, false) => (None, None),
-            (Side::Old, true) => (Some(REMOVED_BG), Some(REMOVED_FRAGMENT_BG)),
-            (Side::New, true) => (Some(ADDED_BG), Some(ADDED_FRAGMENT_BG)),
+            (Side::Old, true) => (
+                Some(self.theme().removed_bg),
+                Some(self.theme().removed_fragment_bg),
+            ),
+            (Side::New, true) => (
+                Some(self.theme().added_bg),
+                Some(self.theme().added_fragment_bg),
+            ),
         };
         if let Some(bg) = bg {
             buf.set_style(Rect::new(x, y, width as u16, 1), Style::new().bg(bg));
         }
         let gutter = format!("{:>digits$} ", line + 1);
-        let mut gutter_style = Style::new().fg(DIM);
+        let mut gutter_style = Style::new().fg(self.theme().dim);
         if let Some(bg) = bg {
             gutter_style = gutter_style.bg(bg);
         }
         buf.set_stringn(x, y, &gutter, width, gutter_style);
         let code_x = x + gutter.chars().count() as u16;
         let code_w = width.saturating_sub(gutter.chars().count());
-        let cells = code_cells(&l.lines(side)[line], &l.tokens(side)[line], bg, frag_bg);
-        draw_cells(buf, code_x, y, code_w, shifted(&cells, self.hscroll));
+        let cells = code_cells(
+            self.theme(),
+            &l.lines(side)[line],
+            &l.tokens(side)[line],
+            bg,
+            frag_bg,
+        );
+        draw_cells(
+            self.theme(),
+            buf,
+            code_x,
+            y,
+            code_w,
+            shifted(&cells, self.hscroll),
+        );
     }
 
     fn render_inline(&self, buf: &mut Buffer, l: &Loaded, area: Rect, top: u16, height: usize) {
@@ -1781,15 +1830,15 @@ impl Session {
                 InlineKind::Removed => (
                     Side::Old,
                     line.old.unwrap(),
-                    Some(REMOVED_BG),
-                    Some(REMOVED_FRAGMENT_BG),
+                    Some(self.theme().removed_bg),
+                    Some(self.theme().removed_fragment_bg),
                     '-',
                 ),
                 InlineKind::Added => (
                     Side::New,
                     line.new.unwrap(),
-                    Some(ADDED_BG),
-                    Some(ADDED_FRAGMENT_BG),
+                    Some(self.theme().added_bg),
+                    Some(self.theme().added_fragment_bg),
                     '+',
                 ),
             };
@@ -1801,15 +1850,22 @@ impl Session {
                 None => " ".repeat(digits),
             };
             let gutter = format!("{} {} {mark} ", num(line.old), num(line.new));
-            let mut gutter_style = Style::new().fg(DIM);
+            let mut gutter_style = Style::new().fg(self.theme().dim);
             if let Some(bg) = bg {
                 gutter_style = gutter_style.bg(bg);
             }
             buf.set_stringn(area.x, y, &gutter, width, gutter_style);
             let gw = gutter.chars().count();
-            let cells = code_cells(&l.lines(side)[idx], &l.tokens(side)[idx], bg, frag_bg);
+            let cells = code_cells(
+                self.theme(),
+                &l.lines(side)[idx],
+                &l.tokens(side)[idx],
+                bg,
+                frag_bg,
+            );
             let code_w = width.saturating_sub(gw);
             draw_cells(
+                self.theme(),
                 buf,
                 area.x + gw as u16,
                 y,
@@ -1817,7 +1873,9 @@ impl Session {
                 shifted(&cells, self.hscroll),
             );
             if is_cursor {
-                let marker = Style::new().fg(ACCENT).add_modifier(Modifier::BOLD);
+                let marker = Style::new()
+                    .fg(self.theme().accent)
+                    .add_modifier(Modifier::BOLD);
                 buf.set_style(Rect::new(area.x, y, gw as u16, 1), marker);
             }
             layout.draw(buf, area.x, y + 1, bottom, self.vp.top + screen_row);
@@ -1827,11 +1885,11 @@ impl Session {
     fn render_status(&self, buf: &mut Buffer) {
         let y = self.size.1 - BOTTOM_ROWS;
         let width = self.size.0 as usize;
-        let bar = Style::new().fg(FG).bg(Color::Indexed(236));
+        let bar = Style::new().fg(self.theme().fg).bg(self.theme().bar_bg);
         buf.set_style(Rect::new(0, y, self.size.0, 1), bar);
         let badge = Style::new()
-            .fg(Color::Indexed(16))
-            .bg(ACCENT)
+            .fg(self.theme().on_accent)
+            .bg(self.theme().accent)
             .add_modifier(Modifier::BOLD);
         buf.set_string(0, y, self.mode_badge(), badge);
 
@@ -1876,13 +1934,13 @@ impl Session {
 }
 
 /// A bordered box with a title in the top border.
-fn draw_box(buf: &mut Buffer, area: Rect, title: &str) {
-    draw_box_focused(buf, area, title, false);
+fn draw_box(theme: &Theme, buf: &mut Buffer, area: Rect, title: &str) {
+    draw_box_focused(theme, buf, area, title, false);
 }
 
 /// A box whose border is lit while its window has the focus.
-fn draw_box_focused(buf: &mut Buffer, area: Rect, title: &str, focused: bool) {
-    let border = Style::new().fg(if focused { ACCENT } else { DIM });
+fn draw_box_focused(theme: &Theme, buf: &mut Buffer, area: Rect, title: &str, focused: bool) {
+    let border = Style::new().fg(if focused { theme.accent } else { theme.dim });
     let width = area.width as usize;
     let mut top = format!("┌{title}");
     while top.chars().count() < width.saturating_sub(1) {
@@ -1916,22 +1974,11 @@ fn fit(s: &str, width: usize, keep_tail: bool) -> String {
     }
 }
 
-fn highlight_color(h: Highlight) -> Color {
-    match h {
-        Highlight::Keyword => Color::Indexed(176),
-        Highlight::String => Color::Indexed(150),
-        Highlight::Comment => Color::Indexed(243),
-        Highlight::Type => Color::Indexed(110),
-        Highlight::Error => Color::Indexed(203),
-        Highlight::Delimiter => Color::Indexed(247),
-        Highlight::Normal | Highlight::Text | Highlight::Ignorable => FG,
-    }
-}
-
 /// Styled characters of one source line: syntax colours from the tokens, a
 /// line background, and a stronger background on changed fragments. Tabs are
 /// expanded.
 fn code_cells(
+    theme: &Theme,
     text: &str,
     tokens: &[Token],
     bg: Option<Color>,
@@ -1939,7 +1986,7 @@ fn code_cells(
 ) -> Vec<(char, Style)> {
     let mut cells = Vec::with_capacity(text.len());
     for (byte, ch) in text.char_indices() {
-        let mut style = Style::new().fg(FG);
+        let mut style = Style::new().fg(theme.fg);
         if let Some(bg) = bg {
             style = style.bg(bg);
         }
@@ -1947,7 +1994,7 @@ fn code_cells(
             .iter()
             .find(|t| (t.start_col as usize) <= byte && byte < t.end_col as usize)
         {
-            style = style.fg(highlight_color(t.highlight));
+            style = style.fg(theme.highlight(t.highlight));
             if t.changed {
                 if let Some(fbg) = fragment_bg {
                     style = style.bg(fbg);
@@ -1978,7 +2025,14 @@ fn shifted(cells: &[(char, Style)], offset: usize) -> &[(char, Style)] {
 }
 
 /// Draw cells into `width` columns, ending with `…` when cut.
-fn draw_cells(buf: &mut Buffer, x: u16, y: u16, width: usize, cells: &[(char, Style)]) {
+fn draw_cells(
+    theme: &Theme,
+    buf: &mut Buffer,
+    x: u16,
+    y: u16,
+    width: usize,
+    cells: &[(char, Style)],
+) {
     let cut = cells.len() > width;
     let shown = if cut {
         width.saturating_sub(1)
@@ -1992,7 +2046,7 @@ fn draw_cells(buf: &mut Buffer, x: u16, y: u16, width: usize, cells: &[(char, St
         buf.set_string(x + i as u16, y, ch.to_string(), *style);
     }
     if cut && width > 0 {
-        let style = cells[shown].1.fg(DIM);
+        let style = cells[shown].1.fg(theme.dim);
         buf.set_string(x + shown as u16, y, "…", style);
     }
 }

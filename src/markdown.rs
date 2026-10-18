@@ -7,15 +7,11 @@
 //! marks never reach the terminal.
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
-use ratatui::style::{Color, Modifier, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
-const HEADING: Color = Color::Indexed(75);
-const CODE_FG: Color = Color::Indexed(180);
-const CODE_BG: Color = Color::Indexed(236);
-const BLOCK_BG: Color = Color::Indexed(235);
-const DIM: Color = Color::Indexed(244);
+use crate::theme::{Theme, DARK};
 
 /// Spaces a tab of a code block takes.
 const TAB: &str = "    ";
@@ -30,24 +26,30 @@ const MAX_WORD_COLUMN: usize = 10;
 /// blocks as diagrams. Gets the language and the code.
 pub type Pictures<'a> = &'a dyn Fn(&str, &str) -> Option<Vec<String>>;
 
-/// `source` drawn for a box `width` cells wide.
-pub fn render(source: &str, width: usize) -> Vec<Line<'static>> {
-    render_with(source, width, &|_, _| None)
+/// `source` drawn in the colours of `theme` for a box `width` cells wide.
+pub fn render(theme: &Theme, source: &str, width: usize) -> Vec<Line<'static>> {
+    render_with(theme, source, width, &|_, _| None)
 }
 
 /// [`render`], with fenced blocks drawn by `pictures` when it can.
-pub fn render_with(source: &str, width: usize, pictures: Pictures) -> Vec<Line<'static>> {
+pub fn render_with(
+    theme: &Theme,
+    source: &str,
+    width: usize,
+    pictures: Pictures,
+) -> Vec<Line<'static>> {
     let width = width.max(1);
-    layout(&parse(source), width, false, pictures)
+    layout(theme, &parse(theme, source), width, false, pictures)
         .into_iter()
         .map(|line| truncate(line, width))
         .collect()
 }
 
-/// The code of the fenced blocks in `language`.
+/// The code of the fenced blocks in `language`. (Only the text is wanted:
+/// any theme parses it.)
 pub fn fenced_blocks(source: &str, language: &str) -> Vec<String> {
     let mut found = Vec::new();
-    collect_fenced(&parse(source), language, &mut found);
+    collect_fenced(&parse(&DARK, source), language, &mut found);
     found
 }
 
@@ -55,7 +57,7 @@ pub fn fenced_blocks(source: &str, language: &str) -> Vec<String> {
 /// marks.
 pub fn one_line(source: &str) -> String {
     let mut words = Vec::new();
-    flatten(&parse(source), &mut words);
+    flatten(&parse(&DARK, source), &mut words);
     words.join(" ")
 }
 
@@ -112,8 +114,8 @@ enum Frame {
     },
 }
 
-#[derive(Default)]
-struct Builder {
+struct Builder<'t> {
+    theme: &'t Theme,
     stack: Vec<Frame>,
     /// The text being collected: a paragraph, a heading, a cell.
     inline: Option<Inline>,
@@ -121,10 +123,13 @@ struct Builder {
     links: Vec<String>,
 }
 
-fn parse(source: &str) -> Vec<Block> {
+fn parse(theme: &Theme, source: &str) -> Vec<Block> {
     let mut b = Builder {
+        theme,
         stack: vec![Frame::Blocks(Vec::new())],
-        ..Builder::default()
+        inline: None,
+        styles: Vec::new(),
+        links: Vec::new(),
     };
     let options = Options::ENABLE_TABLES | Options::ENABLE_STRIKETHROUGH;
     for event in Parser::new_ext(source, options) {
@@ -140,7 +145,7 @@ fn parse(source: &str) -> Vec<Block> {
     }
 }
 
-impl Builder {
+impl Builder<'_> {
     fn style(&self) -> Style {
         self.styles
             .iter()
@@ -223,7 +228,7 @@ impl Builder {
                 self.push_text(&text, style)
             }
             Event::Code(text) => {
-                let style = self.style().patch(code_style());
+                let style = self.style().patch(code_style(self.theme));
                 self.push_text(&text, style)
             }
             // The Analyst breaks lines where it means to, as in a comment on
@@ -308,7 +313,7 @@ impl Builder {
                 self.styles.pop();
                 let url = self.links.pop().unwrap_or_default();
                 if !url.is_empty() {
-                    let style = self.style().fg(DIM);
+                    let style = self.style().fg(self.theme.dim);
                     self.push_text(&format!(" ({url})"), style);
                 }
             }
@@ -352,8 +357,10 @@ impl Builder {
     }
 }
 
-fn code_style() -> Style {
-    Style::new().fg(CODE_FG).bg(CODE_BG)
+fn code_style(theme: &Theme) -> Style {
+    Style::new()
+        .fg(theme.markdown.code)
+        .bg(theme.markdown.code_bg)
 }
 
 /// `text` without what must not reach a terminal: control characters become
@@ -435,22 +442,35 @@ fn line_width(line: &Line) -> usize {
 }
 
 /// `blocks` laid out for `width`; a blank line between blocks unless `tight`.
-fn layout(blocks: &[Block], width: usize, tight: bool, pictures: Pictures) -> Vec<Line<'static>> {
+fn layout(
+    theme: &Theme,
+    blocks: &[Block],
+    width: usize,
+    tight: bool,
+    pictures: Pictures,
+) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for (i, block) in blocks.iter().enumerate() {
         if i > 0 && !tight {
             lines.push(Line::default());
         }
-        lines.extend(layout_block(block, width, pictures));
+        lines.extend(layout_block(theme, block, width, pictures));
     }
     lines
 }
 
-fn layout_block(block: &Block, width: usize, pictures: Pictures) -> Vec<Line<'static>> {
+fn layout_block(
+    theme: &Theme,
+    block: &Block,
+    width: usize,
+    pictures: Pictures,
+) -> Vec<Line<'static>> {
     match block {
         Block::Text(inline) => wrap(inline, width),
         Block::Heading(inline) => {
-            let heading = Style::new().fg(HEADING).add_modifier(Modifier::BOLD);
+            let heading = Style::new()
+                .fg(theme.markdown.heading)
+                .add_modifier(Modifier::BOLD);
             let styled: Inline = inline
                 .iter()
                 .map(|(text, style)| (text.clone(), heading.patch(*style)))
@@ -465,29 +485,41 @@ fn layout_block(block: &Block, width: usize, pictures: Pictures) -> Vec<Line<'st
                     None => "• ".to_string(),
                 };
                 let indent = str_width(&marker);
-                let inner = layout(item, width.saturating_sub(indent).max(1), true, pictures);
+                let inner = layout(
+                    theme,
+                    item,
+                    width.saturating_sub(indent).max(1),
+                    true,
+                    pictures,
+                );
                 lines.extend(prefixed(
                     inner,
-                    Span::styled(marker, Style::new().fg(HEADING)),
+                    Span::styled(marker, Style::new().fg(theme.markdown.heading)),
                     Span::raw(" ".repeat(indent)),
                 ));
             }
             lines
         }
         Block::Quote(blocks) => {
-            let bar = Span::styled("│ ", Style::new().fg(DIM));
-            let inner = layout(blocks, width.saturating_sub(2).max(1), false, pictures);
+            let bar = Span::styled("│ ", Style::new().fg(theme.dim));
+            let inner = layout(
+                theme,
+                blocks,
+                width.saturating_sub(2).max(1),
+                false,
+                pictures,
+            );
             prefixed(inner, bar.clone(), bar)
         }
         Block::Code { language, code } => match pictures(language, code) {
             Some(picture) => picture.iter().map(|l| Line::raw(clean(l))).collect(),
-            None => code_block(code, width),
+            None => code_block(theme, code, width),
         },
         Block::Rule => vec![Line::from(Span::styled(
             "─".repeat(width),
-            Style::new().fg(DIM),
+            Style::new().fg(theme.dim),
         ))],
-        Block::Table { aligns, head, rows } => table(aligns, head, rows, width),
+        Block::Table { aligns, head, rows } => table(theme, aligns, head, rows, width),
     }
 }
 
@@ -514,8 +546,8 @@ fn prefixed(
 
 /// A code block: on a background, one line per line of code, cut with `…`
 /// rather than wrapped.
-fn code_block(code: &str, width: usize) -> Vec<Line<'static>> {
-    let style = Style::new().fg(Color::Indexed(252)).bg(BLOCK_BG);
+fn code_block(theme: &Theme, code: &str, width: usize) -> Vec<Line<'static>> {
+    let style = Style::new().fg(theme.fg).bg(theme.markdown.block_bg);
     code.trim_end_matches('\n')
         .split('\n')
         .map(|line| {
@@ -682,6 +714,7 @@ fn bold(inline: &Inline) -> Inline {
 /// A table in a frame when its columns fit `width`, squeezed with the text
 /// wrapped inside the cells when they fit squeezed, and as cards otherwise.
 fn table(
+    theme: &Theme,
     aligns: &[Alignment],
     head: &[Inline],
     rows: &[Vec<Inline>],
@@ -756,14 +789,14 @@ fn table(
         let parts: Vec<String> = widths.iter().map(|w| "─".repeat(w + 2)).collect();
         Line::from(Span::styled(
             format!("{left}{}{right}", parts.join(mid)),
-            Style::new().fg(DIM),
+            Style::new().fg(theme.dim),
         ))
     };
     let mut lines = vec![border("┌", "┬", "┐")];
     let draw_row = |cells: &[Vec<Line<'static>>], lines: &mut Vec<Line<'static>>| {
         let height = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
         for i in 0..height {
-            let mut spans = vec![Span::styled("│", Style::new().fg(DIM))];
+            let mut spans = vec![Span::styled("│", Style::new().fg(theme.dim))];
             for (c, cell) in cells.iter().enumerate() {
                 let content = cell.get(i).cloned().unwrap_or_default();
                 let room = widths[c].saturating_sub(line_width(&content));
@@ -775,7 +808,7 @@ fn table(
                 spans.push(Span::raw(" ".repeat(before + 1)));
                 spans.extend(content.spans);
                 spans.push(Span::raw(" ".repeat(after + 1)));
-                spans.push(Span::styled("│", Style::new().fg(DIM)));
+                spans.push(Span::styled("│", Style::new().fg(theme.dim)));
             }
             lines.push(Line::from(spans));
         }
@@ -816,6 +849,14 @@ mod tests {
     use super::*;
     use ratatui::style::Modifier;
     use unicode_width::UnicodeWidthStr;
+
+    fn render(source: &str, width: usize) -> Vec<Line<'static>> {
+        super::render(&crate::theme::DARK, source, width)
+    }
+
+    fn render_with(source: &str, width: usize, pictures: Pictures) -> Vec<Line<'static>> {
+        super::render_with(&crate::theme::DARK, source, width, pictures)
+    }
 
     fn text(source: &str, width: usize) -> Vec<String> {
         plain(&render(source, width))

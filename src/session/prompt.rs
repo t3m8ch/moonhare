@@ -96,13 +96,14 @@ impl Session {
             return;
         };
         let area = self.full_overlay_area();
-        clear_area(buf, area);
+        clear_area(self.theme(), buf, area);
         draw_box(
+            self.theme(),
             buf,
             area,
             " Prompt (j/k, Ctrl-d/u, gg/G, wheel scroll; Esc close) ",
         );
-        scroll::render_lines(buf, area, &self.prompt_lines(), scroll);
+        scroll::render_lines(self.theme(), buf, area, &self.prompt_lines(), scroll);
     }
 
     /// The Prompt shown, wrapped to the width of its box.

@@ -94,14 +94,26 @@ pub(super) fn text_cols(area: Rect) -> usize {
 /// Draw the part of `lines` that `scroll` shows inside the border of `area`,
 /// and the position (`last row shown/rows in all`) on the bottom border when
 /// there is more than a page.
-pub(super) fn render_lines(buf: &mut Buffer, area: Rect, lines: &[String], scroll: &Scroll) {
+pub(super) fn render_lines(
+    theme: &Theme,
+    buf: &mut Buffer,
+    area: Rect,
+    lines: &[String],
+    scroll: &Scroll,
+) {
     let lines: Vec<Line> = lines.iter().map(|l| Line::raw(l.as_str())).collect();
-    render_styled(buf, area, &lines, scroll);
+    render_styled(theme, buf, area, &lines, scroll);
 }
 
 /// [`render_lines`] for lines that carry their own styles; what has no
 /// colour of its own is drawn in the text colour.
-pub(super) fn render_styled(buf: &mut Buffer, area: Rect, lines: &[Line], scroll: &Scroll) {
+pub(super) fn render_styled(
+    theme: &Theme,
+    buf: &mut Buffer,
+    area: Rect,
+    lines: &[Line],
+    scroll: &Scroll,
+) {
     let rows = text_rows(area);
     let width = text_cols(area);
     let top = scroll.top(lines.len(), rows);
@@ -113,7 +125,7 @@ pub(super) fn render_styled(buf: &mut Buffer, area: Rect, lines: &[Line], scroll
             if left == 0 {
                 break;
             }
-            let style = Style::new().fg(FG).patch(span.style);
+            let style = Style::new().fg(theme.fg).patch(span.style);
             let (end, _) = buf.set_stringn(col, y, span.content.as_ref(), left, style);
             left = left.saturating_sub((end - col) as usize);
             col = end;
@@ -129,7 +141,7 @@ pub(super) fn render_styled(buf: &mut Buffer, area: Rect, lines: &[Line], scroll
                 area.y + area.height - 1,
                 &label,
                 len as usize,
-                Style::new().fg(DIM),
+                Style::new().fg(theme.dim),
             );
         }
     }

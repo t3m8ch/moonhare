@@ -251,6 +251,7 @@ impl Session {
         if let Some(model) = &settings.model {
             text.push_str(&format!("  model:{model}"));
         }
+        text.push_str(&self.theme_status());
         text
     }
 
@@ -547,7 +548,7 @@ impl Session {
         let pictures = |language: &str, code: &str| {
             (language == "mermaid" && self.has_drawing(code)).then(|| self.drawing_lines(code))
         };
-        let mut lines = crate::markdown::render_with(&summary.text, width, &pictures);
+        let mut lines = crate::markdown::render_with(self.theme(), &summary.text, width, &pictures);
         if let Some(mermaid) = &summary.diagram {
             lines.push(Line::default());
             lines.extend(self.drawing_lines(mermaid).into_iter().map(Line::from));
@@ -564,10 +565,10 @@ impl Session {
             return;
         }
         let area = self.overlay_area();
-        clear_area(buf, area);
+        clear_area(self.theme(), buf, area);
         let (title, lines) = self.summary_view();
-        draw_box(buf, area, &title);
-        scroll::render_styled(buf, area, &lines, &self.analysis.scroll);
+        draw_box(self.theme(), buf, area, &title);
+        scroll::render_styled(self.theme(), buf, area, &lines, &self.analysis.scroll);
     }
 }
 

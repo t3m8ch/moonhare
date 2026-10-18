@@ -5,7 +5,6 @@
 use ratatui::crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 
 use super::copy::{text_width, word_span};
-use super::mouse::SELECTION_BG;
 use super::*;
 
 /// Text selected in an overlay, in screen cells.
@@ -264,7 +263,7 @@ impl Session {
             let from = if y == y0 { x0 } else { rect.x } as usize;
             let to = if y == y1 { x1 as usize + 1 } else { text_end };
             for x in from..to.min(text_end) {
-                buf[(x as u16, y)].set_bg(SELECTION_BG);
+                buf[(x as u16, y)].set_bg(self.theme().selection_bg);
             }
         }
     }
