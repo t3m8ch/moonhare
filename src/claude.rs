@@ -33,6 +33,8 @@ pub struct ClaudeAnalyst {
     program: PathBuf,
     environment: Vec<(String, String)>,
     timeout: Duration,
+    /// The repositories whose stale worktrees are already pruned.
+    pruned: std::sync::Mutex<Vec<PathBuf>>,
 }
 
 impl ClaudeAnalyst {
@@ -46,6 +48,7 @@ impl ClaudeAnalyst {
             program: program.into(),
             environment: std::env::vars().collect(),
             timeout: DEFAULT_TIMEOUT,
+            pruned: Default::default(),
         }
     }
 
@@ -74,9 +77,73 @@ impl Default for ClaudeAnalyst {
     }
 }
 
-/// A detached worktree on the head of the Range, removed when dropped. The
-/// Analyst reads files there, so the Reviewer's own working copy is never
-/// touched.
+/// Serializes the git commands that touch `.git/worktrees`. Each of them
+/// reads every entry there and fails when a concurrent `add`, `remove` or
+/// `prune` is creating or deleting one, and `prune` deletes an entry that an
+/// `add` has not finished yet. A process-wide mutex covers the requests of one
+/// moonhare, a lock file under the git directory covers several moonhares on
+/// the same repository.
+struct WorktreeLock {
+    // Fields drop in order: the file lock goes before the mutex.
+    _file: Option<std::fs::File>,
+    _guard: std::sync::MutexGuard<'static, ()>,
+}
+
+impl WorktreeLock {
+    fn acquire(repo: &Path) -> WorktreeLock {
+        static IN_PROCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let guard = IN_PROCESS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let common = git_text(
+            repo,
+            &["rev-parse", "--path-format=absolute", "--git-common-dir"],
+        );
+        let common = common.trim();
+        // Without a lock file (no git directory, a read-only repository) the
+        // mutex still protects this process's own requests.
+        let file = if common.is_empty() {
+            None
+        } else {
+            let dir = Path::new(common).join("moonhare");
+            std::fs::create_dir_all(&dir)
+                .and_then(|()| {
+                    std::fs::OpenOptions::new()
+                        .create(true)
+                        .truncate(false)
+                        .write(true)
+                        .open(dir.join("worktrees.lock"))
+                })
+                .and_then(|file| file.lock().map(|()| file))
+                .ok()
+        };
+        WorktreeLock {
+            _file: file,
+            _guard: guard,
+        }
+    }
+}
+
+/// Forget the worktrees of earlier runs whose directories are gone, once
+/// per repository in this process, before its first request.
+fn prune_once(repo: &Path, pruned: &std::sync::Mutex<Vec<PathBuf>>) {
+    let mut pruned = pruned
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if pruned.iter().any(|r| r == repo) {
+        return;
+    }
+    let _lock = WorktreeLock::acquire(repo);
+    let _ = Command::new("git")
+        .args(["worktree", "prune"])
+        .current_dir(repo)
+        .output();
+    pruned.push(repo.to_path_buf());
+}
+
+/// A detached worktree on the head of the Range, removed and unregistered
+/// when dropped, also after an error, a timeout or a panic. The Analyst reads
+/// files there, so the Reviewer's own working copy is never touched.
 struct TempWorktree {
     repo: PathBuf,
     path: PathBuf,
@@ -92,12 +159,10 @@ impl TempWorktree {
             .prefix("moonhare-analyst-")
             .tempdir()
             .map_err(|e| failed(&e))?;
-        let path = dir.path().join("head");
-        // Forget worktrees whose directories a crashed run left deleted.
-        let _ = Command::new("git")
-            .args(["worktree", "prune"])
-            .current_dir(repo)
-            .output();
+        // git names the worktree after the last component of its path, so
+        // the unique name of the directory makes a unique worktree.
+        let path = dir.path().to_path_buf();
+        let _lock = WorktreeLock::acquire(repo);
         let out = Command::new("git")
             .args(["worktree", "add", "--detach", "--quiet"])
             .arg(&path)
@@ -118,6 +183,7 @@ impl TempWorktree {
 
 impl Drop for TempWorktree {
     fn drop(&mut self) {
+        let _lock = WorktreeLock::acquire(&self.repo);
         let _ = Command::new("git")
             .args(["worktree", "remove", "--force"])
             .arg(&self.path)
@@ -421,6 +487,7 @@ impl ClaudeAnalyst {
                 "not a revision: {base}..{head}"
             )));
         }
+        prune_once(repo, &self.pruned);
         let worktree = TempWorktree::create(repo, head)?;
         let sandbox = tempfile::Builder::new()
             .prefix("moonhare-cwd-")
