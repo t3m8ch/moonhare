@@ -92,7 +92,9 @@ impl Session {
             ('o' | 'a', Item::Fold { from, len }) => self.open_fold(from, len, false),
             ('O', Item::Fold { from, len }) => self.open_fold(from, len, true),
             ('c' | 'a', Item::Line(e)) => self.close_fold(e),
-            ('o' | 'O' | 'c', _) => self.message = Some("No folded lines here".into()),
+            // `zc` on a fold: it is folded already.
+            ('c', Item::Fold { .. }) => {}
+            ('o' | 'O', Item::Line(_)) => self.message = Some("No folded lines here".into()),
             ('R', item) => {
                 let all: Vec<usize> = (0..self.folds.changed.len())
                     .filter(|&e| !self.folds.changed[e])

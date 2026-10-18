@@ -23,6 +23,11 @@ The modification one commit makes to one file. The unit that is marked reviewed.
 _Russian_: изменение файла
 _Avoid_: patch, hunk (a sub-part of a File change)
 
+**Fold**:
+A long stretch of unchanged lines in a diff shown as one placeholder row with its line count. The Reviewer can reveal its lines, a chunk at a time when it is long, and fold them back.
+_Russian_: свёрнутый участок
+_Avoid_: collapsed region, gap
+
 **Reviewed**:
 A File change is reviewed once the Reviewer marks it. A file counts as reviewed in a Scope when every one of its File changes in that Scope is; marking a file in a Scope marks all of its File changes in that Scope.
 _Russian_: отревьюено
@@ -52,11 +57,6 @@ _Avoid_: walkthrough (that is CodeRabbit's), overview
 A sequence diagram or flowchart the Analyst draws, as Mermaid text, for a Group, a file or a fragment, or inside a Summary when the interaction of components changed. moonhare draws it with box-drawing characters; the Mermaid source can always be copied.
 _Russian_: диаграмма
 _Avoid_: picture, chart, graph
-
-**Fold**:
-A long stretch of unchanged lines in a diff shown as one placeholder row with its line count. The Reviewer can reveal its lines, a chunk at a time when it is long, and fold them back.
-_Russian_: свёрнутый участок
-_Avoid_: collapsed region, gap
 
 **Explanation**:
 The Analyst's answer, on demand, to "what does this hunk or file do and why". Unlike the Summary it is never built in the background.

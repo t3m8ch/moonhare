@@ -266,7 +266,14 @@ fn another_scope_starts_folded_and_coming_back_finds_the_lines_revealed() {
     let screen = h.screen();
     assert!(screen.contains("⋯ 26 unchanged lines"), "{screen}");
     h.keys("zRzM:scope 2<CR>:scope all<CR>");
-    assert!(!h.screen().contains("26 unchanged"));
+    // `:scope 2` holds only zz.txt, and the whole Range keeps it open.
+    h.keys("[f");
+    let screen = h.screen();
+    assert!(screen.contains("rows.rs [Rust]"), "{screen}");
+    assert!(
+        !screen.contains("26 unchanged") && shown(&screen, 5),
+        "{screen}"
+    );
 }
 
 #[test]

@@ -106,7 +106,7 @@ fn which_key_and_help_list_the_analyst_summary() {
 #[test]
 fn which_key_and_help_list_the_groups_toggle() {
     let fx = feature_branch();
-    let mut h = Harness::open(&fx, 100, 80);
+    let mut h = Harness::open(&fx, 100, 70);
     h.keys("<Space>").wait(350);
     assert!(h.screen().contains("группы / дерево"), "{}", h.screen());
     h.keys("<Esc>?");

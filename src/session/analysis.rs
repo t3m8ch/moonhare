@@ -160,11 +160,17 @@ impl Session {
     pub(super) fn analysis_command(&mut self, command: &str) -> bool {
         let mut words = command.split_whitespace();
         match (words.next(), words.next(), words.next()) {
-            (Some("analyze"), None, _) => {
-                self.refresh_head();
-                self.request_summary(true);
-                self.request_grouping(true);
+            (Some("analyze"), None, _) => self.reanalyze(),
+            (Some("analyze"), Some("all"), None) => {
+                if self.analyst_cache.is_empty() {
+                    self.forget_analyst();
+                } else {
+                    self.confirm = Some(Confirm::ForgetAnalystCache);
+                    self.message =
+                        Some("Forget every cached Analyst answer of this Review? y / n".into());
+                }
             }
+            (Some("analyze"), _, _) => self.message = Some("Usage: :analyze [all]".into()),
             (Some("lang"), None, _) => {
                 self.message = Some(format!("Summary language: {}", self.analysis.language));
             }
@@ -181,6 +187,38 @@ impl Session {
             _ => return false,
         }
         true
+    }
+
+    /// Build the Summary and the Groups again, whatever is cached.
+    fn reanalyze(&mut self) {
+        self.refresh_head();
+        self.request_summary(true);
+        self.request_grouping(true);
+    }
+
+    /// `y` forgets the Analyst's cache, anything else keeps it.
+    pub(super) fn confirm_forget_key(&mut self, key: KeyEvent) {
+        if key.code == KeyCode::Char('y') {
+            self.forget_analyst();
+        }
+    }
+
+    /// `:analyze all`: forget every answer of this Review, on disk and in
+    /// memory, and build the Summary and the Groups at once; Explanations
+    /// and Diagrams are asked for again when next opened. An answer already
+    /// on its way is a fresh one and is still kept when it comes.
+    fn forget_analyst(&mut self) {
+        if let Err(e) = self.analyst_cache.clear() {
+            self.message = Some(e);
+            return;
+        }
+        self.forget_diagrams();
+        self.reanalyze();
+        self.message = Some(if self.analysis.analyst.is_some() {
+            "The Analyst's cache is forgotten: asking again".into()
+        } else {
+            "The Analyst's cache is forgotten (no Analyst is configured)".into()
+        });
     }
 
     /// Set the reasoning effort of the requests to come: one of
