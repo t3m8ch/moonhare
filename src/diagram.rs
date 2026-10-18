@@ -78,7 +78,7 @@ pub enum Gaps {
     AsDrawn,
     /// Runs of blank or line-only columns and rows cut down to this many.
     Squeeze(usize),
-    /// Those runs made twice as long.
+    /// Those runs of columns made twice as long.
     Stretch,
 }
 
@@ -492,7 +492,8 @@ const DOWN: &[char] = &[' ', '│', '┃', '┆', '┇', '┊', '┋', '╎', '�
 
 /// The picture with every run of gap columns and rows (each the same as the
 /// one before it, holding nothing but blanks and lines) cut down to `keep`
-/// (counting the one the run repeats), or doubled when `keep` is `None`.
+/// (counting the one the run repeats), or, when `keep` is `None`, the runs
+/// of columns doubled.
 /// Nothing but the length of lines and gaps changes. A picture with a
 /// character wider or narrower than a cell is left as it is.
 fn regap(lines: &[String], keep: Option<usize>) -> Vec<String> {
@@ -515,7 +516,12 @@ fn regap(lines: &[String], keep: Option<usize>) -> Vec<String> {
                 DOWN.contains(&cell(&grid[y], x)) && cell(&grid[y], x) == cell(&grid[y - 1], x)
             })
     };
-    let rows = copies(grid.len(), keep, row_repeats);
+    // Rows are not stretched: a picture taller by half its gaps is only
+    // longer to scroll through.
+    let rows = match keep {
+        Some(_) => copies(grid.len(), keep, row_repeats),
+        None => vec![1; grid.len()],
+    };
     let mut out = Vec::new();
     for (y, row) in grid.iter().enumerate() {
         let line: String = (0..width)
@@ -544,6 +550,118 @@ fn copies(len: usize, keep: Option<usize>, repeats: impl Fn(usize) -> bool) -> V
             }
         })
         .collect()
+}
+
+/// A picture shrunk to fit a room, in Braille dots: the shape of the boxes
+/// and the lines between them, no text.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Overview {
+    pub lines: Vec<String>,
+    /// Where the part of the picture that `view` names is: the first column
+    /// and row in cells, the columns and rows.
+    pub frame: (usize, usize, usize, usize),
+    /// Columns (and rows) of the picture per cell of the overview.
+    pub scale: f64,
+}
+
+/// Lines across, which fill their cell from side to side.
+const STROKE_ACROSS: &str = "─━┄┅┈┉╌╍═┬┴┼╤╧╪";
+/// Lines down, which fill their cell from top to bottom.
+const STROKE_DOWN: &str = "│┃┆┇┊┋╎╏║├┤┼╟╢╫";
+
+/// `lines` drawn small enough for `room`, each cell of it 2×4 dots, with the
+/// frame of `view` (first column and row of the picture shown, columns and
+/// rows) on it. A picture that fits is drawn a character to a cell.
+pub fn overview(lines: &[String], room: Room, view: (usize, usize, usize, usize)) -> Overview {
+    let width = width_of(lines);
+    let height = lines.len();
+    let scale = (width as f64 / room.width.max(1) as f64)
+        .max(height as f64 / room.height.max(1) as f64)
+        .max(1.0);
+    let cells = |n: usize| ((n as f64 / scale).ceil() as usize).max(1);
+    let (cols, rows) = (
+        cells(width).min(room.width.max(1)),
+        cells(height).min(room.height.max(1)),
+    );
+    let mut dots = vec![vec![false; cols * 2]; rows * 4];
+    for (y, line) in lines.iter().enumerate() {
+        let mut x = 0;
+        for c in line.chars() {
+            let w = c.width().unwrap_or(0);
+            if is_drawing(c) {
+                let span = |at: usize, per: f64, whole: bool, len: usize| {
+                    let from = at as f64 * per / scale;
+                    let to = (at + 1) as f64 * per / scale;
+                    let (a, b) = if whole {
+                        (
+                            from.floor() as usize,
+                            (to.ceil() as usize).max(from.floor() as usize + 1),
+                        )
+                    } else {
+                        let mid = ((from + to) / 2.0).floor() as usize;
+                        (mid, mid + 1)
+                    };
+                    a.min(len)..b.min(len)
+                };
+                let across = span(x, 2.0, STROKE_ACROSS.contains(c), cols * 2);
+                let down = span(y, 4.0, STROKE_DOWN.contains(c), rows * 4);
+                for dy in down {
+                    for dx in across.clone() {
+                        dots[dy][dx] = true;
+                    }
+                }
+            }
+            x += w;
+        }
+    }
+    let lines = (0..rows)
+        .map(|row| {
+            let line: String = (0..cols)
+                .map(|col| {
+                    let bits = BRAILLE.iter().fold(0u32, |bits, &(dx, dy, bit)| {
+                        if dots[row * 4 + dy][col * 2 + dx] {
+                            bits | bit
+                        } else {
+                            bits
+                        }
+                    });
+                    if bits == 0 {
+                        ' '
+                    } else {
+                        char::from_u32(0x2800 + bits).unwrap_or(' ')
+                    }
+                })
+                .collect();
+            line.trim_end().to_string()
+        })
+        .collect();
+    let (left, top, shown_cols, shown_rows) = view;
+    let x = ((left as f64 / scale).floor() as usize).min(cols.saturating_sub(1));
+    let y = ((top as f64 / scale).floor() as usize).min(rows.saturating_sub(1));
+    let w = (((left + shown_cols) as f64 / scale).ceil() as usize).clamp(x + 1, cols) - x;
+    let h = (((top + shown_rows) as f64 / scale).ceil() as usize).clamp(y + 1, rows) - y;
+    Overview {
+        lines,
+        frame: (x, y, w, h),
+        scale,
+    }
+}
+
+/// The dot of a Braille cell at (column, row) and its bit.
+const BRAILLE: [(usize, usize, u32); 8] = [
+    (0, 0, 0x01),
+    (0, 1, 0x02),
+    (0, 2, 0x04),
+    (1, 0, 0x08),
+    (1, 1, 0x10),
+    (1, 2, 0x20),
+    (0, 3, 0x40),
+    (1, 3, 0x80),
+];
+
+/// Whether `c` is part of a box, a line or an arrow rather than of text.
+fn is_drawing(c: char) -> bool {
+    matches!(c, '\u{2500}'..='\u{259f}' | '\u{25a0}'..='\u{25ff}' | '\u{2190}'..='\u{21ff}' | '<' | '>')
 }
 
 /// Keep the panic message of the renderer's thread off the terminal that the
@@ -598,7 +716,7 @@ mod tests {
     }
 
     #[test]
-    fn rows_of_lines_down_are_squeezed_and_stretched() {
+    fn rows_of_lines_down_are_squeezed_and_never_stretched() {
         let picture = strings(&[
             "┌───┐",
             "│ A │",
@@ -613,7 +731,7 @@ mod tests {
             regap(&picture, Some(1)),
             strings(&["┌───┐", "│ A │", "└─┬─┘", "  │", "  ▼", "┌───┐"])
         );
-        assert_eq!(regap(&picture, None).len(), picture.len() + 2);
+        assert_eq!(regap(&picture, None), picture);
     }
 
     #[test]
@@ -653,5 +771,44 @@ mod tests {
             ),
             "sequenceDiagram\n  participant A as A rather…\n  A->>B: a message…\n  Note over A: short"
         );
+    }
+
+    #[test]
+    fn the_overview_draws_boxes_and_lines_in_dots_without_text() {
+        let picture = strings(&["┌──┐", "│AB│", "└──┘"]);
+        let small = overview(
+            &picture,
+            Room {
+                width: 10,
+                height: 10,
+            },
+            (0, 0, 4, 3),
+        );
+        // A character to a cell: the box is its outline of dots.
+        assert_eq!(small.scale, 1.0);
+        assert_eq!(small.lines.len(), 3);
+        assert!(small.lines.iter().all(|l| l
+            .chars()
+            .all(|c| c == ' ' || ('\u{2800}'..='\u{28ff}').contains(&c))));
+        // The letters inside leave their cells blank.
+        assert_eq!(small.lines[1].chars().nth(1), Some(' '));
+        assert_eq!(small.frame, (0, 0, 4, 3));
+    }
+
+    #[test]
+    fn a_large_picture_is_shrunk_into_the_room_with_the_frame_of_the_view() {
+        let picture: Vec<String> = (0..40).map(|_| "─".repeat(200)).collect();
+        let small = overview(
+            &picture,
+            Room {
+                width: 50,
+                height: 20,
+            },
+            (100, 20, 50, 10),
+        );
+        assert_eq!(small.scale, 4.0);
+        assert_eq!(small.lines.len(), 10);
+        assert!(small.lines.iter().all(|l| l.chars().count() == 50));
+        assert_eq!(small.frame, (25, 5, 13, 3));
     }
 }

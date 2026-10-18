@@ -264,3 +264,18 @@ fn position(left: usize, top: usize, view: Size, size: Size) -> String {
         span(top, view.rows, size.rows)
     )
 }
+
+/// The view of `to` whose centre is where the centre of `pan`'s view of
+/// `from` is, in shares of the pictures' sizes: a picture laid out again
+/// keeps the place the Reviewer was looking at in sight.
+pub(super) fn recentre(pan: &Pan, from: &[String], to: &[String], view: Size) -> Pan {
+    let (old, new) = (Size::of(from), Size::of(to));
+    let along = |first: usize, shown: usize, old: usize, new: usize| {
+        let centre = (first as f64 + shown.min(old) as f64 / 2.0) / old.max(1) as f64;
+        (centre * new as f64 - shown as f64 / 2.0).max(0.0).round() as usize
+    };
+    Pan::at(
+        along(pan.left(from, view), view.cols, old.cols, new.cols),
+        along(pan.top(from, view), view.rows, old.rows, new.rows),
+    )
+}

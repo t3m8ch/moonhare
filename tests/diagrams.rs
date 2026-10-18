@@ -527,3 +527,148 @@ fn shift_with_the_wheel_moves_the_summary_diagram_sideways() {
     h.keys("0");
     assert!(h.screen().contains("Column0Step0"), "{}", h.screen());
 }
+
+/// The centre of the view along the columns, as a share of the picture.
+fn centre(screen: &str) -> f64 {
+    let (first, last, all) = position(screen, "колонки");
+    (first + last) as f64 / 2.0 / all as f64
+}
+
+#[test]
+fn minus_closes_the_layout_up_plus_spreads_it_out_and_equals_fits_it_again() {
+    let fx = feature_branch();
+    let analyst = FakeAnalyst::drawing(FLOW);
+    let mut h = review_with(&fx, &analyst);
+    h.keys(":diagram<CR>");
+    h.session().wait_for_analyst();
+    let row = |screen: &str| {
+        screen
+            .lines()
+            .find(|l| l.contains("Collect"))
+            .unwrap()
+            .to_string()
+    };
+    let fitted = row(&h.screen());
+
+    h.keys("-");
+    let compact = row(&h.screen());
+    assert!(
+        compact.trim_end().len() < fitted.trim_end().len(),
+        "{compact}\n{fitted}"
+    );
+
+    h.keys("=+");
+    let roomy = row(&h.screen());
+    assert!(
+        roomy.trim_end().len() > fitted.trim_end().len(),
+        "{roomy}\n{fitted}"
+    );
+
+    h.keys("=");
+    assert_eq!(row(&h.screen()), fitted);
+}
+
+#[test]
+fn a_change_of_density_keeps_the_centre_of_the_view() {
+    let (_fx, mut h) = big();
+    h.keys("0ggLLL");
+    let before = centre(&h.screen());
+    let all = position(&h.screen(), "колонки").2;
+
+    h.keys("+");
+    let roomy = h.screen();
+    assert!(position(&roomy, "колонки").2 > all, "{roomy}");
+    assert!((centre(&roomy) - before).abs() < 0.05, "{before} {roomy}");
+
+    h.keys("=");
+    assert!(
+        (centre(&h.screen()) - before).abs() < 0.05,
+        "{}",
+        h.screen()
+    );
+}
+
+/// Whether the screen shows Braille dots.
+fn dotted(screen: &str) -> bool {
+    screen
+        .chars()
+        .any(|c| ('\u{2801}'..='\u{28ff}').contains(&c))
+}
+
+#[test]
+fn the_overview_shows_the_whole_diagram_in_dots_with_the_frame_of_the_view() {
+    let (_fx, mut h) = big();
+    h.keys("0gg--");
+    let screen = h.screen();
+    assert!(dotted(&screen), "{screen}");
+    assert!(!screen.contains("Column0Step0"), "{screen}");
+    assert!(screen.contains("обзор"), "{screen}");
+    assert!(!screen.contains("колонки"), "{screen}");
+
+    // The frame of the view is lit, at the top left of the overview.
+    let selection = moonhare::theme::DARK.selection_bg;
+    let frame = h.frame();
+    let lit: Vec<(u16, u16)> = (0..100)
+        .flat_map(|x| (0..30).map(move |y| (x, y)))
+        .filter(|&(x, y)| frame.bg_at(x, y) == selection)
+        .collect();
+    assert!(!lit.is_empty(), "{screen}");
+    let left = lit.iter().map(|p| p.0).min().unwrap();
+    assert!(left <= 5, "{lit:?}");
+
+    // Moved to the right edge, the frame follows; Enter goes there.
+    h.keys("$G");
+    let frame = h.frame();
+    let right = (0..100)
+        .filter(|&x| (0..30).any(|y| frame.bg_at(x, y) == selection))
+        .max()
+        .unwrap();
+    assert!(right > 50, "{}", h.screen());
+    h.keys("<CR>");
+    let screen = h.screen();
+    assert!(!dotted(&screen), "{screen}");
+    let (_, last, all) = position(&screen, "колонки");
+    assert_eq!(last, all, "{screen}");
+    let (_, bottom, rows) = position(&screen, "строки");
+    assert_eq!(bottom, rows, "{screen}");
+}
+
+#[test]
+fn equals_leaves_the_overview_for_the_fitted_layout() {
+    let (_fx, mut h) = big();
+    h.keys("--");
+    assert!(dotted(&h.screen()));
+    h.keys("-");
+    assert!(dotted(&h.screen()));
+    h.keys("=");
+    let screen = h.screen();
+    assert!(!dotted(&screen), "{screen}");
+    assert!(screen.contains("Step"), "{screen}");
+    h.keys("--+");
+    assert!(!dotted(&h.screen()), "{}", h.screen());
+}
+
+#[test]
+fn the_summary_diagram_changes_density_too() {
+    let fx = feature_branch();
+    let analyst = with_summary_diagram(Some(FLOW));
+    let mut h = review_with(&fx, &analyst);
+    h.session().wait_for_analyst();
+    h.keys("<Space>s");
+    let row = |screen: &str| {
+        screen
+            .lines()
+            .find(|l| l.contains("Collect"))
+            .unwrap()
+            .trim_end()
+            .len()
+    };
+    let fitted = row(&h.screen());
+    h.keys("+");
+    assert!(row(&h.screen()) > fitted, "{}", h.screen());
+    h.keys("=-");
+    assert!(row(&h.screen()) < fitted, "{}", h.screen());
+    // No overview inline: it is drawn in the diagram's own window.
+    h.keys("-");
+    assert!(!dotted(&h.screen()), "{}", h.screen());
+}

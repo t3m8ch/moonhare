@@ -194,7 +194,7 @@ const PLAIN: &[(&str, &str)] = &[
     ),
     (
         ":diagram",
-        "диаграмма файла под курсором (:diagram here: фрагмента, :diagram group: группы)",
+        "диаграмма файла под курсором (here: фрагмента, group: группы); +/-/=: масштаб",
     ),
     (
         "hjkl HL 0$ gG",
@@ -315,8 +315,8 @@ pub fn hint_line(context: Context) -> String {
         Context::Explanation => "j/k: прокрутка  y: копировать Markdown  \
                                  r: пересчитать (мимо кэша)  Esc/q: закрыть"
             .into(),
-        Context::Diagram => "h/j/k/l: движение  H/L, Ctrl-d/u: крупно  0/$, gg/G: края  \
-                             y: копировать Mermaid  r: пересчитать (мимо кэша)  Esc/q: закрыть"
+        Context::Diagram => "hjkl: движение  +/-/=: масштаб, обзор  y: Mermaid  \
+                             r: пересчитать  H/L, Ctrl-d/u: крупно  0/$, gg/G: края  Esc: закрыть"
             .into(),
         Context::CommitsVisual => {
             "-- VISUAL --  j/k: расширить  Enter: срез  v: снять  Esc: отмена".into()

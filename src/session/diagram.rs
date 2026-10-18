@@ -87,8 +87,12 @@ pub(super) struct Diagrams {
     open: Option<Key>,
     /// Where the overlay's view of its picture is.
     view: Pan,
+    /// How densely the overlay lays its picture out.
+    density: Density,
     /// How far the diagrams of the Summary are moved sideways.
     inline: Pan,
+    /// How densely the diagrams of the Summary are laid out.
+    inline_density: Density,
     pictures: Pictures,
 }
 
@@ -104,7 +108,9 @@ impl Default for Diagrams {
             receiver,
             open: None,
             view: Pan::default(),
+            density: Density::Fit,
             inline: Pan::default(),
+            inline_density: Density::Fit,
             pictures: Pictures::default(),
         }
     }
@@ -149,6 +155,7 @@ impl Session {
         }
         self.diagrams.open = Some(key);
         self.diagrams.view = Pan::default();
+        self.diagrams.density = Density::Fit;
         true
     }
 
@@ -270,6 +277,25 @@ impl Session {
 
     /// Keys for the diagrams inside the Summary overlay: they move sideways.
     pub(super) fn summary_diagram_key(&mut self, key: KeyEvent) {
+        if let Some(to) = self.density_key(key.code, self.diagrams.inline_density) {
+            let to = match to {
+                Some(Density::Overview) => {
+                    self.message = Some(NO_INLINE_OVERVIEW.into());
+                    return;
+                }
+                to => to,
+            };
+            let Some(to) = self.density_or_say(to) else {
+                return;
+            };
+            let from = self.widest_summary_drawing();
+            self.diagrams.inline_density = to;
+            let to_lines = self.widest_summary_drawing();
+            let view = self.summary_text_size();
+            let left = pan::recentre(&self.diagrams.inline, &from, &to_lines, view);
+            self.diagrams.inline = Pan::at(left.left(&to_lines, view), 0);
+            return;
+        }
         let sideways = matches!(
             key.code,
             KeyCode::Char('h' | 'l' | 'H' | 'L' | '0' | '$') | KeyCode::Left | KeyCode::Right
@@ -313,6 +339,7 @@ impl Session {
     /// A Summary overlay was opened: its diagram starts unscrolled.
     pub(super) fn reset_picture_scroll(&mut self) {
         self.diagrams.inline = Pan::at(0, 0);
+        self.diagrams.inline_density = Density::Fit;
     }
 
     /// The picture of a Mermaid text of the Summary, fitted to its overlay.
@@ -322,7 +349,29 @@ impl Session {
             width: view.cols,
             height: view.rows,
         };
-        self.diagrams.pictures.get(mermaid, room, Density::Fit)
+        (self.diagrams.pictures).get(mermaid, room, self.diagrams.inline_density)
+    }
+
+    /// The density `+`, `-` or `=` asks for, from `now`: `None` when the key
+    /// is not one of them, `Some(None)` past the last step.
+    fn density_key(&self, code: KeyCode, now: Density) -> Option<Option<Density>> {
+        match code {
+            KeyCode::Char('+') => Some(now.roomier()),
+            KeyCode::Char('-') => Some(now.denser()),
+            KeyCode::Char('=') => Some(Some(Density::Fit)),
+            _ => None,
+        }
+    }
+
+    /// `to`, or says why there is no step further.
+    fn density_or_say(&mut self, to: Option<Density>) -> Option<Density> {
+        if to.is_none() {
+            self.message = Some(
+                "The diagram is as roomy (+) or as dense (-) as it gets; = fits it to the window"
+                    .into(),
+            );
+        }
+        to
     }
 
     /// The lines under a Summary for its diagram, moved sideways, or the
@@ -359,27 +408,93 @@ impl Session {
                     self.copy_to_clipboard(&source, "the Mermaid source");
                 }
             }
-            _ => {
+            KeyCode::Enter if self.diagrams.density == Density::Overview => {
+                self.diagrams.density = Density::Fit;
+            }
+            code => {
+                if let Some(to) = self.density_key(code, self.diagrams.density) {
+                    if let Some(to) = self.density_or_say(to) {
+                        self.change_density(to);
+                    }
+                    return true;
+                }
                 let lines = self.open_lines();
-                let view = self.diagram_place().text;
-                let view = Size {
-                    cols: view.width as usize,
-                    rows: view.height as usize,
+                let view = self.diagram_view();
+                // In the overview a step moves the frame by a cell of it.
+                let steps = match self.overview_of(&lines) {
+                    Some(overview)
+                        if matches!(
+                            code,
+                            KeyCode::Char('h' | 'j' | 'k' | 'l')
+                                | KeyCode::Left
+                                | KeyCode::Right
+                                | KeyCode::Up
+                                | KeyCode::Down
+                        ) =>
+                    {
+                        overview.scale.ceil() as usize
+                    }
+                    _ => 1,
                 };
-                self.diagrams.view.key(key, &lines, view);
+                for _ in 0..steps {
+                    self.diagrams.view.key(key, &lines, view);
+                }
             }
         }
         true
     }
 
+    /// Lay the open picture out at `to`, keeping the centre of the view.
+    fn change_density(&mut self, to: Density) {
+        let from = self.diagrams.density;
+        if drawn_as(from) != drawn_as(to) {
+            let (old, new) = (self.open_lines_at(from), self.open_lines_at(to));
+            self.diagrams.view =
+                pan::recentre(&self.diagrams.view, &old, &new, self.diagram_view());
+        }
+        self.diagrams.density = to;
+    }
+
+    /// The overview of `lines` with the frame of the view, when the overlay
+    /// shows the overview.
+    fn overview_of(&self, lines: &[String]) -> Option<crate::diagram::Overview> {
+        if self.diagrams.density != Density::Overview {
+            return None;
+        }
+        let view = self.diagram_view();
+        let pan = &self.diagrams.view;
+        Some(crate::diagram::overview(
+            lines,
+            self.diagram_room(),
+            (
+                pan.left(lines, view),
+                pan.top(lines, view),
+                view.cols,
+                view.rows,
+            ),
+        ))
+    }
+
+    fn diagram_view(&self) -> Size {
+        let text = self.diagram_place().text;
+        Size {
+            cols: text.width as usize,
+            rows: text.height as usize,
+        }
+    }
+
+    fn diagram_room(&self) -> Room {
+        let view = self.diagram_view();
+        Room {
+            width: view.cols,
+            height: view.rows,
+        }
+    }
+
     /// A notch of the wheel over the diagram overlay.
     pub(super) fn diagram_wheel(&mut self, forward: bool, sideways: bool) {
         let lines = self.open_lines();
-        let text = self.diagram_place().text;
-        let view = Size {
-            cols: text.width as usize,
-            rows: text.height as usize,
-        };
+        let view = self.diagram_view();
         self.diagrams.view.wheel(forward, sideways, &lines, view);
     }
 
@@ -430,17 +545,63 @@ impl Session {
             area,
             &format!(" Diagram: {what}{cached} "),
         );
-        pan::render(
-            self.theme(),
-            buf,
-            &self.diagram_place(),
-            &self.open_lines(),
-            &self.diagrams.view,
-        );
+        let place = self.diagram_place();
+        let lines = self.open_lines();
+        match self.overview_of(&lines) {
+            Some(overview) => self.render_overview(buf, &place, &overview),
+            None => pan::render(self.theme(), buf, &place, &lines, &self.diagrams.view),
+        }
     }
 
-    /// The lines the open overlay shows.
+    /// The overview in the overlay: dots, the frame of the view lit, and what
+    /// the keys do on the border.
+    fn render_overview(
+        &self,
+        buf: &mut Buffer,
+        place: &pan::Place,
+        overview: &crate::diagram::Overview,
+    ) {
+        let theme = self.theme();
+        let text = place.text;
+        for (i, line) in overview.lines.iter().enumerate().take(text.height as usize) {
+            buf.set_stringn(
+                text.x,
+                text.y + i as u16,
+                line,
+                text.width as usize,
+                Style::new().fg(theme.fg),
+            );
+        }
+        let (x, y, w, h) = overview.frame;
+        for row in y..(y + h).min(text.height as usize) {
+            for col in x..(x + w).min(text.width as usize) {
+                let cell = &mut buf[(text.x + col as u16, text.y + row as u16)];
+                cell.set_bg(theme.selection_bg);
+                cell.set_fg(theme.accent);
+            }
+        }
+        if let Some((row, margin)) = place.label {
+            let label = " обзор · hjkl: рамка · Enter: сюда · =: обычный масштаб ";
+            let len = label.chars().count() as u16;
+            if row.width >= len + 2 * margin {
+                buf.set_stringn(
+                    row.x + row.width - margin - len,
+                    row.y,
+                    label,
+                    len as usize,
+                    Style::new().fg(theme.dim),
+                );
+            }
+        }
+    }
+
+    /// The lines the open overlay shows; in the overview, those it is made of.
     pub(super) fn open_lines(&self) -> Vec<String> {
+        self.open_lines_at(self.diagrams.density)
+    }
+
+    /// The lines the open overlay shows at `density`.
+    fn open_lines_at(&self, density: Density) -> Vec<String> {
         let Some(key) = &self.diagrams.open else {
             return Vec::new();
         };
@@ -460,12 +621,8 @@ impl Session {
         };
         let picture = match self.diagrams.cache.get(key) {
             Some(mermaid) => {
-                let text = self.diagram_place().text;
-                let room = Room {
-                    width: text.width as usize,
-                    height: text.height as usize,
-                };
-                match self.diagrams.pictures.get(mermaid, room, Density::Fit) {
+                let density = drawn_as(density);
+                match (self.diagrams.pictures).get(mermaid, self.diagram_room(), density) {
                     Ok(lines) => lines.to_vec(),
                     Err(e) => failure_lines(&e, mermaid),
                 }
@@ -483,6 +640,18 @@ impl Session {
         }
     }
 }
+
+/// The density a picture is drawn at: the overview is made of the fitted one.
+fn drawn_as(density: Density) -> Density {
+    match density {
+        Density::Overview => Density::Fit,
+        other => other,
+    }
+}
+
+/// What `-` says in the Summary past its densest layout.
+const NO_INLINE_OVERVIEW: &str =
+    "The Summary shows no overview of its diagram: :diagram has one (-, -)";
 
 /// What `r` says in an Explanation or a Diagram with no Analyst.
 pub(super) const NO_ANALYST_TO_REFRESH: &str = "No Analyst is configured: nothing to ask again";
