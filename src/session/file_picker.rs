@@ -16,6 +16,7 @@ const CHROME_ROWS: u16 = 3;
 impl Session {
     pub(super) fn open_file_picker(&mut self) {
         self.file_picker = Some(At::File(self.selected));
+        self.picker_scroll = file_panel::TreeScroll::default();
     }
 
     /// Where the picker box is: about nine tenths of the screen.
@@ -43,8 +44,9 @@ impl Session {
 
     /// The first row the picker shows: the cursor stays in view.
     fn picker_offset(&self, rows: &[Row], at: &At) -> usize {
-        let cursor = self.picker_cursor(rows, at).unwrap_or(0);
-        file_panel::offset_for(cursor, self.picker_capacity())
+        let cursor = self.picker_cursor(rows, at);
+        self.picker_scroll
+            .offset(rows, at, cursor, self.picker_capacity())
     }
 
     /// Clicks and the wheel in the open picker; a click opens a file or
@@ -64,12 +66,7 @@ impl Session {
                 let inside =
                     (area.x + 1..(area.x + area.width).saturating_sub(1)).contains(&mouse.column);
                 if let Some(line) = row.filter(|_| inside) {
-                    let view = file_panel::View::new(
-                        &rows,
-                        offset,
-                        self.picker_capacity(),
-                        self.picker_cursor(&rows, &at),
-                    );
+                    let view = file_panel::View::new(&rows, offset, self.picker_capacity());
                     match view.line(line) {
                         Some(file_panel::Shown::Row(n)) => self.click_picker_row(&rows[n]),
                         Some(file_panel::Shown::Pinned(pin)) => {

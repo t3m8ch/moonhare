@@ -225,9 +225,92 @@ fn half_page(code: KeyCode) -> KeyCode {
     }
 }
 
-/// The first row shown in a box of `capacity` rows with the cursor on `at`.
-pub(super) fn offset_for(at: usize, capacity: usize) -> usize {
-    (at + 1).saturating_sub(capacity.max(1))
+/// Where a box of the tree is scrolled, kept from frame to frame: a click
+/// on a visible row, a fold, a new diff or the Groups arriving never move it.
+/// It moves only as far as the cursor needs to stay visible, below the
+/// pinned rows, and the wheel moves it away from the cursor until the cursor
+/// moves.
+#[derive(Default)]
+pub(super) struct TreeScroll(std::cell::RefCell<ScrollState>);
+
+#[derive(Default)]
+struct ScrollState {
+    /// The row the box starts at.
+    top: usize,
+    /// Where the cursor stood when the box was last laid out.
+    at: Option<At>,
+    /// The line of the box the cursor was on then; off the box after the
+    /// wheel.
+    line: isize,
+    /// The wheel scrolled the box: the cursor need not be in it.
+    free: bool,
+}
+
+impl TreeScroll {
+    /// The first row of a box of `capacity` lines over `rows` with the cursor
+    /// at `at`, on row `cursor`.
+    pub(super) fn offset(
+        &self,
+        rows: &[Row],
+        at: &At,
+        cursor: Option<usize>,
+        capacity: usize,
+    ) -> usize {
+        let capacity = capacity.max(1);
+        let cursor = cursor.unwrap_or(0);
+        let mut state = self.0.borrow_mut();
+        let same = state.at.as_ref() == Some(at);
+        // The same cursor in rows built anew keeps its line; a cursor that
+        // moved starts from where the box was.
+        let mut top = if same {
+            (cursor as isize - state.line).max(0) as usize
+        } else {
+            state.free = false;
+            state.top
+        };
+        // A fold may leave the box short of rows: the rows above stay put
+        // rather than slide down to fill it.
+        top = top.min(rows.len().saturating_sub(1));
+        if !state.free {
+            top = follow(rows, top, capacity, cursor);
+        }
+        *state = ScrollState {
+            top,
+            at: Some(at.clone()),
+            line: cursor as isize - top as isize,
+            free: state.free,
+        };
+        top
+    }
+
+    /// The wheel: `by` rows down (up when negative), the cursor left where
+    /// it is.
+    pub(super) fn wheel(
+        &self,
+        rows: &[Row],
+        at: &At,
+        cursor: Option<usize>,
+        capacity: usize,
+        by: isize,
+    ) {
+        let top = self.offset(rows, at, cursor, capacity);
+        let last = rows.len().saturating_sub(capacity.max(1)).max(top);
+        let top = (top as isize + by).clamp(0, last as isize) as usize;
+        let mut state = self.0.borrow_mut();
+        state.line = cursor.unwrap_or(0) as isize - top as isize;
+        state.top = top;
+        state.free = true;
+    }
+}
+
+/// `top` moved as little as it takes for row `cursor` to be in a box of
+/// `capacity` lines and not under its pinned rows.
+fn follow(rows: &[Row], top: usize, capacity: usize, cursor: usize) -> usize {
+    let mut top = top.min(cursor).max((cursor + 1).saturating_sub(capacity));
+    while top > 0 && cursor < top + View::new(rows, top, capacity).pins.len() {
+        top -= 1;
+    }
+    top
 }
 
 /// The rows above row `r` that it is under, outermost first: the header of
@@ -297,8 +380,6 @@ pub(super) enum Shown {
 /// scrolled out, and the rows go on below them. The next directory pushes
 /// the pinned one out rather than slide under it. At most a third of the box
 /// is pinned: the outer rows give way to a `…`.
-/// A pinned row never hides the cursor: when the wheel scrolled it there,
-/// nothing is pinned.
 pub(super) struct View {
     /// The lines at the top, outermost first.
     pins: Vec<Pin>,
@@ -311,9 +392,8 @@ pub(super) struct View {
 }
 
 impl View {
-    /// The box of `capacity` lines over `rows` from `offset`, with the cursor
-    /// on row `cursor`.
-    pub(super) fn new(rows: &[Row], offset: usize, capacity: usize, cursor: Option<usize>) -> View {
+    /// The box of `capacity` lines over `rows` from `offset`.
+    pub(super) fn new(rows: &[Row], offset: usize, capacity: usize) -> View {
         let max = capacity / 3;
         let mut chain: Vec<usize> = Vec::new();
         loop {
@@ -339,12 +419,6 @@ impl View {
             std::iter::once(Pin::More(chain[first]))
                 .chain(chain[first + 1..].iter().map(|&n| Pin::Row(n)))
                 .collect()
-        };
-        let under = |c: usize| (offset..offset + pins.len()).contains(&c);
-        let pins = if cursor.is_some_and(under) {
-            Vec::new()
-        } else {
-            pins
         };
         View {
             pins,
@@ -786,7 +860,7 @@ impl Session {
         // The mark of a file is looked up once, however many rows count it.
         let mut marks: Vec<Option<Mark>> = vec![None; self.files.len()];
         let mut mark = |i: usize| *marks[i].get_or_insert_with(|| self.mark_of(i));
-        let view = View::new(rows, offset, capacity, cursor);
+        let view = View::new(rows, offset, capacity);
         for line in 0..capacity {
             let y = y + line as u16;
             match view.line(line) {

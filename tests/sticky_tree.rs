@@ -203,15 +203,28 @@ fn a_narrow_panel_pins_rows_cut_to_its_width() {
 }
 
 #[test]
-fn the_wheel_never_hides_the_cursor_under_a_pinned_row() {
+fn the_wheel_keeps_the_pins_and_a_key_brings_the_cursor_back_below_them() {
     let fx = big();
     let mut h = Harness::open(&fx, 160, 40);
     h.keys("]f]f");
     let (x, y) = h.frame().find("a_05.rs").expect("a file row");
     h.wheel_down(x, y);
+    // The wheel scrolled a_02 under the pins: the pins stay, the tree does
+    // not jump, the cursor is just out of view.
     let side = sidebar(&mut h);
     let all = text(&side);
-    assert!(side[cursor_row(&side)].contains("a_02.rs"), "{all}");
+    assert!(
+        side[1].contains("pkg/core") && side[2].contains("alpha"),
+        "{all}"
+    );
+    assert!(!all.contains("a_02.rs"), "{all}");
+    // A key moves the cursor back into view, below the pins.
+    h.keys("<Tab><Tab>j");
+    let side = sidebar(&mut h);
+    let all = text(&side);
+    let cursor = cursor_row(&side);
+    assert!(side[cursor].contains("a_03.rs"), "{all}");
+    assert!(cursor > 2, "{all}");
 }
 
 #[test]

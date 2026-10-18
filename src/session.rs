@@ -262,6 +262,8 @@ pub struct Session {
     picker: bool,
     /// The `Space f` file picker is open, with its cursor here.
     file_picker: Option<file_panel::At>,
+    /// Where the tree of the file picker is scrolled.
+    picker_scroll: file_panel::TreeScroll,
     /// The selected Mechanical file was expanded with `Enter`.
     mechanical_open: bool,
     files: Vec<ChangedFile>,
@@ -339,9 +341,8 @@ pub struct Session {
     /// The Prompts copied so far, which cut the commits into Rounds.
     prompts: crate::rounds::Prompts,
     mouse: mouse::Mouse,
-    /// The file list scrolled by the wheel: where the cursor stood when it
-    /// was done, and the first row shown.
-    sidebar_scroll: Option<(file_panel::At, usize)>,
+    /// Where the tree of the sidebar's file panel is scrolled.
+    sidebar_scroll: file_panel::TreeScroll,
     /// The tree of the file panel: its cursor, folds and Group description.
     panel: file_panel::FilePanel,
 }
@@ -500,6 +501,7 @@ impl Session {
             confirm_clear: false,
             hidden_cache: Default::default(),
             file_picker: None,
+            picker_scroll: file_panel::TreeScroll::default(),
             mechanical_open: false,
             scope_files: files.clone(),
             unreviewed_only: false,
@@ -539,7 +541,7 @@ impl Session {
             prompt_view: None,
             prompts: crate::rounds::Prompts::open(&review_dir),
             mouse: mouse::Mouse::default(),
-            sidebar_scroll: None,
+            sidebar_scroll: file_panel::TreeScroll::default(),
             panel: Default::default(),
             diffs,
         };
@@ -686,17 +688,16 @@ impl Session {
             .saturating_sub(2 + marks::PROGRESS_ROWS) as usize
     }
 
-    /// The first sidebar row shown: scrolled so the selected file is visible.
+    /// The first sidebar row shown: where the panel was scrolled, moved only
+    /// as far as the cursor needs (unless the wheel took it away).
     fn sidebar_offset(&self) -> usize {
-        let cap = self.sidebar_capacity().max(1);
         let rows = self.sidebar_rows();
-        // The wheel scrolled the list away from the cursor.
-        if let Some((at, offset)) = &self.sidebar_scroll {
-            if *at == self.sidebar_at() {
-                return (*offset).min(rows.len().saturating_sub(cap));
-            }
-        }
-        file_panel::offset_for(self.sidebar_cursor(&rows).unwrap_or(0), cap)
+        self.sidebar_scroll.offset(
+            &rows,
+            &self.sidebar_at(),
+            self.sidebar_cursor(&rows),
+            self.sidebar_capacity(),
+        )
     }
 
     // ------------------------------------------------------------ data
@@ -1355,7 +1356,6 @@ impl Session {
                         &rows,
                         self.sidebar_offset(),
                         self.sidebar_capacity(),
-                        self.sidebar_cursor(&rows),
                     );
                     match view.line(line) {
                         Some(file_panel::Shown::Row(n)) => self.click_sidebar_row(&rows[n]),
