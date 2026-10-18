@@ -1,8 +1,12 @@
 //! The Analyst over `claude -p` (ADR 0002).
 
+use std::collections::HashSet;
+use std::ffi::OsStr;
+use std::fs::File;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::analyst::{
@@ -34,7 +38,7 @@ pub struct ClaudeAnalyst {
     environment: Vec<(String, String)>,
     timeout: Duration,
     /// The repositories whose stale worktrees are already pruned.
-    pruned: std::sync::Mutex<Vec<PathBuf>>,
+    pruned: Mutex<HashSet<PathBuf>>,
 }
 
 impl ClaudeAnalyst {
@@ -81,20 +85,18 @@ impl Default for ClaudeAnalyst {
 /// reads every entry there and fails when a concurrent `add`, `remove` or
 /// `prune` is creating or deleting one, and `prune` deletes an entry that an
 /// `add` has not finished yet. A process-wide mutex covers the requests of one
-/// moonhare, a lock file under the git directory covers several moonhares on
-/// the same repository.
+/// moonhare, a lock file under moonhare's directory in `.git` covers several
+/// moonhares on the same repository.
 struct WorktreeLock {
     // Fields drop in order: the file lock goes before the mutex.
-    _file: Option<std::fs::File>,
-    _guard: std::sync::MutexGuard<'static, ()>,
+    _file: Option<File>,
+    _guard: MutexGuard<'static, ()>,
 }
 
 impl WorktreeLock {
     fn acquire(repo: &Path) -> WorktreeLock {
-        static IN_PROCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let guard = IN_PROCESS
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        static IN_PROCESS: Mutex<()> = Mutex::new(());
+        let guard = IN_PROCESS.lock().unwrap_or_else(PoisonError::into_inner);
         let common = git_text(
             repo,
             &["rev-parse", "--path-format=absolute", "--git-common-dir"],
@@ -124,21 +126,37 @@ impl WorktreeLock {
     }
 }
 
+/// How many times a worktree command is tried while a lock of git itself,
+/// taken by a git outside moonhare, is in the way.
+const WORKTREE_ATTEMPTS: u32 = 5;
+
+/// `git worktree <args>` in `repo` under the [`WorktreeLock`], tried again
+/// while it fails on a lock of git itself.
+fn git_worktree(repo: &Path, args: &[&OsStr]) -> std::io::Result<Output> {
+    let _lock = WorktreeLock::acquire(repo);
+    let mut attempt = 1;
+    loop {
+        let out = Command::new("git")
+            .arg("worktree")
+            .args(args)
+            .current_dir(repo)
+            .output()?;
+        let locked = String::from_utf8_lossy(&out.stderr).contains(".lock");
+        if out.status.success() || !locked || attempt == WORKTREE_ATTEMPTS {
+            return Ok(out);
+        }
+        std::thread::sleep(Duration::from_millis(50 * u64::from(attempt)));
+        attempt += 1;
+    }
+}
+
 /// Forget the worktrees of earlier runs whose directories are gone, once
 /// per repository in this process, before its first request.
-fn prune_once(repo: &Path, pruned: &std::sync::Mutex<Vec<PathBuf>>) {
-    let mut pruned = pruned
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    if pruned.iter().any(|r| r == repo) {
-        return;
+fn prune_once(repo: &Path, pruned: &Mutex<HashSet<PathBuf>>) {
+    let mut pruned = pruned.lock().unwrap_or_else(PoisonError::into_inner);
+    if pruned.insert(repo.to_path_buf()) {
+        let _ = git_worktree(repo, &["prune".as_ref()]);
     }
-    let _lock = WorktreeLock::acquire(repo);
-    let _ = Command::new("git")
-        .args(["worktree", "prune"])
-        .current_dir(repo)
-        .output();
-    pruned.push(repo.to_path_buf());
 }
 
 /// A detached worktree on the head of the Range, removed and unregistered
@@ -162,14 +180,17 @@ impl TempWorktree {
         // git names the worktree after the last component of its path, so
         // the unique name of the directory makes a unique worktree.
         let path = dir.path().to_path_buf();
-        let _lock = WorktreeLock::acquire(repo);
-        let out = Command::new("git")
-            .args(["worktree", "add", "--detach", "--quiet"])
-            .arg(&path)
-            .arg(head)
-            .current_dir(repo)
-            .output()
-            .map_err(|e| failed(&e))?;
+        let out = git_worktree(
+            repo,
+            &[
+                "add".as_ref(),
+                "--detach".as_ref(),
+                "--quiet".as_ref(),
+                path.as_os_str(),
+                head.as_ref(),
+            ],
+        )
+        .map_err(|e| failed(&e))?;
         if !out.status.success() {
             return Err(failed(&String::from_utf8_lossy(&out.stderr).trim()));
         }
@@ -183,12 +204,10 @@ impl TempWorktree {
 
 impl Drop for TempWorktree {
     fn drop(&mut self) {
-        let _lock = WorktreeLock::acquire(&self.repo);
-        let _ = Command::new("git")
-            .args(["worktree", "remove", "--force"])
-            .arg(&self.path)
-            .current_dir(&self.repo)
-            .output();
+        let _ = git_worktree(
+            &self.repo,
+            &["remove".as_ref(), "--force".as_ref(), self.path.as_os_str()],
+        );
     }
 }
 

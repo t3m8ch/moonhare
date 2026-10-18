@@ -463,7 +463,7 @@ fn a_diagram_answer_without_mermaid_is_a_failure() {
 fn parallel_requests_all_succeed_and_leave_no_worktrees_behind() {
     let fx = feature_branch();
     let fake = FakeClaude::replying(&success("x"));
-    let analyst = std::sync::Arc::new(fake.analyst());
+    let analyst = fake.analyst();
     let request = request(&fx);
     for round in 0..20 {
         let results: Vec<_> = std::thread::scope(|s| {
@@ -480,30 +480,30 @@ fn parallel_requests_all_succeed_and_leave_no_worktrees_behind() {
     assert_eq!(
         list.lines().filter(|l| l.starts_with("worktree ")).count(),
         1,
-        "only the main worktree is left: {list}"
+        "only the main worktree is registered: {list}"
     );
 }
 
 #[test]
-fn worktrees_left_by_a_crashed_run_are_pruned() {
+fn stale_worktrees_are_pruned_once_not_on_every_request() {
     let fx = feature_branch();
-    let crashed = tempfile::tempdir().unwrap();
-    let stale = crashed.path().join("head");
+    let fake = FakeClaude::replying(&success("x"));
+    let analyst = fake.analyst();
+    analyst.summarize(&request(&fx)).unwrap();
+    let leftover = tempfile::tempdir().unwrap();
+    let path = leftover.path().join("gone");
     fx.git(&[
         "worktree",
         "add",
         "--detach",
-        "--quiet",
-        stale.to_str().unwrap(),
-        "main",
+        path.to_str().unwrap(),
+        "feature",
     ]);
-    drop(crashed);
-    let fake = FakeClaude::replying(&success("x"));
-    fake.analyst().summarize(&request(&fx)).unwrap();
-    let list = fx.git(&["worktree", "list", "--porcelain"]);
+    fs::remove_dir_all(&path).unwrap();
+    analyst.summarize(&request(&fx)).unwrap();
     assert_eq!(
-        list.lines().filter(|l| l.starts_with("worktree ")).count(),
-        1,
-        "the stale worktree is forgotten: {list}"
+        fx.git(&["worktree", "list"]).lines().count(),
+        2,
+        "a later request of the same session prunes nothing"
     );
 }
