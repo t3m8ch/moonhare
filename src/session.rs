@@ -321,7 +321,7 @@ pub struct Session {
     pull_request: Option<PullRequest>,
     /// Why there is no pull request, once the Forge has answered without
     /// one. Shown by `:pr`, never as a warning.
-    forge_note: Option<String>,
+    no_pr_reason: Option<String>,
     /// The request for that pull request, while it is on its way.
     forge_load: forge_load::ForgeLoad,
     quit: bool,
@@ -526,7 +526,7 @@ impl Session {
             message: None,
             warning,
             pull_request: None,
-            forge_note: None,
+            no_pr_reason: None,
             forge_load: Default::default(),
             quit: false,
             analysis: Default::default(),

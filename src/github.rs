@@ -106,12 +106,10 @@ impl GitHub {
 
     fn view(&self, selector: &str) -> Result<PullRequest, ForgeError> {
         self.check_github_remote()?;
-        let mut command = Command::new(&self.program);
-        command.args(["pr", "view", "--json", PR_FIELDS, "--", selector]);
-        if let Some(dir) = &self.dir {
-            command.current_dir(dir);
-        }
-        let out = self.run_with_timeout(&mut command)?;
+        let out = self.run_with_timeout(
+            self.command(&self.program)
+                .args(["pr", "view", "--json", PR_FIELDS, "--", selector]),
+        )?;
         if !out.status.success() {
             return Err(classify(&String::from_utf8_lossy(&out.stderr)));
         }
@@ -120,16 +118,20 @@ impl GitHub {
 }
 
 impl GitHub {
-    /// Whether some remote of the clone is on GitHub. Without one there is
-    /// nothing to ask, and `gh` is not even started.
-    fn check_github_remote(&self) -> Result<(), ForgeError> {
-        let mut command = Command::new("git");
-        command.args(["remote", "-v"]);
+    /// `program`, run in the clone asked about.
+    fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut command = Command::new(program);
         if let Some(dir) = &self.dir {
             command.current_dir(dir);
         }
+        command
+    }
+
+    /// Whether some remote of the clone is on GitHub. Without one there is
+    /// nothing to ask, and `gh` is not even started.
+    fn check_github_remote(&self) -> Result<(), ForgeError> {
         // If git itself cannot say, let `gh` find out.
-        let Ok(out) = command.output() else {
+        let Ok(out) = self.command("git").args(["remote", "-v"]).output() else {
             return Ok(());
         };
         if !out.status.success() {
@@ -217,7 +219,7 @@ fn classify(stderr: &str) -> ForgeError {
         "no git remotes found",
         "point to a known GitHub host",
         "not logged into any GitHub hosts",
-        "gh auth login",
+        "To get started with GitHub CLI",
     ]
     .iter()
     .any(|m| stderr.contains(m))

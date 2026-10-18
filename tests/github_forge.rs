@@ -244,6 +244,22 @@ fn gh_without_a_forge_to_ask_is_unavailable_not_failed() {
 }
 
 #[test]
+fn an_expired_login_is_a_failure_not_a_missing_forge() {
+    let gh = FakeGh::with(
+        "",
+        "HTTP 401: Bad credentials (https://api.github.com/graphql)\nTry authenticating with:  gh auth login\n",
+        1,
+    );
+    let repo = on_github();
+
+    let err = github(gh.program(), &repo)
+        .pull_request_for_branch("feature")
+        .unwrap_err();
+
+    assert!(matches!(err, ForgeError::Failed(_)), "{err:?}");
+}
+
+#[test]
 fn a_pull_request_number_without_github_is_a_clear_error() {
     let gh = FakeGh::replying(PR_JSON);
     let repo = Fixture::new();

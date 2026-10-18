@@ -76,12 +76,12 @@ impl Session {
         self.forge_load.since = None;
         match answer {
             Ok(Some(pr)) => self.pull_request = Some(pr),
-            Ok(None) => self.forge_note = Some("the branch has no pull request".into()),
+            Ok(None) => self.no_pr_reason = Some("the branch has no pull request".into()),
             // No Forge to ask is not a failure: the Review goes on without a
             // pull request, and `:pr` tells why.
-            Err(ForgeError::Unavailable(why)) => self.forge_note = Some(why),
+            Err(ForgeError::Unavailable(why)) => self.no_pr_reason = Some(why),
             Err(e) => {
-                self.forge_note = Some(e.to_string());
+                self.no_pr_reason = Some(e.to_string());
                 self.warn(format!("⚠ {e}"));
             }
         }
@@ -92,7 +92,7 @@ impl Session {
 
     /// `:pr`: the pull request of the Range, or why there is none.
     pub(super) fn pr_command(&mut self) {
-        self.message = Some(match (&self.pull_request, &self.forge_note) {
+        self.message = Some(match (&self.pull_request, &self.no_pr_reason) {
             (Some(pr), _) => format!("PR #{}: {} (into {})", pr.number, pr.title, pr.base_branch),
             (None, _) if self.forge_busy() => "PR: loading…".to_string(),
             (None, Some(why)) => format!("PR: — {why}"),

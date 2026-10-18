@@ -4,9 +4,11 @@
 mod support;
 
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use moonhare::git::Target;
 use moonhare::github::GitHub;
+use moonhare::opening::Opening;
 use moonhare::session::Session;
 use support::fake_gh::FakeGh;
 use support::{feature_branch, Fixture, Harness};
@@ -142,6 +144,26 @@ fn a_network_error_with_a_github_remote_is_a_warning() {
 
     let screen = h.screen();
     assert!(screen.contains("⚠ cannot reach GitHub"), "{screen}");
+}
+
+#[test]
+fn opening_a_pull_request_by_number_without_github_is_a_clear_error() {
+    let gh = FakeGh::replying(PR_JSON);
+    let fx = feature_branch();
+    let forge = Arc::new(GitHub::with_program(gh.program()).in_dir(fx.path()));
+    let mut opening = Opening::pull_request(fx.path(), forge, 5, 120, 30).unwrap();
+
+    let started = Instant::now();
+    let err = loop {
+        if let Some(result) = opening.poll() {
+            break result.err().expect("fails").to_string();
+        }
+        assert!(started.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(5));
+    };
+
+    assert!(err.contains("#5") && err.contains("no git remote"), "{err}");
+    assert_eq!(gh.calls(), Vec::<String>::new());
 }
 
 #[test]
