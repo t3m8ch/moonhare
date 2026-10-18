@@ -51,31 +51,21 @@ impl Default for Groups {
 /// Groups with the Group of every file looked up once, when they arrive.
 struct Placed {
     grouping: Grouping,
-    /// Group of each file: the first that lists it.
-    index: HashMap<String, usize>,
+    /// Group of each file (the first that lists it) and its place in the
+    /// reading order of that Group.
+    index: HashMap<String, (usize, usize)>,
 }
 
 impl Placed {
     fn new(grouping: Grouping) -> Placed {
         let mut index = HashMap::new();
         for (n, group) in grouping.groups.iter().enumerate() {
-            for file in &group.files {
-                index.entry(file.clone()).or_insert(n);
+            for (rank, file) in group.files.iter().enumerate() {
+                index.entry(file.clone()).or_insert((n, rank));
             }
         }
         Placed { grouping, index }
     }
-}
-
-/// A row of the sidebar's list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Row {
-    /// The name of Group `n` and its progress.
-    Header(usize),
-    /// The one-line description of Group `n`.
-    Description(usize),
-    /// File `n` of the displayed list.
-    File(usize),
 }
 
 impl Session {
@@ -189,6 +179,11 @@ impl Session {
         }
     }
 
+    /// Whether the file panel shows Groups.
+    pub(super) fn grouping_shown(&self) -> bool {
+        self.grouping().is_some()
+    }
+
     fn grouping(&self) -> Option<&Placed> {
         if self.groups.tree {
             return None;
@@ -232,30 +227,42 @@ impl Session {
         }
     }
 
-    /// `Space g`: switch the sidebar between Groups and the directory tree.
+    /// `Space g`: switch the sidebar between Groups and one tree of all files;
+    /// `Space i`: the description of the Group under the cursor.
     /// Returns whether the key was used.
     pub(super) fn groups_key(&mut self, key: KeyEvent) -> bool {
-        if self.pending == Some(' ') && key.code == KeyCode::Char('g') {
-            self.pending = None;
-            self.count = None;
-            self.groups.tree = !self.groups.tree;
-            self.refilter();
-            return true;
+        if self.pending != Some(' ') {
+            return false;
         }
-        false
+        match key.code {
+            KeyCode::Char('g') => {
+                self.groups.tree = !self.groups.tree;
+                self.refilter();
+            }
+            KeyCode::Char('i') => self.toggle_group_info(),
+            _ => return false,
+        }
+        self.pending = None;
+        self.count = None;
+        true
     }
 
     /// Which Group file `path` is in, if the sidebar shows Groups. A file in
     /// two Groups belongs to the first; one in none, or one the Analyst never
     /// saw, belongs to the Group after the last, "Other".
-    fn group_of(&self, path: &str) -> Option<usize> {
+    pub(super) fn group_of(&self, path: &str) -> Option<usize> {
+        self.reading_place(path).map(|(group, _)| group)
+    }
+
+    /// The Group of `path` and its place in the reading order of the Group.
+    fn reading_place(&self, path: &str) -> Option<(usize, usize)> {
         let placed = self.grouping()?;
         Some(
             placed
                 .index
                 .get(path)
                 .copied()
-                .unwrap_or(placed.grouping.groups.len()),
+                .unwrap_or((placed.grouping.groups.len(), usize::MAX)),
         )
     }
 
@@ -275,7 +282,7 @@ impl Session {
     }
 
     /// Name, description and Mechanical mark of Group `n`.
-    fn group_text(&self, n: usize) -> (String, String, bool) {
+    pub(super) fn group_text(&self, n: usize) -> (String, String, bool) {
         match self.grouping().and_then(|p| p.grouping.groups.get(n)) {
             Some(g) => (g.name.clone(), g.description.clone(), g.mechanical),
             None => (
@@ -286,75 +293,17 @@ impl Session {
         }
     }
 
-    /// The files in reading order when the sidebar shows Groups.
+    /// The files in the reading order of the Analyst when the sidebar shows
+    /// Groups: Group by Group, and inside a Group as the Analyst listed them.
     pub(super) fn in_group_order(&self, mut files: Vec<ChangedFile>) -> Vec<ChangedFile> {
         if self.grouping().is_some() {
-            files.sort_by_key(|f| self.group_of(&f.path).unwrap_or(usize::MAX));
+            files.sort_by_key(|f| {
+                let (group, rank) = self.reading_place(&f.path).unwrap_or((usize::MAX, 0));
+                // Mechanical files stay last in their Group.
+                (group, f.mechanical.is_some(), rank)
+            });
         }
         files
-    }
-
-    /// The rows of the sidebar list.
-    pub(super) fn sidebar_rows(&self) -> Vec<Row> {
-        let mut rows = Vec::new();
-        let mut last = None;
-        for (i, file) in self.files.iter().enumerate() {
-            if self.grouping().is_some() {
-                let group = self.group_of(&file.path);
-                if last != Some(group) {
-                    last = Some(group);
-                    if let Some(g) = group {
-                        rows.push(Row::Header(g));
-                        rows.push(Row::Description(g));
-                    }
-                }
-            }
-            rows.push(Row::File(i));
-        }
-        rows
-    }
-
-    /// Keys of the focused file list: `j/k` and the arrows pick a file, `gg`/`G`
-    /// and `Ctrl-d/u` jump, `Enter` opens it in the diff. Returns whether the key was used.
-    pub(super) fn files_key(&mut self, key: KeyEvent) -> bool {
-        let last = self.files.len().saturating_sub(1);
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        if self.pending == Some('g') && key.code == KeyCode::Char('g') && !ctrl {
-            self.pending = None;
-            let n = self.count.take().unwrap_or(1);
-            self.select((n - 1).min(last));
-            return true;
-        }
-        if ctrl && matches!(key.code, KeyCode::Char('d' | 'u')) && self.pending.is_none() {
-            self.count = None;
-            let half = (self.sidebar_capacity() / 2).max(1);
-            if key.code == KeyCode::Char('d') {
-                self.select(self.selected.saturating_add(half).min(last));
-            } else {
-                self.select(self.selected.saturating_sub(half));
-            }
-            return true;
-        }
-        if ctrl || self.pending.is_some() {
-            return false;
-        }
-        match key.code {
-            KeyCode::Char('G') => {
-                let n = self.count.take();
-                self.select(n.map_or(last, |n| n.saturating_sub(1).min(last)));
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                let n = self.count.take().unwrap_or(1);
-                self.select(self.selected.saturating_add(n).min(last));
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                let n = self.count.take().unwrap_or(1);
-                self.select(self.selected.saturating_sub(n));
-            }
-            KeyCode::Enter => self.focus = Focus::Diff,
-            _ => return false,
-        }
-        true
     }
 
     /// `]g` / `[g`: move `n` Groups on, to the first file of the Group.
@@ -389,43 +338,36 @@ impl Session {
         (done, files.len())
     }
 
+    /// The header row of Group `n`: its place in the reading order, name and
+    /// progress.
     pub(super) fn render_group_row(
         &self,
         buf: &mut Buffer,
         x: u16,
         y: u16,
         width: usize,
-        row: Row,
+        n: usize,
     ) {
-        match row {
-            Row::Header(n) => {
-                let (done, total) = self.group_progress(n);
-                let progress = format!("{done}/{total}");
-                let (name, _, mechanical) = self.group_text(n);
-                let tag = if mechanical { " [mech]" } else { "" };
-                let name = fit(
-                    &format!("{} {name}{tag}", n + 1),
-                    width.saturating_sub(progress.len() + 2),
-                    false,
-                );
-                let line = format!(" {name}");
-                let line = format!(
-                    "{}{progress} ",
-                    pad(&line, width.saturating_sub(progress.len() + 1))
-                );
-                buf.set_stringn(
-                    x,
-                    y,
-                    line,
-                    width,
-                    Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
-                );
-            }
-            Row::Description(n) => {
-                let text = format!(" {}", self.group_text(n).1);
-                buf.set_stringn(x, y, fit(&text, width, false), width, Style::new().fg(DIM));
-            }
-            Row::File(_) => {}
-        }
+        let (done, total) = self.group_progress(n);
+        let progress = format!("{done}/{total}");
+        let (name, _, mechanical) = self.group_text(n);
+        let tag = if mechanical { " [mech]" } else { "" };
+        let name = fit(
+            &format!("{} {name}{tag}", n + 1),
+            width.saturating_sub(progress.len() + 2),
+            false,
+        );
+        let line = format!(" {name}");
+        let line = format!(
+            "{}{progress} ",
+            pad(&line, width.saturating_sub(progress.len() + 1))
+        );
+        buf.set_stringn(
+            x,
+            y,
+            line,
+            width,
+            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+        );
     }
 }

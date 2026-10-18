@@ -13,6 +13,9 @@ pub const CTRL_W: char = '\u{17}';
 /// The internal name of the `Space p` prefix (Prompt keys).
 pub const SPACE_P: char = '\u{10}';
 
+/// The `Space` keys that work while the file picker is open.
+pub const PICKER_SPACE: &[&str] = &["g", "i"];
+
 /// One key (or the last key of a chain).
 pub struct Binding {
     /// The prefix key that must come first, if any.
@@ -31,7 +34,12 @@ pub const BINDINGS: &[Binding] = &[
     b(Some(' '), "c", "выбор коммита (срез)"),
     b(Some(' '), "e", "показать/скрыть сайдбар"),
     b(Some(' '), "f", "выбор файла"),
-    b(Some(' '), "g", "сайдбар: группы / дерево каталогов"),
+    b(Some(' '), "g", "панель файлов: группы / дерево всех файлов"),
+    b(
+        Some(' '),
+        "i",
+        "описание группы под курсором (ещё раз или Esc: скрыть)",
+    ),
     b(Some(' '), "p", "промпт: копировать / показать (подменю)"),
     b(Some(' '), "s", "саммари аналитика"),
     b(Some(' '), "u", "фильтр: только непросмотренные файлы"),
@@ -96,7 +104,7 @@ const PLAIN: &[(&str, &str)] = &[
     ("j/k", "курсор вниз/вверх (с числом: N строк)"),
     (
         "h/l",
-        "дифф: сдвиг по горизонтали; в списках: свернуть группу / открыть файл",
+        "дифф: сдвиг; в дереве файлов: свернуть/развернуть, l на файле: открыть",
     ),
     ("Ctrl-d/u", "полстраницы вниз/вверх"),
     ("Ctrl-f/b", "страница вниз/вверх"),
@@ -164,7 +172,7 @@ const PLAIN: &[(&str, &str)] = &[
     ("S-Tab", "предыдущее окно"),
     (
         "j/k, Enter",
-        "окно файлов: выбрать файл / открыть его в диффе",
+        "окно файлов: строки дерева; Enter открывает файл / сворачивает каталог",
     ),
     (
         "Ctrl-h/j/k/l",
@@ -220,10 +228,14 @@ pub enum Context {
     Commits,
     /// The file list (Groups, when built).
     Files,
+    /// The `Space f` file picker is open.
+    FilePicker,
     /// A selection of commits is being extended.
     CommitsVisual,
     /// A prefix key is waiting for its continuation.
     Pending(char),
+    /// `Space` waits inside the file picker: only [`PICKER_SPACE`] work.
+    PickerSpace,
 }
 
 /// The bottom hint line: keys that make sense right now, chains spelled out.
@@ -239,8 +251,11 @@ pub fn hint_line(context: Context) -> String {
                              /: поиск  n/N: совпадения  za: раунд  Ctrl-d/u: страница  \
                              Tab: окно  Space: команды  ?: справка"
             .into(),
-        Context::Files => "j/k: файлы  Enter: открыть  ]g/[g: группы  Tab: окно  \
-                           Space: команды  ?: справка"
+        Context::Files => "j/k: файлы и каталоги  h/l: свернуть/развернуть  Enter: открыть  \
+                           ]g/[g: группы  Tab: окно  Space: команды  ?: справка"
+            .into(),
+        Context::FilePicker => "j/k: строки  h/l: свернуть/развернуть  Enter: открыть  \
+                                gg/G: начало/конец  Space g: группы/дерево  Esc: закрыть"
             .into(),
         Context::CommitsVisual => {
             "-- VISUAL --  j/k: расширить  Enter: срез  v: снять  Esc: отмена".into()
@@ -250,6 +265,13 @@ pub fn hint_line(context: Context) -> String {
                 Ctrl-w + </>: ширина сайдбара  Ctrl-w + =: сброс  Esc: отмена"
                 .into()
         }
+        Context::PickerSpace => BINDINGS
+            .iter()
+            .filter(|x| x.prefix == Some(' ') && PICKER_SPACE.contains(&x.key))
+            .map(|x| format!("Space + {}: {}", x.key, x.label))
+            .chain(["Esc: отмена".to_string()])
+            .collect::<Vec<_>>()
+            .join("  "),
         Context::Pending(prefix) => {
             let name = prefix_name(prefix);
             let mut parts: Vec<String> = BINDINGS

@@ -55,7 +55,7 @@ fn reload_shows_the_new_commits_and_their_files() {
     let side = sidebar(&mut h);
     assert!(side.contains("add c"), "{side}");
     assert!(
-        side.contains("src/c.rs") && side.contains("Files (4)"),
+        side.contains("c.rs") && side.contains("Files (4)"),
         "{side}"
     );
     assert!(side.contains("Commits 4"), "{side}");
@@ -78,7 +78,7 @@ fn capital_r_reloads_too_and_keeps_the_selected_file() {
         "{side}"
     );
     let cursor = side.lines().find(|l| l.starts_with("│>")).unwrap();
-    assert!(cursor.contains("src/b.rs"), "{side}");
+    assert!(cursor.contains("b.rs"), "{side}");
 }
 
 #[test]
@@ -153,7 +153,7 @@ fn a_file_changed_by_an_amend_returns_to_unreviewed_with_the_delta_from_the_revi
     h.keys(" u");
     let side = sidebar(&mut h);
     assert!(
-        side.contains("Files (1)") && side.contains("src/a.rs"),
+        side.contains("Files (1)") && side.contains("a.rs"),
         "{side}"
     );
     let pane = diff_pane(&mut h);
@@ -188,7 +188,7 @@ fn a_force_pushed_branch_with_a_new_shape_keeps_the_marks_of_unchanged_files() {
     h.keys(" u");
     let side = sidebar(&mut h);
     assert!(
-        side.contains("Files (1)") && side.contains("src/b.rs"),
+        side.contains("Files (1)") && side.contains("b.rs"),
         "{side}"
     );
     let pane = diff_pane(&mut h);

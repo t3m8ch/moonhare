@@ -19,13 +19,13 @@ fn the_filter_hides_fully_reviewed_files_and_keeps_the_rest() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 160, 30);
     h.keys("]fm");
-    assert!(sidebar(&mut h).contains("src/a.rs"));
+    assert!(sidebar(&mut h).contains("a.rs"));
 
     h.keys(" u");
     let side = sidebar(&mut h);
-    assert!(!side.contains("src/a.rs"), "{side}");
+    assert!(!side.contains("a.rs"), "{side}");
     assert!(
-        side.contains("README.md") && side.contains("src/b.rs"),
+        side.contains("README.md") && side.contains("b.rs"),
         "{side}"
     );
     assert!(side.contains("Files (2)"), "{side}");
@@ -56,7 +56,7 @@ fn a_file_changed_after_the_mark_shows_only_the_delta_from_the_reviewed_version(
     h.keys(" u");
     let side = sidebar(&mut h);
     assert!(
-        side.contains("Files (1)") && side.contains("src/a.rs"),
+        side.contains("Files (1)") && side.contains("a.rs"),
         "{side}"
     );
     assert!(!side.contains("README.md"), "{side}");
@@ -86,7 +86,7 @@ fn current(h: &mut Harness) -> &'static str {
         .unwrap_or_else(|| panic!("no cursor row:\n{side}"));
     ["README.md", "src/a.rs", "src/b.rs"]
         .into_iter()
-        .find(|p| row.contains(p))
+        .find(|p| row.contains(p.rsplit('/').next().unwrap()))
         .unwrap_or_else(|| panic!("unexpected cursor row {row}"))
 }
 
@@ -97,7 +97,7 @@ fn m_takes_the_file_out_of_the_queue_and_the_next_one_takes_its_place() {
     h.keys(" u]fm");
     let side = sidebar(&mut h);
     assert!(
-        !side.contains("src/a.rs") && side.contains("Files (2)"),
+        !side.contains("a.rs") && side.contains("Files (2)"),
         "{side}"
     );
     assert_eq!(current(&mut h), "src/b.rs");
@@ -144,7 +144,7 @@ fn switching_the_filter_off_brings_back_every_file_and_the_status_tells_the_stat
     h.keys(" u");
     let side = sidebar(&mut h);
     assert!(
-        side.contains("src/a.rs") && side.contains("Files (3)"),
+        side.contains("a.rs") && side.contains("Files (3)"),
         "{side}"
     );
     assert!(!h.screen().contains("only unreviewed"), "{}", h.screen());

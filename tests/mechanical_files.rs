@@ -6,10 +6,13 @@ mod support;
 
 use support::{Fixture, Harness};
 
-/// Index of the first screen row that contains `needle`.
-fn row_index(screen: &str, needle: &str) -> usize {
+/// Index of the first sidebar row that lists the file `path`: the tree
+/// shows its name under its directory.
+fn row_index(screen: &str, path: &str) -> usize {
+    let needle = path.rsplit('/').next().unwrap();
     screen
         .lines()
+        .map(|l| l.chars().take(32).collect::<String>())
         .position(|l| l.contains(needle))
         .unwrap_or_else(|| panic!("no row with {needle}:\n{screen}"))
 }
@@ -63,10 +66,8 @@ fn assert_mechanical(path: &str, content: &[u8], marker: &str, label: &str) {
     let fx = one_mechanical(path, content);
     let mut h = Harness::open(&fx, 160, 30);
     let screen = h.screen();
-    // The sidebar shortens long paths from the left.
-    let tail = &path[path.len().saturating_sub(20)..];
     assert!(
-        row_index(&screen, "src/lib.rs") < row_index(&screen, tail),
+        row_index(&screen, "src/lib.rs") < row_index(&screen, path),
         "{path} is listed last:\n{screen}"
     );
     h.keys("]f");
@@ -130,13 +131,15 @@ fn files_marked_generated_by_attributes_are_mechanical() {
         row_index(&screen, "gen/keep.rs") < row_index(&screen, "gen/api.rs"),
         "{screen}"
     );
-    // Files: .gitattributes, gen/keep.rs, src/lib.rs, then gen/api.rs.
+    // Files: .gitattributes, gen/keep.rs, src/lib.rs, then gen/api.rs in a
+    // tree of its own after the ordinary files.
     h.keys("]f");
     assert!(h.screen().contains("handwritten-body"), "{}", h.screen());
     h.keys("]f]f");
     let screen = h.screen();
     assert!(!screen.contains("generated-body"), "{screen}");
     assert!(screen.contains("generated"), "{screen}");
+    assert!(screen.contains("api.rs"), "{screen}");
 }
 
 #[test]

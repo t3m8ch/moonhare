@@ -5,13 +5,15 @@ mod support;
 
 use support::{feature_branch, Harness};
 
-/// The sidebar line (first 32 columns) of a file.
+/// The sidebar line (first 32 columns) of a file: the tree shows its name
+/// under its directory.
 fn file_row(h: &mut Harness, path: &str) -> String {
     let screen = h.screen();
+    let name = path.rsplit('/').next().unwrap();
     screen
         .lines()
         .map(|l| l.chars().take(32).collect::<String>())
-        .find(|l| l.contains(path))
+        .find(|l| l.contains(name))
         .unwrap_or_else(|| panic!("no row for {path}:\n{screen}"))
 }
 
@@ -99,7 +101,7 @@ fn current(h: &mut Harness) -> &'static str {
         .unwrap_or_else(|| panic!("no cursor row:\n{screen}"));
     ["README.md", "src/a.rs", "src/b.rs"]
         .into_iter()
-        .find(|p| row.contains(p))
+        .find(|p| row.contains(p.rsplit('/').next().unwrap()))
         .unwrap_or_else(|| panic!("unexpected cursor row {row}"))
 }
 

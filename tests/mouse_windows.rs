@@ -70,16 +70,17 @@ fn the_file_picker_takes_clicks_and_the_wheel() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 160, 30);
     h.keys("<Space>f");
-    let (x, y) = last_row_of(&mut h, "src/b.rs");
+    let (x, y) = last_row_of(&mut h, "b.rs");
     h.click(x, y);
     assert!(h.screen().contains("file 3/3"), "{}", h.screen());
     assert!(!h.screen().contains("Pick a file"), "{}", h.screen());
 
     h.keys("<Space>f");
-    let (x, y) = last_row_of(&mut h, "src/a.rs");
+    let (x, y) = last_row_of(&mut h, "a.rs");
     h.wheel_up(x, y);
     h.keys("<CR>");
     assert!(h.screen().contains("file 2/3"), "{}", h.screen());
+    // From a.rs up onto the directory src, then down past a.rs to b.rs.
     h.keys("<Space>f");
     h.wheel_up(x, y);
     h.wheel_down(x, y);

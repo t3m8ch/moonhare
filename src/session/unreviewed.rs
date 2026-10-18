@@ -23,7 +23,7 @@ impl Session {
                 f
             })
             .collect();
-        self.in_group_order(files)
+        self.in_tree_order(self.in_group_order(files))
     }
 
     /// `Space u`: switch the filter, keeping the selected file when it stays.

@@ -441,7 +441,7 @@ fn the_mouse_does_not_pull_the_file_from_under_an_open_draft() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 160, 30);
     h.keys("jjcikeep me");
-    let (col, row) = h.frame().find("src/b.rs").unwrap();
+    let (col, row) = h.frame().find("b.rs").unwrap();
     h.click(col, row);
     let screen = h.screen();
     assert!(screen.contains("README.md (line-based"), "{screen}");

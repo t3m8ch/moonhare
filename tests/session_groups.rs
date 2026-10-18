@@ -99,21 +99,16 @@ fn once_the_analysis_is_ready_the_sidebar_shows_groups_in_reading_order_with_pro
     let mut h = review_with(&fx, &core_then_docs());
     h.session().wait_for_analyst();
     let side = sidebar(&mut h);
-    assert!(
-        position(&side, "Core") < position(&side, "src/a.rs"),
-        "{side}"
-    );
-    assert!(
-        position(&side, "src/b.rs") < position(&side, "Docs"),
-        "{side}"
-    );
+    assert!(position(&side, "Core") < position(&side, "a.rs"), "{side}");
+    assert!(position(&side, "b.rs") < position(&side, "Docs"), "{side}");
     assert!(
         position(&side, "Docs") < position(&side, "README.md"),
         "{side}"
     );
     assert!(side.contains("0/2"), "{side}");
     assert!(side.contains("0/1"), "{side}");
-    assert!(side.contains("the modules"), "{side}");
+    // The description waits for the hint line or `Space i`.
+    assert!(!side.contains("the modules"), "{side}");
 }
 
 /// The sidebar line that names `needle`.
@@ -159,7 +154,7 @@ fn a_narrower_scope_narrows_the_groups_and_their_progress() {
     let side = sidebar(&mut h);
     assert!(row_of(&mut h, "Core").contains("0/1"), "{side}");
     assert!(row_of(&mut h, "Docs").contains("0/1"), "{side}");
-    assert!(!side.contains("src/a.rs"), "{side}");
+    assert!(!side.contains("a.rs"), "{side}");
 }
 
 #[test]
@@ -176,7 +171,7 @@ fn until_the_analysis_is_ready_the_sidebar_is_the_plain_file_list() {
     let mut h = review_with(&fx, &analyst);
     let side = sidebar(&mut h);
     assert!(
-        side.contains("src/a.rs") && side.contains("README.md"),
+        side.contains("a.rs") && side.contains("README.md"),
         "{side}"
     );
     assert!(!side.contains("Everything"), "{side}");
@@ -197,7 +192,7 @@ fn space_g_switches_between_groups_and_the_directory_tree() {
     let side = sidebar(&mut h);
     assert!(!side.contains("Core") && !side.contains("Docs"), "{side}");
     assert!(
-        position(&side, "README.md") < position(&side, "src/a.rs"),
+        position(&side, "README.md") < position(&side, "a.rs"),
         "{side}"
     );
 
@@ -222,17 +217,14 @@ fn every_file_is_in_exactly_one_group_whatever_the_analyst_answers() {
     let mut h = review_with(&fx, &analyst);
     h.session().wait_for_analyst();
     let side = sidebar(&mut h);
-    assert_eq!(side.matches("src/a.rs").count(), 1, "{side}");
+    assert_eq!(side.matches("a.rs").count(), 1, "{side}");
     assert!(!side.contains("ghost"), "{side}");
     assert!(!side.contains("Again"), "{side}");
     assert!(
         position(&side, "Other") < position(&side, "README.md"),
         "{side}"
     );
-    assert!(
-        position(&side, "src/b.rs") < position(&side, "Other"),
-        "{side}"
-    );
+    assert!(position(&side, "b.rs") < position(&side, "Other"), "{side}");
     assert!(row_of(&mut h, "Other").contains("0/1"), "{side}");
 }
 
@@ -317,7 +309,7 @@ fn when_grouping_fails_the_tree_stays_and_the_reason_is_in_the_status() {
     assert!(status.contains("claude gave a broken answer"), "{status}");
     let side = sidebar(&mut h);
     assert!(
-        side.contains("README.md") && side.contains("src/b.rs"),
+        side.contains("README.md") && side.contains("b.rs"),
         "{side}"
     );
 }
@@ -327,7 +319,7 @@ fn clicking_a_file_under_a_group_header_selects_that_file() {
     let fx = feature_branch();
     let mut h = review_with(&fx, &core_then_docs());
     h.session().wait_for_analyst();
-    let (_, row) = h.frame().find("src/b.rs").expect("src/b.rs is listed");
+    let (_, row) = h.frame().find("b.rs").expect("src/b.rs is listed");
     h.click(5, row);
     let screen = h.screen();
     assert!(screen.contains("file 2/3"), "{screen}");
@@ -340,7 +332,7 @@ fn with_the_unreviewed_filter_groups_keep_counting_the_whole_scope() {
     h.session().wait_for_analyst();
     h.keys("[f[fm<Space>u");
     let side = sidebar(&mut h);
-    assert!(!side.contains("src/a.rs"), "{side}");
+    assert!(!side.contains("a.rs"), "{side}");
     assert!(row_of(&mut h, "Core").contains("1/2"), "{side}");
 }
 
@@ -372,12 +364,25 @@ fn the_file_picker_shows_the_groups_with_progress_in_reading_order() {
     h.session().set_analyst(core_then_docs());
     h.session().wait_for_analyst();
     h.keys("<Space>f");
+    let screen = h.screen();
     let box_ = picker(&mut h);
-    for expected in ["Core", "0/2", "the modules", "Docs", "0/1", "the readme"] {
-        assert!(box_.contains(expected), "{expected}:\n{box_}");
+    let rows: Vec<&str> = box_.lines().collect();
+    let inside = rows[..rows.len() - 2].join("\n");
+    for expected in ["Core", "0/2", "Docs", "0/1"] {
+        assert!(inside.contains(expected), "{expected}:\n{box_}");
     }
-    assert!(position(&box_, "Core") < position(&box_, "src/a.rs"));
-    assert!(position(&box_, "src/b.rs") < position(&box_, "Docs"));
+    // Descriptions are not in the box; the one of the Group under the cursor
+    // (README.md, in Docs) is in the hint line.
+    assert!(
+        !inside.contains("the modules") && !inside.contains("the readme"),
+        "{box_}"
+    );
+    assert!(
+        screen.lines().last().unwrap().contains("the readme"),
+        "{screen}"
+    );
+    assert!(position(&box_, "Core") < position(&box_, "a.rs"));
+    assert!(position(&box_, "b.rs") < position(&box_, "Docs"));
     assert!(position(&box_, "Docs") < position(&box_, "README.md"));
 }
 
@@ -404,7 +409,7 @@ fn clicking_a_file_in_the_grouped_picker_opens_that_file() {
     h.session().set_analyst(core_then_docs());
     h.session().wait_for_analyst();
     h.keys("<Space>f");
-    let (x, y) = h.frame().find("src/b.rs").expect("b.rs row");
+    let (x, y) = h.frame().find("b.rs").expect("b.rs row");
     h.click(x, y);
     let screen = h.screen();
     assert!(!screen.contains("Pick a file"), "{screen}");
@@ -449,6 +454,9 @@ fn jk_and_arrows_walk_the_files_across_groups_in_the_files_window() {
     assert!(h.screen().contains("file 2/3"), "{}", h.screen());
     h.keys("jG");
     assert!(h.screen().contains("file 3/3"), "{}", h.screen());
-    h.keys("gg<CR>");
+    // gg goes to the first row of the tree, the directory src of Core.
+    h.keys("gg");
+    assert!(h.screen().contains("file 3/3"), "{}", h.screen());
+    h.keys("j<CR>");
     assert!(h.screen().contains("file 1/3"), "{}", h.screen());
 }

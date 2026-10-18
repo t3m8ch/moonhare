@@ -8,7 +8,8 @@ fn branch_of_several_commits_lists_every_changed_file_and_shows_the_first_diff()
     let mut h = Harness::open(&fx, 160, 30);
 
     let screen = h.screen();
-    for file in ["README.md", "src/a.rs", "src/b.rs"] {
+    // The tree lists the files by name under their directory.
+    for file in ["README.md", "src", "a.rs", "b.rs"] {
         assert!(screen.contains(file), "sidebar lists {file}:\n{screen}");
     }
     // The diff of the first file (README.md) spans the whole range.
@@ -50,8 +51,8 @@ fn files_switch_with_bracket_f_and_by_clicking_the_list() {
     // Click the row the file list shows for src/b.rs, wherever the panes sit.
     let (x, y) = h
         .frame()
-        .find("src/b.rs")
-        .expect("src/b.rs is listed in the sidebar");
+        .find("b.rs")
+        .expect("b.rs is listed in the sidebar");
     h.click(x, y);
     assert!(h.screen().contains("file 3/3"), "click selects src/b.rs");
 }

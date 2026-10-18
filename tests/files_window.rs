@@ -49,6 +49,9 @@ fn j_k_and_enter_pick_a_file_in_the_files_window() {
     let mut h = Harness::open(&fx, 100, 30);
     h.keys("<Tab><Tab>");
     assert!(file_status(&mut h).contains("file 1/3"));
+    // README.md, then the directory src: the open file stays.
+    h.keys("j");
+    assert!(file_status(&mut h).contains("file 1/3"), "{}", h.screen());
     h.keys("j");
     assert!(file_status(&mut h).contains("file 2/3"), "{}", h.screen());
     h.keys("jj");
@@ -88,6 +91,8 @@ fn arrows_move_the_file_selection_like_jk() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 100, 30);
     h.keys("<Tab><Tab>");
+    // Over the directory src to src/a.rs.
+    h.session().handle(key(KeyCode::Down));
     h.session().handle(key(KeyCode::Down));
     assert!(at_file(&mut h, 2), "{}", h.screen());
     h.session().handle(key(KeyCode::Down));
@@ -124,7 +129,8 @@ fn groups_are_walked_with_jk_and_enter_opens_the_file() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 100, 30);
     h.keys("<C-w>h<C-w>j");
-    h.keys("jj<CR>");
+    // README.md, the directory src, src/a.rs, src/b.rs.
+    h.keys("jjj<CR>");
     assert!(at_file(&mut h, 3));
     // The focus is in the diff now: Tab goes to the commits.
     h.keys("<Tab>");
