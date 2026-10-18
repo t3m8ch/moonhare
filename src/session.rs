@@ -2076,7 +2076,9 @@ fn fit(s: &str, width: usize, keep_tail: bool) -> String {
 /// the line's tokens (in [`paint_order`]), a line background, and a stronger
 /// background on changed fragments. Tabs are expanded. Only the cells a
 /// `width`-column window needs are built, plus one to tell that the line goes
-/// on past it: a frame costs the same whatever the length of the line.
+/// on past it. Columns depend on character widths, so the characters before
+/// the window are still counted, but they are not styled, and the first token
+/// in view is found by binary search: a frame never styles the whole line.
 fn code_cells(
     theme: &Theme,
     text: &str,
@@ -2088,7 +2090,8 @@ fn code_cells(
     let until = from.saturating_add(width).saturating_add(1);
     let mut cells = Vec::with_capacity(width + 1);
     let mut col = 0;
-    let mut tokens = tokens.iter().peekable();
+    // The tokens from the one that may cover the current character on.
+    let mut rest_tokens: Option<&[Token]> = None;
     for (byte, ch) in text.char_indices() {
         if col >= until {
             break;
@@ -2098,12 +2101,17 @@ fn code_cells(
             col += n;
             continue;
         }
-        while tokens.next_if(|t| t.end_col as usize <= byte).is_some() {}
+        let ahead = rest_tokens.get_or_insert_with(|| {
+            &tokens[tokens.partition_point(|t| t.end_col as usize <= byte)..]
+        });
+        while ahead.first().is_some_and(|t| t.end_col as usize <= byte) {
+            *ahead = &ahead[1..];
+        }
         let mut style = Style::new().fg(theme.fg);
         if let Some(bg) = bg {
             style = style.bg(bg);
         }
-        if let Some(t) = tokens.peek().filter(|t| t.start_col as usize <= byte) {
+        if let Some(t) = ahead.first().filter(|t| t.start_col as usize <= byte) {
             style = style.fg(theme.highlight(t.highlight));
             if t.changed {
                 if let Some(fbg) = fragment_bg {
@@ -2113,8 +2121,10 @@ fn code_cells(
         }
         // A tab is spaces; a wide character takes its cell and one more,
         // which is only a placeholder; a zero-width one has no cell.
-        let first = if ch == '\t' { ' ' } else { ch };
-        let rest = if ch == '\t' { ' ' } else { copy::CONTINUATION };
+        let (first, rest) = match ch {
+            '\t' => (' ', ' '),
+            _ => (ch, copy::CONTINUATION),
+        };
         for i in 0..n {
             if (from..until).contains(&(col + i)) {
                 cells.push((if i == 0 { first } else { rest }, style));
@@ -2177,17 +2187,18 @@ mod tests {
 
     #[test]
     fn paint_order_paints_each_byte_with_the_first_token_covering_it() {
-        use Highlight::*;
+        use Highlight::{Comment, Delimiter, Keyword, Normal, Type};
+        let (string, error) = (Highlight::String, Highlight::Error);
         let cases = vec![
-            vec![token(0, 3, Keyword, false), token(4, 9, String, true)],
-            vec![token(4, 9, String, true), token(0, 3, Keyword, false)],
+            vec![token(0, 3, Keyword, false), token(4, 9, string, true)],
+            vec![token(4, 9, string, true), token(0, 3, Keyword, false)],
             vec![token(0, 10, Comment, false), token(2, 5, Normal, true)],
             vec![token(2, 5, Normal, true), token(0, 10, Comment, false)],
             vec![
                 token(3, 8, Type, false),
                 token(0, 4, Keyword, true),
-                token(6, 6, Error, true),
-                token(7, 12, String, false),
+                token(6, 6, error, true),
+                token(7, 12, string, false),
                 token(10, 11, Delimiter, true),
             ],
         ];
