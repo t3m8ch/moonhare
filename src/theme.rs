@@ -298,3 +298,33 @@ pub fn background_from_colorfgbg(value: &str) -> Option<Background> {
         _ => Background::Dark,
     })
 }
+
+/// The background a terminal reports in its reply to OSC 11
+/// (`rgb:RRRR/GGGG/BBBB`, each 1 to 4 hex digits, or `rgba:` with alpha).
+/// `None` when the reply is in another form.
+pub fn background_from_osc11(body: &str) -> Option<Background> {
+    let (scheme, value) = body.split_once(':')?;
+    let channels: Vec<&str> = value.split('/').collect();
+    match (scheme, channels.len()) {
+        ("rgb", 3) | ("rgba", 4) => {}
+        _ => return None,
+    }
+    let channel = |hex: &str| -> Option<u8> {
+        if hex.is_empty() || hex.len() > 4 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let v = u32::from_str_radix(hex, 16).ok()?;
+        let max = (1u32 << (4 * hex.len())) - 1;
+        Some((v * 255 / max) as u8)
+    };
+    let rgb = (
+        channel(channels[0])?,
+        channel(channels[1])?,
+        channel(channels[2])?,
+    );
+    Some(if luminance(rgb) > MIDPOINT {
+        Background::Light
+    } else {
+        Background::Dark
+    })
+}
