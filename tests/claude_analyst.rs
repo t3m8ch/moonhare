@@ -458,3 +458,52 @@ fn a_diagram_answer_without_mermaid_is_a_failure() {
     let err = fake.analyst().diagram(&diagram_request(&fx)).unwrap_err();
     assert!(matches!(err, AnalystError::Failed(_)), "{err:?}");
 }
+
+#[test]
+fn parallel_requests_all_succeed_and_leave_no_worktrees_behind() {
+    let fx = feature_branch();
+    let fake = FakeClaude::replying(&success("x"));
+    let analyst = fake.analyst();
+    let request = request(&fx);
+    for round in 0..20 {
+        let results: Vec<_> = std::thread::scope(|s| {
+            let handles: Vec<_> = (0..8)
+                .map(|_| s.spawn(|| analyst.summarize(&request)))
+                .collect();
+            handles.into_iter().map(|h| h.join().unwrap()).collect()
+        });
+        for result in results {
+            assert!(result.is_ok(), "round {round}: {result:?}");
+        }
+    }
+    let list = fx.git(&["worktree", "list", "--porcelain"]);
+    assert_eq!(
+        list.lines().filter(|l| l.starts_with("worktree ")).count(),
+        1,
+        "only the main worktree is registered: {list}"
+    );
+}
+
+#[test]
+fn stale_worktrees_are_pruned_once_not_on_every_request() {
+    let fx = feature_branch();
+    let fake = FakeClaude::replying(&success("x"));
+    let analyst = fake.analyst();
+    analyst.summarize(&request(&fx)).unwrap();
+    let leftover = tempfile::tempdir().unwrap();
+    let path = leftover.path().join("gone");
+    fx.git(&[
+        "worktree",
+        "add",
+        "--detach",
+        path.to_str().unwrap(),
+        "feature",
+    ]);
+    fs::remove_dir_all(&path).unwrap();
+    analyst.summarize(&request(&fx)).unwrap();
+    assert_eq!(
+        fx.git(&["worktree", "list"]).lines().count(),
+        2,
+        "a later request of the same session prunes nothing"
+    );
+}

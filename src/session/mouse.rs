@@ -111,6 +111,11 @@ impl Session {
                 if let Some(selection) = self.mouse.selection {
                     let text = format(&self.selected_lines(selection), &[]);
                     self.copy_to_clipboard(&text, "the selected code");
+                } else if inside {
+                    // A click on a fold, not a drag over it, opens it.
+                    if let Some(item) = self.item_at_row(mouse.row) {
+                        self.click_fold(item);
+                    }
                 }
                 true
             }

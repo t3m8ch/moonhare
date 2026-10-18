@@ -23,6 +23,11 @@ The modification one commit makes to one file. The unit that is marked reviewed.
 _Russian_: изменение файла
 _Avoid_: patch, hunk (a sub-part of a File change)
 
+**Fold**:
+A long stretch of unchanged lines in a diff shown as one placeholder row with its line count. The Reviewer can reveal its lines, a chunk at a time when it is long, and fold them back.
+_Russian_: свёрнутый участок
+_Avoid_: collapsed region, gap
+
 **Reviewed**:
 A File change is reviewed once the Reviewer marks it. A file counts as reviewed in a Scope when every one of its File changes in that Scope is; marking a file in a Scope marks all of its File changes in that Scope.
 _Russian_: отревьюено

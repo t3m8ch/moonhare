@@ -4,6 +4,7 @@
 use ratatui::crossterm::event::KeyCode;
 
 use super::*;
+use crate::hints::Z_DIFF;
 
 impl Session {
     pub(super) fn scroll_view(&mut self, delta: isize) {
@@ -33,6 +34,7 @@ impl Session {
                 ('[', KeyCode::Char('u')) => self.jump_unreviewed(false),
                 (']', KeyCode::Char('h')) => self.jump_hunk(true, count.unwrap_or(1)),
                 ('[', KeyCode::Char('h')) => self.jump_hunk(false, count.unwrap_or(1)),
+                (Z_DIFF, KeyCode::Char(c)) if !ctrl => self.diff_fold_command(c),
                 _ => {}
             }
             return true;
@@ -80,6 +82,7 @@ impl Session {
                 self.hscroll = self.hscroll.saturating_sub(n.saturating_mul(HSCROLL_STEP));
             }
             KeyCode::Char('0') if !ctrl => self.hscroll = 0,
+            KeyCode::Char('z') if !ctrl => self.pending = Some(Z_DIFF),
             KeyCode::Char(c @ ('g' | ']' | '[')) if !ctrl => {
                 self.pending = Some(c);
                 self.count = count;

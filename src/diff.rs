@@ -18,7 +18,7 @@ pub fn session_limits() -> Limits {
 }
 
 /// Which version of the file a token or fragment belongs to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Side {
     Old,
     New,
