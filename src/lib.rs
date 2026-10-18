@@ -22,5 +22,6 @@ pub mod review;
 pub mod rounds;
 pub mod session;
 pub mod special;
+pub mod terminal_input;
 pub mod theme;
 pub mod viewport;

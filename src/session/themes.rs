@@ -1,12 +1,15 @@
-//! The theme of the session: `--theme`, `:theme` and the terminal background.
+//! The theme of the session: `--theme`, `:theme` and the terminal background,
+//! which the terminal tells in its replies whenever they come.
 
 use super::*;
+use crate::terminal_input::{Reply, QUERY_BACKGROUND};
 use crate::theme::{Background, Choice};
 
 #[derive(Default)]
 pub(super) struct ThemeSetting {
     choice: Choice,
-    /// The terminal background (as `$COLORFGBG` names it); `None` when unknown.
+    /// The terminal background (as the terminal last replied, or as
+    /// `$COLORFGBG` names it); `None` when unknown.
     background: Option<Background>,
 }
 
@@ -35,7 +38,17 @@ impl Session {
         self.theme_setting.background = background;
     }
 
-    /// `:theme [light|dark|auto]`: switch, or show the theme drawn.
+    /// A reply of the terminal came: under `auto` the theme follows the
+    /// background it tells.
+    pub fn terminal_reply(&mut self, reply: &Reply) {
+        match reply {
+            Reply::Background(background) => self.set_terminal_background(Some(*background)),
+            Reply::Other => {}
+        }
+    }
+
+    /// `:theme [light|dark|auto]`: switch, or show the theme drawn. `auto`
+    /// asks the terminal for its background anew.
     pub(super) fn theme_command(&mut self, arg: &str) {
         if arg.is_empty() {
             let how = match self.theme_setting.choice {
@@ -45,8 +58,12 @@ impl Session {
             self.message = Some(format!("theme: {} ({how})", self.theme().name));
             return;
         }
-        if let Err(e) = self.set_theme(arg) {
-            self.message = Some(e);
+        match self.set_theme(arg) {
+            Ok(()) if self.theme_setting.choice == Choice::Auto => {
+                self.terminal_out.push(QUERY_BACKGROUND.to_string());
+            }
+            Ok(()) => {}
+            Err(e) => self.message = Some(e),
         }
     }
 
