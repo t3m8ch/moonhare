@@ -3,12 +3,13 @@
 //! answer opens in an overlay, `Esc` closes it or cancels the wait.
 
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 
 use ratatui::text::Line;
 
 use super::analysis::{plain_lines, Pending};
 use super::*;
-use crate::analyst::{AnalystError, ExplainRequest, ExplainTarget, Explanation};
+use crate::analyst::{Analyst, AnalystError, ExplainRequest, ExplainTarget, Explanation};
 use crate::analyst_cache::AnalystCache;
 
 type Answer = (u64, Result<Explanation, AnalystError>);
@@ -23,6 +24,13 @@ struct Overlay {
     /// The request this overlay waits for; answers to others are dropped.
     id: u64,
     title: String,
+    /// The answer shown was read from the disk cache.
+    cached: bool,
+    /// `r` asked again: the answer shown stays until the new one comes.
+    refreshing: bool,
+    /// What was asked and where its answer is cached, for `r`.
+    request: ExplainRequest,
+    cache_key: String,
     state: State,
     scroll: scroll::Scroll,
 }
@@ -77,6 +85,8 @@ impl Session {
                     let text = text.clone();
                     self.copy_to_clipboard(&text, "the explanation");
                 }
+            } else if key.code == KeyCode::Char('r') {
+                self.refresh_explanation();
             }
             return true;
         }
@@ -129,29 +139,53 @@ impl Session {
             pull_request: self.pull_request.clone(),
             target,
         };
-        let id = self.explain.next_id;
-        self.explain.next_id += 1;
-        self.explain.error = None;
         let title = format!(" Explain {what}: {path} [{}] ", request.language);
-        let cache = self.analyst_cache.clone();
         let cache_key = self.explanation_cache_key(&request);
-        if let Some(explanation) = cache.load_explanation(&cache_key) {
+        self.explain.error = None;
+        if let Some(explanation) = self.analyst_cache.load_explanation(&cache_key) {
             self.explain.overlay = Some(Overlay {
-                id,
-                title: format!("{}cached ", title),
+                id: self.next_explain_id(),
+                title,
+                cached: true,
+                refreshing: false,
+                request,
+                cache_key,
                 state: State::Done(explanation.text),
                 scroll: Default::default(),
             });
             return;
         }
-        let now = self.clock();
-        self.explain.in_flight.insert(id, now);
+        let id = self.ask_explanation(analyst, &request, &cache_key);
         self.explain.overlay = Some(Overlay {
             id,
             title,
+            cached: false,
+            refreshing: false,
+            request,
+            cache_key,
             state: State::Waiting,
             scroll: Default::default(),
         });
+    }
+
+    fn next_explain_id(&mut self) -> u64 {
+        self.explain.next_id += 1;
+        self.explain.next_id
+    }
+
+    /// Send `request` to the Analyst; its answer is cached under `cache_key`
+    /// and comes back under the returned id.
+    fn ask_explanation(
+        &mut self,
+        analyst: Arc<dyn Analyst>,
+        request: &ExplainRequest,
+        cache_key: &str,
+    ) -> u64 {
+        let id = self.next_explain_id();
+        let now = self.clock();
+        self.explain.in_flight.insert(id, now);
+        let (request, cache_key) = (request.clone(), cache_key.to_string());
+        let cache = self.analyst_cache.clone();
         let sender = self.explain.sender.clone();
         std::thread::spawn(move || {
             let answer = analyst.explain(&request);
@@ -160,6 +194,31 @@ impl Session {
             }
             let _ = sender.send((id, answer));
         });
+        id
+    }
+
+    /// `r` in the overlay: ask again whatever is cached, keeping the answer
+    /// on screen until the new one comes.
+    fn refresh_explanation(&mut self) {
+        let Some(analyst) = self.analyst_handle() else {
+            self.message = Some(super::diagram::NO_ANALYST_TO_REFRESH.into());
+            return;
+        };
+        let Some(overlay) = &self.explain.overlay else {
+            return;
+        };
+        if matches!(overlay.state, State::Waiting) || overlay.refreshing {
+            return;
+        }
+        let (mut request, cache_key) = (overlay.request.clone(), overlay.cache_key.clone());
+        // Effort and model as they are now, like any new request.
+        request.settings = self.analysis.settings.clone();
+        self.explain.error = None;
+        let id = self.ask_explanation(analyst, &request, &cache_key);
+        if let Some(overlay) = &mut self.explain.overlay {
+            overlay.id = id;
+            overlay.refreshing = true;
+        }
     }
 
     /// An explanation is tied to the code it explains, not to the commits it
@@ -274,13 +333,20 @@ impl Session {
         let Some(overlay) = self.explain.overlay.as_mut().filter(|o| o.id == id) else {
             return;
         };
-        overlay.state = match answer {
-            Ok(explanation) => State::Done(explanation.text),
+        let refreshed = std::mem::take(&mut overlay.refreshing);
+        match answer {
+            Ok(explanation) => {
+                overlay.cached = false;
+                overlay.state = State::Done(explanation.text);
+            }
             Err(e) => {
                 self.explain.error = Some(e.to_string());
-                State::Failed(e.to_string())
+                // A failed refresh keeps the answer it was meant to replace.
+                if !(refreshed && matches!(overlay.state, State::Done(_))) {
+                    overlay.state = State::Failed(e.to_string());
+                }
             }
-        };
+        }
     }
 
     /// A failed explanation comes first in the status line, like a failed
@@ -297,6 +363,25 @@ impl Session {
         let Some(overlay) = &self.explain.overlay else {
             return Vec::new();
         };
+        let width = scroll::text_cols(self.overlay_area());
+        let mut lines = Vec::new();
+        if overlay.refreshing {
+            lines = plain_lines(
+                &format!(
+                    "{} The Analyst is updating the explanation… {}s",
+                    super::analysis::spinner(self.clock()),
+                    self.work_seconds("Explanation")
+                ),
+                width,
+            );
+            lines.push(Line::default());
+        } else if let (Some(error), State::Done(_)) = (&self.explain.error, &overlay.state) {
+            lines = plain_lines(
+                &format!("Analyst: {error} (the previous explanation is kept)"),
+                width,
+            );
+            lines.push(Line::default());
+        }
         let text = match &overlay.state {
             State::Waiting => format!(
                 "{} The Analyst is explaining… {}s. Esc cancels.",
@@ -304,15 +389,13 @@ impl Session {
                 self.work_seconds("Explanation")
             ),
             State::Done(text) => {
-                return crate::markdown::render(
-                    self.theme(),
-                    text,
-                    scroll::text_cols(self.overlay_area()),
-                )
+                lines.extend(crate::markdown::render(self.theme(), text, width));
+                return lines;
             }
             State::Failed(error) => format!("Analyst: {error}"),
         };
-        plain_lines(&text, scroll::text_cols(self.overlay_area()))
+        lines.extend(plain_lines(&text, width));
+        lines
     }
 
     pub(super) fn explain_scroll_mut(&mut self) -> Option<&mut scroll::Scroll> {
@@ -325,7 +408,12 @@ impl Session {
         };
         let area = self.overlay_area();
         clear_area(self.theme(), buf, area);
-        draw_box(self.theme(), buf, area, &overlay.title);
+        let title = match (overlay.refreshing, overlay.cached) {
+            (true, _) => format!("{}updating ", overlay.title),
+            (false, true) => format!("{}cached ", overlay.title),
+            (false, false) => overlay.title.clone(),
+        };
+        draw_box(self.theme(), buf, area, &title);
         scroll::render_styled(
             self.theme(),
             buf,

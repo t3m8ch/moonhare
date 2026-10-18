@@ -47,13 +47,21 @@ pub const BINDINGS: &[Binding] = &[
     b(Some(' '), "p", "промпт: копировать / показать (подменю)"),
     b(Some(' '), "s", "саммари аналитика"),
     b(Some(' '), "u", "фильтр: только непросмотренные файлы"),
-    b(Some(' '), "x", "аналитик: объяснить хунк под курсором"),
+    b(
+        Some(' '),
+        "x",
+        "аналитик: объяснить хунк под курсором (r в окне: пересчитать)",
+    ),
     b(
         Some(' '),
         "y",
         "скопировать выделение вместе с комментариями (VISUAL или мышь)",
     ),
-    b(Some(' '), "X", "аналитик: объяснить файл под курсором"),
+    b(
+        Some(' '),
+        "X",
+        "аналитик: объяснить файл под курсором (r в окне: пересчитать)",
+    ),
     b(
         Some(SPACE_P),
         "p",
@@ -172,12 +180,16 @@ const PLAIN: &[(&str, &str)] = &[
         "диаграмма файла под курсором (:diagram here: фрагмента, :diagram group: группы)",
     ),
     (
-        "h/l, j/k, y, q",
-        "оверлей диаграммы: сдвиг, копировать Mermaid, закрыть",
+        "h/l, j/k, y, r, q",
+        "оверлей диаграммы: сдвиг, копировать Mermaid, пересчитать, закрыть",
     ),
     (
         "y",
         "саммари, объяснение, описание группы: копировать исходный Markdown",
+    ),
+    (
+        ":analyze [all]",
+        "саммари и группы заново мимо кэша; all: забыть кэш ревью (подтверждение)",
     ),
     (
         ":effort, :model",
@@ -253,6 +265,10 @@ pub enum Context {
     Pending(char),
     /// `Space` waits inside the file picker: only [`PICKER_SPACE`] work.
     PickerSpace,
+    /// The window of an Explanation is open.
+    Explanation,
+    /// The window of a Diagram is open.
+    Diagram,
 }
 
 /// The bottom hint line: keys that make sense right now, chains spelled out.
@@ -279,6 +295,12 @@ pub fn hint_line(context: Context) -> String {
                                 gg/G: начало/конец  Space g: группы/дерево  Esc: закрыть"
                 .into()
         }
+        Context::Explanation => "j/k: прокрутка  y: копировать Markdown  \
+                                 r: пересчитать (мимо кэша)  Esc/q: закрыть"
+            .into(),
+        Context::Diagram => "h/l: сдвиг  j/k: прокрутка  y: копировать Mermaid  \
+                             r: пересчитать (мимо кэша)  Esc/q: закрыть"
+            .into(),
         Context::CommitsVisual => {
             "-- VISUAL --  j/k: расширить  Enter: срез  v: снять  Esc: отмена".into()
         }
