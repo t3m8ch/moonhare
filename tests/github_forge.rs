@@ -177,41 +177,39 @@ fn gh_is_not_run_in_a_repository_without_remotes() {
 }
 
 #[test]
-fn gh_is_not_run_when_no_remote_is_on_github() {
-    for url in [
-        "https://gitlab.com/owner/repo.git",
-        "git@gitlab.com:owner/repo.git",
-        "ssh://git@git.example.org:2222/owner/repo.git",
-        "/srv/git/repo.git",
-        "../repo",
-        "file:///srv/git/repo.git",
-    ] {
+fn gh_is_not_run_when_every_remote_is_a_path_on_disk() {
+    for url in ["/srv/git/repo.git", "../repo", "file:///srv/git/repo.git"] {
         let gh = FakeGh::replying(PR_JSON);
         let repo = with_remote(url);
+        repo.git(&["remote", "add", "backup", "/mnt/backup/repo.git"]);
 
         let err = github(gh.program(), &repo)
             .pull_request_for_branch("feature")
             .unwrap_err();
 
         assert!(matches!(err, ForgeError::Unavailable(_)), "{url}: {err:?}");
-        assert!(err.to_string().contains("GitHub"), "{url}: {err}");
+        assert!(err.to_string().contains("path on disk"), "{url}: {err}");
         assert_eq!(gh.calls(), Vec::<String>::new(), "{url}");
     }
 }
 
 #[test]
-fn gh_is_run_for_every_spelling_of_a_github_remote() {
+fn gh_decides_for_every_remote_over_the_network() {
+    // `gh` knows the hosts it is logged into and SSH aliases such as `work`
+    // with `HostName github.com`; moonhare does not guess.
     for url in [
         "https://github.com/owner/repo.git",
         "https://user@github.com/owner/repo",
         "git@github.com:owner/repo.git",
-        "ssh://git@github.com/owner/repo.git",
         "ssh://git@ssh.github.com:443/owner/repo.git",
+        "work:org/repo",
+        "https://GHE.Example.COM/owner/repo.git",
+        "https://gitlab.com/owner/repo.git",
     ] {
         let gh = FakeGh::replying(PR_JSON);
         let repo = with_remote(url);
-        // A second remote elsewhere does not hide the GitHub one.
-        repo.git(&["remote", "add", "mirror", "https://gitlab.com/o/r.git"]);
+        // A remote on disk beside it changes nothing.
+        repo.git(&["remote", "add", "backup", "/mnt/backup/repo.git"]);
 
         let pr = github(gh.program(), &repo)
             .pull_request_for_branch("feature")

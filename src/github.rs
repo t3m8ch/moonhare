@@ -105,7 +105,7 @@ impl GitHub {
     }
 
     fn view(&self, selector: &str) -> Result<PullRequest, ForgeError> {
-        self.check_github_remote()?;
+        self.check_network_remote()?;
         let out = self.run_with_timeout(
             self.command(&self.program)
                 .args(["pr", "view", "--json", PR_FIELDS, "--", selector]),
@@ -127,9 +127,11 @@ impl GitHub {
         command
     }
 
-    /// Whether some remote of the clone is on GitHub. Without one there is
-    /// nothing to ask, and `gh` is not even started.
-    fn check_github_remote(&self) -> Result<(), ForgeError> {
+    /// Whether the clone has a remote over the network. Without one there is
+    /// no Forge to ask, and `gh` is not even started. Which network remote is
+    /// GitHub is left to `gh`: it knows the hosts it is logged into and SSH
+    /// aliases, and says so when none of the remotes is on GitHub.
+    fn check_network_remote(&self) -> Result<(), ForgeError> {
         // If git itself cannot say, let `gh` find out.
         let Ok(out) = self.command("git").args(["remote", "-v"]).output() else {
             return Ok(());
@@ -143,69 +145,30 @@ impl GitHub {
             .filter_map(|line| line.split_whitespace().nth(1))
             .collect();
         if urls.is_empty() {
-            return Err(ForgeError::Unavailable(
-                "the repository has no git remote, so no GitHub pull request is looked up".into(),
-            ));
-        }
-        let known = known_hosts();
-        if urls
-            .iter()
-            .filter_map(|url| remote_host(url))
-            .any(|host| is_github_host(&host, &known))
-        {
-            Ok(())
-        } else {
             Err(ForgeError::Unavailable(
-                "no git remote points to GitHub, so no pull request is looked up".into(),
+                "the repository has no git remote, so no GitHub pull request is looked up".into(),
             ))
+        } else if urls.iter().all(|url| is_on_disk(url)) {
+            Err(ForgeError::Unavailable(
+                "every git remote is a path on disk, so no GitHub pull request is looked up".into(),
+            ))
+        } else {
+            Ok(())
         }
     }
 }
 
-/// The host of a remote URL, if it names one: `https://host/…`,
-/// `ssh://user@host:port/…` or the scp-like `user@host:path`. A path on disk
-/// has none.
-fn remote_host(url: &str) -> Option<String> {
-    let authority = match url.split_once("://") {
-        Some((_, rest)) => rest.split('/').next().unwrap_or_default(),
-        None => {
-            let (before, _) = url.split_once(':')?;
-            if before.contains('/') {
-                return None;
-            }
-            before
-        }
-    };
-    let host = authority.rsplit('@').next().unwrap_or_default();
-    let host = host.split(':').next().unwrap_or_default();
-    (!host.is_empty()).then(|| host.to_ascii_lowercase())
-}
-
-/// GitHub itself, a host `gh` is logged into, or a name that says GitHub
-/// (an SSH alias such as `github.com-work`, a GitHub Enterprise server).
-/// A wrong guess only costs one run of `gh`.
-fn is_github_host(host: &str, known: &[String]) -> bool {
-    host.contains("github") || known.iter().any(|k| k == host)
-}
-
-/// The hosts `gh` knows: `$GH_HOST` and those in its `hosts.yml`.
-fn known_hosts() -> Vec<String> {
-    let mut hosts: Vec<String> = std::env::var("GH_HOST").ok().into_iter().collect();
-    let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
-    let config = env("GH_CONFIG_DIR")
-        .map(PathBuf::from)
-        .or_else(|| env("XDG_CONFIG_HOME").map(|d| PathBuf::from(d).join("gh")))
-        .or_else(|| env("HOME").map(|d| PathBuf::from(d).join(".config/gh")));
-    if let Some(text) = config.and_then(|d| std::fs::read_to_string(d.join("hosts.yml")).ok()) {
-        // Every host is a key at the top level of the YAML.
-        hosts.extend(
-            text.lines()
-                .filter(|l| !l.starts_with([' ', '\t', '#', '-']))
-                .filter_map(|l| l.trim_end().strip_suffix(':'))
-                .map(|h| h.trim_matches(['"', '\'']).to_ascii_lowercase()),
-        );
+/// Whether a remote URL is a path on disk (`/srv/repo`, `../repo`,
+/// `file:///srv/repo`) rather than a host: `https://host/…`,
+/// `ssh://host/…` or the scp-like `[user@]host:path`.
+fn is_on_disk(url: &str) -> bool {
+    if let Some((scheme, _)) = url.split_once("://") {
+        return scheme == "file";
     }
-    hosts
+    match url.split_once(':') {
+        Some((before, _)) => before.is_empty() || before.contains('/'),
+        None => true,
+    }
 }
 
 /// Turn what `gh` said on failure into an error the reviewer can act on.

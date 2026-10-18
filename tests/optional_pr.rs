@@ -90,20 +90,44 @@ fn a_missing_gh_stays_quiet_too() {
 }
 
 #[test]
-fn without_a_github_remote_gh_is_never_started() {
+fn with_remotes_only_on_disk_gh_is_never_started() {
     let gh = FakeGh::replying(PR_JSON);
     let fx = feature_branch();
-    fx.git(&[
-        "remote",
-        "add",
-        "origin",
-        "https://gitlab.com/owner/repo.git",
-    ]);
+    fx.git(&["remote", "add", "origin", "/srv/git/repo.git"]);
 
     let mut h = review(&fx, gh.program());
 
     assert_eq!(gh.calls(), Vec::<String>::new());
     assert!(!h.screen().contains('⚠'));
+}
+
+#[test]
+fn an_ssh_alias_is_left_to_gh_and_no_github_behind_it_stays_quiet() {
+    let gh = FakeGh::with(
+        "",
+        "none of the git remotes configured for this repository point to a known GitHub host. \
+         To tell gh about a new GitHub host, please use `gh auth login`\n",
+        1,
+    );
+    let fx = feature_branch();
+    fx.git(&["remote", "add", "origin", "work:org/repo"]);
+
+    let mut h = review(&fx, gh.program());
+
+    assert_eq!(gh.calls().len(), 1);
+    let screen = h.screen();
+    assert!(!screen.contains('⚠'), "{screen}");
+}
+
+#[test]
+fn an_ssh_alias_to_github_finds_the_pull_request() {
+    let gh = FakeGh::replying(PR_JSON);
+    let fx = feature_branch();
+    fx.git(&["remote", "add", "origin", "work:org/repo"]);
+
+    let mut h = review(&fx, gh.program());
+
+    assert_eq!(h.session().pull_request().map(|p| p.number), Some(42));
 }
 
 #[test]
