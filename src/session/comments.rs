@@ -6,8 +6,6 @@ use std::collections::HashMap;
 use super::*;
 use crate::comments::{Comment, State, Target};
 
-const COMMENT_COLOR: Color = Color::Indexed(179);
-const DRAFT_COLOR: Color = Color::Indexed(215);
 /// Columns the boxes are indented by.
 const INDENT: usize = 5;
 
@@ -113,6 +111,7 @@ pub(super) fn wrap(text: &str, width: usize) -> Vec<String> {
 }
 
 fn comment_box(
+    theme: &Theme,
     width: usize,
     header: &str,
     body: &str,
@@ -128,7 +127,7 @@ fn comment_box(
     if let Some(footer) = footer {
         rows.push(CRow {
             text: format!("{pad}└ {footer}"),
-            style: Style::new().fg(DIM),
+            style: Style::new().fg(theme.dim),
         });
     }
     rows
@@ -230,11 +229,12 @@ impl Session {
                     let header = format!("Comment · {mode} · {}", lines_label(*side, *start, *end));
                     let body = format!("{text}{}", if *insert { "█" } else { "" });
                     under.entry(item).or_default().extend(comment_box(
+                        self.theme(),
                         width,
                         &header,
                         &body,
                         Some(editor_hint(*insert, *confirm)),
-                        Style::new().fg(DRAFT_COLOR),
+                        Style::new().fg(self.theme().draft),
                     ));
                 }
             }
@@ -248,11 +248,18 @@ impl Session {
 
     fn saved_box(&self, width: usize, c: &Comment, place: String) -> Vec<CRow> {
         let color = match c.state {
-            crate::comments::State::Open => COMMENT_COLOR,
-            _ => DIM,
+            crate::comments::State::Open => self.theme().comment,
+            _ => self.theme().dim,
         };
         let header = format!("Comment · {} · {place}", c.state.label());
-        comment_box(width, &header, &c.text, None, Style::new().fg(color))
+        comment_box(
+            self.theme(),
+            width,
+            &header,
+            &c.text,
+            None,
+            Style::new().fg(color),
+        )
     }
 
     /// The mode name at the start of the status line, padded to 8 columns.
@@ -352,7 +359,7 @@ impl Session {
             }
             buf.set_style(
                 Rect::new(area.x, y, area.width, 1),
-                Style::new().bg(Color::Indexed(24)),
+                Style::new().bg(self.theme().selection_bg),
             );
         }
     }
@@ -397,7 +404,9 @@ impl Session {
 
     pub(super) fn draw_range_chip(&self, buf: &mut Buffer, y: u16) {
         if let Some((x, text)) = self.range_chip() {
-            let style = Style::new().fg(Color::Indexed(16)).bg(COMMENT_COLOR);
+            let style = Style::new()
+                .fg(self.theme().on_accent)
+                .bg(self.theme().comment);
             buf.set_string(x, y, text, style);
         }
     }
@@ -569,8 +578,8 @@ impl Session {
                 continue;
             }
             let style = Style::new().fg(match c.state {
-                crate::comments::State::Open => COMMENT_COLOR,
-                _ => DIM,
+                crate::comments::State::Open => self.theme().comment,
+                _ => self.theme().dim,
             });
             let row = |text: String| CRow { text, style };
             rows.push(row(format!("   ┌ Comment · {}", c.state.label())));
@@ -648,9 +657,9 @@ impl Session {
         let (Some((area, what, lines)), Some(ed)) = (self.editor_popup(), &self.editor) else {
             return;
         };
-        clear_area(buf, area);
-        draw_box(buf, area, &what);
-        super::scroll::render_lines(buf, area, &lines, &ed.scroll);
+        clear_area(self.theme(), buf, area);
+        draw_box(self.theme(), buf, area, &what);
+        super::scroll::render_lines(self.theme(), buf, area, &lines, &ed.scroll);
     }
 
     /// Keys of Normal mode that deal with Comments.

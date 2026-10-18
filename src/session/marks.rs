@@ -137,7 +137,11 @@ impl Session {
         ];
         let first = area.y + area.height - 1 - PROGRESS_ROWS;
         for (i, row) in rows.iter().enumerate() {
-            let style = Style::new().fg(if i == 0 { FG } else { DIM });
+            let style = Style::new().fg(if i == 0 {
+                self.theme().fg
+            } else {
+                self.theme().dim
+            });
             buf.set_stringn(area.x + 1, first + i as u16, pad(row, width), width, style);
         }
     }

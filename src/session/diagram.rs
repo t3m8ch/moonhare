@@ -305,7 +305,7 @@ impl Session {
             return;
         };
         let area = self.overlay_area();
-        clear_area(buf, area);
+        clear_area(self.theme(), buf, area);
         let what = match &key.2 {
             DiagramSubject::File { path } | DiagramSubject::Fragment { path, .. } => path,
             DiagramSubject::Group { name, .. } => name,
@@ -315,11 +315,16 @@ impl Session {
         } else {
             ""
         };
-        draw_box(buf, area, &format!(" Diagram: {what}{cached} "));
+        draw_box(
+            self.theme(),
+            buf,
+            area,
+            &format!(" Diagram: {what}{cached} "),
+        );
         let lines: Vec<String> = (self.open_lines().iter())
             .map(|l| l.chars().skip(self.diagrams.hscroll).collect())
             .collect();
-        scroll::render_lines(buf, area, &lines, &self.diagrams.scroll);
+        scroll::render_lines(self.theme(), buf, area, &lines, &self.diagrams.scroll);
     }
 
     /// Width in cells of the text inside the overlay's border.
@@ -379,13 +384,13 @@ fn key_of(request: &DiagramRequest) -> Key {
 
 /// Blank the area an overlay is drawn over: text and colours of whatever was
 /// drawn there before are gone.
-pub(super) fn clear_area(buf: &mut Buffer, area: Rect) {
+pub(super) fn clear_area(theme: &Theme, buf: &mut Buffer, area: Rect) {
     let area = area.intersection(buf.area);
     for y in area.y..area.y + area.height {
         for x in area.x..area.x + area.width {
             let cell = &mut buf[(x, y)];
             cell.reset();
-            cell.set_fg(FG);
+            cell.set_fg(theme.fg);
         }
     }
 }

@@ -304,7 +304,11 @@ impl Session {
                 self.work_seconds("Explanation")
             ),
             State::Done(text) => {
-                return crate::markdown::render(text, scroll::text_cols(self.overlay_area()))
+                return crate::markdown::render(
+                    self.theme(),
+                    text,
+                    scroll::text_cols(self.overlay_area()),
+                )
             }
             State::Failed(error) => format!("Analyst: {error}"),
         };
@@ -320,8 +324,14 @@ impl Session {
             return;
         };
         let area = self.overlay_area();
-        clear_area(buf, area);
-        draw_box(buf, area, &overlay.title);
-        scroll::render_styled(buf, area, &self.explain_lines(), &overlay.scroll);
+        clear_area(self.theme(), buf, area);
+        draw_box(self.theme(), buf, area, &overlay.title);
+        scroll::render_styled(
+            self.theme(),
+            buf,
+            area,
+            &self.explain_lines(),
+            &overlay.scroll,
+        );
     }
 }

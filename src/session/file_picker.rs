@@ -76,8 +76,8 @@ impl Session {
 
     pub(super) fn render_file_picker(&self, buf: &mut Buffer, at: &At) {
         let area = self.file_picker_area();
-        clear_area(buf, area);
-        draw_box(buf, area, " Pick a file ");
+        clear_area(self.theme(), buf, area);
+        draw_box(self.theme(), buf, area, " Pick a file ");
         let inner_w = area.width.saturating_sub(2) as usize;
         let rows = self.picker_rows();
         let cursor = self.picker_cursor(&rows, at);
@@ -97,7 +97,7 @@ impl Session {
             area.y + area.height - 2,
             fit(hint, inner_w, false),
             inner_w,
-            Style::new().fg(DIM),
+            Style::new().fg(self.theme().dim),
         );
     }
 }

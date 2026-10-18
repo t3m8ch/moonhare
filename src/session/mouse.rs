@@ -39,8 +39,6 @@ struct Click {
     count: u8,
 }
 
-pub(super) const SELECTION_BG: Color = Color::Indexed(24);
-
 /// Clicks closer in time than this chain into a double or triple click.
 const MULTI_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
 
@@ -386,7 +384,7 @@ impl Session {
                 if x >= limit || x >= (area.x + area.width) as usize {
                     break;
                 }
-                buf[(x as u16, y)].set_bg(SELECTION_BG);
+                buf[(x as u16, y)].set_bg(self.theme().selection_bg);
             }
         }
     }

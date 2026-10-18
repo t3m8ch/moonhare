@@ -7,6 +7,7 @@ use moonhare::git::Target;
 use moonhare::github::GitHub;
 use moonhare::opening::Opening;
 use moonhare::session::Session;
+use moonhare::theme::{self, Choice};
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
 
@@ -21,15 +22,28 @@ fn main() -> ExitCode {
     let (width, height) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let usage = || {
-        eprintln!("usage: moonhare [--lang <code>] [--effort <low|medium|high|xhigh|max>] [--model <name>] [<branch> | <base>..<head> | --pr <number>]")
+        eprintln!("usage: moonhare [--lang <code>] [--effort <low|medium|high|xhigh|max>] [--model <name>] [--theme <light|dark|auto>] [<branch> | <base>..<head> | --pr <number>]")
     };
-    let (Ok(language), Ok(effort), Ok(model)) = (
+    let (Ok(language), Ok(effort), Ok(model), Ok(theme)) = (
         take_flag_value(&mut args, "--lang"),
         take_flag_value(&mut args, "--effort"),
         take_flag_value(&mut args, "--model"),
+        take_flag_value(&mut args, "--theme"),
     ) else {
         usage();
         return ExitCode::FAILURE;
+    };
+    let theme = theme.or_else(|| {
+        std::env::var("MOONHARE_THEME")
+            .ok()
+            .filter(|t| !t.is_empty())
+    });
+    let choice = match theme.as_deref().map(str::parse::<Choice>).transpose() {
+        Ok(choice) => choice.unwrap_or_default(),
+        Err(e) => {
+            eprintln!("moonhare: {e}");
+            return ExitCode::FAILURE;
+        }
     };
     let forge: std::sync::Arc<GitHub> = std::sync::Arc::new(GitHub::new());
     let mut terminal = None;
@@ -101,6 +115,14 @@ fn main() -> ExitCode {
     if let Some(language) = language {
         session.set_language(&language);
     }
+    // `auto` follows the background `$COLORFGBG` names; dark without it.
+    let colorfgbg = std::env::var("COLORFGBG").ok();
+    session.set_terminal_background(
+        colorfgbg
+            .as_deref()
+            .and_then(theme::background_from_colorfgbg),
+    );
+    session.set_choice(choice);
     session.set_analyst(std::sync::Arc::new(ClaudeAnalyst::new()));
 
     let mut terminal = terminal.unwrap_or_else(ratatui::init);
@@ -202,10 +224,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Re
             wake
         };
         redraw = if event::poll(wake)? {
-            session.handle(event::read()?);
             // Typing must not starve the watch on the branch: the time spent
-            // here counts too.
-            session.watch(last.elapsed());
+            // here counts too, before the event, which comes at that time.
+            session.input(last.elapsed(), event::read()?);
             true
         } else {
             session.elapse(wake.max(last.elapsed()))
