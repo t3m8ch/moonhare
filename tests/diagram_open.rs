@@ -117,21 +117,35 @@ fn o_writes_the_diagram_as_svg_and_hands_it_to_the_system_viewer() {
     h.keys("o");
     let opened = wait_for_lines(&log, 1);
     assert_eq!(opened.len(), 1, "{opened:?}");
-    let svg = Path::new(&opened[0]);
-    assert!(svg.starts_with(&tmp), "{svg:?}");
-    assert_eq!(svg.extension().unwrap(), "svg");
-    let text = std::fs::read_to_string(svg).unwrap();
+    // The viewer gets a page that shows the SVG beside it as an image, and
+    // lets it load nothing else: a browser runs no script of an image.
+    let page = Path::new(&opened[0]);
+    assert!(page.starts_with(&tmp), "{page:?}");
+    assert_eq!(page.extension().unwrap(), "html");
+    let svg = page.with_extension("svg");
+    let html = std::fs::read_to_string(page).unwrap();
+    let name = svg.file_name().unwrap().to_str().unwrap();
+    assert!(html.contains(&format!("<img src=\"{name}\"")), "{html}");
+    assert!(
+        html.contains("Content-Security-Policy") && html.contains("default-src 'none'"),
+        "{html}"
+    );
+    assert!(
+        !html.contains("<svg") && !html.contains("<script"),
+        "{html}"
+    );
+    let text = std::fs::read_to_string(&svg).unwrap();
     assert!(text.contains("<svg") && text.contains("Collect"), "{text}");
     let screen = wait_for_screen(&mut h, "Opened");
     assert!(screen.contains("Opened"), "{screen}");
     assert!(!left_over.exists() && fresh.exists());
-    let first = svg.to_path_buf();
+    let first = (svg.clone(), page.to_path_buf());
 
     // The diagram of the Summary, from the Summary.
     h.keys("q<Space>so");
     let opened = wait_for_lines(&log, 2);
     assert_eq!(opened.len(), 2, "{opened:?}");
-    let text = std::fs::read_to_string(&opened[1]).unwrap();
+    let text = std::fs::read_to_string(Path::new(&opened[1]).with_extension("svg")).unwrap();
     assert!(text.contains("Summarised"), "{text}");
 
     // A viewer that fails is reported, with where the file is.
@@ -146,8 +160,8 @@ fn o_writes_the_diagram_as_svg_and_hands_it_to_the_system_viewer() {
     );
 
     // The session takes the SVGs it wrote with it.
-    assert!(first.exists());
+    assert!(first.0.exists() && first.1.exists());
     drop(h);
-    assert!(!first.exists(), "{first:?}");
+    assert!(!first.0.exists() && !first.1.exists(), "{first:?}");
     assert!(fresh.exists());
 }

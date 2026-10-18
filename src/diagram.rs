@@ -198,7 +198,7 @@ fn sandboxed<T: Send + 'static>(
 const CRASHED: &str = "the renderer crashed on this diagram";
 
 /// What a diagram that took too long to draw shows.
-const TOO_SLOW: &str = "the diagram took too long to draw";
+pub const TOO_SLOW: &str = "the diagram took too long to draw";
 
 /// A text over [`MAX_SOURCE`] is not drawn.
 fn too_long(mermaid: &str) -> Result<(), String> {
@@ -246,6 +246,8 @@ struct Shared {
     drawn: HashMap<DrawingKey, Result<Arc<Vec<String>>, String>>,
     /// Layouts being drawn now.
     drawing: HashSet<DrawingKey>,
+    /// How many layouts were drawn (or failed) so far.
+    done: u64,
 }
 
 impl Default for Drawings {
@@ -299,13 +301,26 @@ impl Drawings {
         .unwrap_or_else(|| Err(TOO_SLOW.into()))
     }
 
-    /// [`Self::fit`] within [`RENDER_TIMEOUT`] on a thread of its own; `done`
-    /// gets the picture there.
+    /// How many layouts were drawn so far: when it grows after a picture
+    /// was [`TOO_SLOW`], one given up on may have come since.
+    pub fn generation(&self) -> u64 {
+        self.shared.lock().unwrap_or_else(|e| e.into_inner()).done
+    }
+
+    /// Whether a layout is being drawn, waited for or not.
+    pub fn drawing_now(&self) -> bool {
+        let shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        !shared.drawing.is_empty()
+    }
+
+    /// [`Self::fit`] within `budget` on a thread of its own; `done` gets the
+    /// picture there.
     pub fn fit_later(
         &self,
         mermaid: String,
         room: Room,
         density: Density,
+        budget: Duration,
         done: impl FnOnce(Result<Vec<String>, String>) + Send + 'static,
     ) {
         silence_renderer_panics();
@@ -316,7 +331,7 @@ impl Drawings {
         let spawned = std::thread::Builder::new()
             .name(RENDER_THREAD.into())
             .spawn(move || {
-                let picture = drawings.fit(&mermaid, room, density, RENDER_TIMEOUT);
+                let picture = drawings.fit(&mermaid, room, density, budget);
                 let done = on_thread.lock().unwrap_or_else(|e| e.into_inner()).take();
                 if let Some(done) = done {
                     done(picture);
@@ -370,6 +385,7 @@ impl Drawings {
                 };
                 let mut kept = shared.lock().unwrap_or_else(|e| e.into_inner());
                 kept.drawing.remove(&key);
+                kept.done += 1;
                 if kept.drawn.len() >= DRAWINGS {
                     kept.drawn.clear();
                 }
@@ -947,26 +963,39 @@ pub fn sanitize(text: &str) -> String {
         .collect()
 }
 
-/// Statements that only style a diagram or make it do something: they mean
-/// nothing to a picture in the terminal, and `mmdflux` writes their values
-/// into the SVG as they are, so a value can open an attribute or a tag of
-/// its own (`style A fill:#f00"/><script>…`). The Mermaid text comes from
-/// the Analyst, which read code under review: it is not trusted.
+/// Statements that only style a diagram or make it do something, by their
+/// first word in lower case: they mean nothing to a picture in the
+/// terminal, and `mmdflux` writes their values into the SVG as they are, so
+/// a value can open an attribute or a tag of its own (`style A
+/// fill:#f00"/><script>…`). The Mermaid text comes from the Analyst, which
+/// read code under review: it is not trusted. (`class` and `link` are
+/// handled apart: in a class diagram `class` declares a class.)
 const STYLING: &[&str] = &[
     "style",
-    "classDef",
-    "class",
-    "linkStyle",
+    "classdef",
+    "linkstyle",
     "click",
     "callback",
+    "cssclass",
 ];
 
-/// `mermaid` without its styling: the statements of [`STYLING`], front
+/// The kind of diagram, as far as its styling statements go.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Kind {
+    Flowchart,
+    Class,
+    Other,
+}
+
+/// `mermaid` without its styling: the statements of [`STYLING`] (and
+/// `class A,B name` outside class diagrams, `link` inside them), front
 /// matter (`---` … `---`, where a theme is configured) and directives
-/// (`%%{init: …}%%`). The rest is left as it is.
+/// (`%%{init: …}%%`), whatever their case, whether lines end in `\n`, `\r\n`
+/// or `\r`. The rest is left as it is. This is the first guard of the SVG;
+/// [`check_svg`] is the second.
 pub fn without_styling(mermaid: &str) -> String {
-    let mut out = Vec::new();
-    let mut lines = mermaid.lines().peekable();
+    let text = mermaid.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines = text.lines().peekable();
     // Front matter only opens the text.
     while lines.peek().is_some_and(|l| l.trim().is_empty()) {
         lines.next();
@@ -979,101 +1008,346 @@ pub fn without_styling(mermaid: &str) -> String {
             }
         }
     }
+    let mut kind = None;
     let mut in_directive = false;
+    let mut out = Vec::new();
     for line in lines {
         let trimmed = line.trim();
         if in_directive || trimmed.starts_with("%%{") {
             in_directive = !trimmed.ends_with("}%%");
             continue;
         }
-        // Statements of a flowchart may share a line, `;` between them.
-        let mut kept = Vec::new();
-        for statement in line.split(';') {
-            let word = statement.split_whitespace().next().unwrap_or("");
-            if STYLING.contains(&word) {
-                break;
-            }
-            kept.push(statement);
-        }
-        let kept = kept.join(";");
-        if kept.trim().is_empty() && !trimmed.is_empty() {
+        if kind.is_none() && !trimmed.is_empty() && !trimmed.starts_with("%%") {
+            let first = trimmed.split_whitespace().next().unwrap_or("");
+            kind = Some(match first.to_ascii_lowercase().as_str() {
+                "graph" | "flowchart" | "flowchart-elk" => Kind::Flowchart,
+                "classdiagram" | "classdiagram-v2" => Kind::Class,
+                _ => Kind::Other,
+            });
+            out.push(line.to_string());
             continue;
         }
-        out.push(kept);
+        let kind = kind.unwrap_or(Kind::Other);
+        // Statements of a flowchart may share a line, `;` between them.
+        let statements = match kind {
+            Kind::Flowchart => statements(line),
+            _ => vec![line],
+        };
+        let kept: Vec<&str> = statements
+            .into_iter()
+            .filter(|statement| !styles(statement, kind))
+            .collect();
+        if kept.iter().all(|s| s.trim().is_empty()) && !trimmed.is_empty() {
+            continue;
+        }
+        out.push(kept.join(";"));
     }
     out.join("\n")
 }
 
-/// `Ok` when `svg` has nothing in it that runs or reaches out: no script,
-/// no handler of events (`on…=`), no links (`href`, `src`), no `url(…)`
-/// but to a part of itself (`url(#arrowhead)`), no foreign content and no
-/// declarations (`<!…>`, `<?…?>`). Only the tags are looked at: the text in
-/// between is escaped by `mmdflux`.
+/// The statements of a line of a flowchart: split at `;`, but not inside
+/// quotes or brackets (a label may hold one).
+fn statements(line: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let (mut depth, mut quoted, mut from) = (0usize, false, 0);
+    for (i, c) in line.char_indices() {
+        match c {
+            '"' => quoted = !quoted,
+            '[' | '(' | '{' if !quoted => depth += 1,
+            ']' | ')' | '}' if !quoted => depth = depth.saturating_sub(1),
+            ';' if !quoted && depth == 0 => {
+                out.push(&line[from..i]);
+                from = i + 1;
+            }
+            _ => {}
+        }
+    }
+    out.push(&line[from..]);
+    out
+}
+
+/// Whether `statement` only styles a diagram of `kind` or makes it do
+/// something. A statement with an edge or a message in it does neither: its
+/// first word names a node.
+fn styles(statement: &str, kind: Kind) -> bool {
+    let mut words = statement.split_whitespace();
+    let Some(first) = words.next() else {
+        return false;
+    };
+    let rest = words.count();
+    if rest == 0
+        || ["->", "--", "==", "-."]
+            .iter()
+            .any(|edge| statement.contains(edge))
+    {
+        return false;
+    }
+    let first = first.to_ascii_lowercase();
+    match first.as_str() {
+        "class" => kind != Kind::Class && rest >= 2 && !statement.contains('{'),
+        "link" => kind == Kind::Class,
+        word => STYLING.contains(&word),
+    }
+}
+
+/// The elements an SVG of `mmdflux` is made of: anything else is refused.
+const SVG_ELEMENTS: &[&str] = &[
+    "svg", "defs", "marker", "g", "path", "rect", "circle", "ellipse", "line", "polyline",
+    "polygon", "text", "tspan", "title", "desc",
+];
+
+/// The attributes those elements have: anything else (an `on…` handler, an
+/// `href`) is refused.
+const SVG_ATTRIBUTES: &[&str] = &[
+    "xmlns",
+    "width",
+    "height",
+    "viewBox",
+    "preserveAspectRatio",
+    "style",
+    "font-family",
+    "font-size",
+    "font-weight",
+    "font-style",
+    "class",
+    "id",
+    "data-id",
+    "data-look",
+    "d",
+    "fill",
+    "fill-opacity",
+    "fill-rule",
+    "stroke",
+    "stroke-width",
+    "stroke-dasharray",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "stroke-opacity",
+    "opacity",
+    "marker-end",
+    "marker-start",
+    "markerWidth",
+    "markerHeight",
+    "markerUnits",
+    "orient",
+    "refX",
+    "refY",
+    "points",
+    "r",
+    "rx",
+    "ry",
+    "cx",
+    "cy",
+    "x",
+    "y",
+    "x1",
+    "x2",
+    "y1",
+    "y2",
+    "dx",
+    "dy",
+    "transform",
+    "text-anchor",
+    "dominant-baseline",
+];
+
+/// `Ok` when `svg` is an SVG document made only of [`SVG_ELEMENTS`] with
+/// [`SVG_ATTRIBUTES`], and no value of an attribute reaches out: no `url(…)`
+/// but to a part of itself (`url(#arrowhead)`), no `javascript:` or `data:`,
+/// no CSS escapes. The document is read as XML, quotes and entities and
+/// all; anything it cannot read (a comment, a declaration, a stray `<`) is
+/// refused too.
 pub fn check_svg(svg: &str) -> Result<(), String> {
-    const TAGS: &[&str] = &[
-        "script",
-        "foreignobject",
-        "iframe",
-        "object",
-        "embed",
-        "style",
-        "a",
-        "image",
-        "use",
-        "animate",
-        "set",
-        "handler",
-        "listener",
-    ];
-    const NAMES: &[&str] = &["href", "src", "xlink:href", "action", "formaction"];
-    const VALUES: &[&str] = &[
+    let refuse = |why: String| Err(format!("the SVG has {why} in it: it is not opened"));
+    let bytes = svg.as_bytes();
+    let mut at = 0;
+    let mut open: Vec<&str> = Vec::new();
+    let mut roots = 0;
+    let name_at = |from: usize| -> usize {
+        let mut end = from;
+        while end < bytes.len()
+            && (bytes[end].is_ascii_alphanumeric()
+                || matches!(bytes[end], b'-' | b'_' | b':' | b'.'))
+        {
+            end += 1;
+        }
+        end
+    };
+    let skip_space = |mut i: usize| -> usize {
+        while i < bytes.len() && bytes[i].is_ascii_whitespace() {
+            i += 1;
+        }
+        i
+    };
+    while at < bytes.len() {
+        let Some(lt) = svg[at..].find('<').map(|i| at + i) else {
+            if let Err(e) = decode(&svg[at..]) {
+                return refuse(e);
+            }
+            if !open.is_empty() {
+                return refuse("an element left open".into());
+            }
+            break;
+        };
+        let text = &svg[at..lt];
+        if open.is_empty() && !text.trim().is_empty() {
+            return refuse("text outside of the picture".into());
+        }
+        if let Err(e) = decode(text) {
+            return refuse(e);
+        }
+        let mut i = lt + 1;
+        if bytes.get(i) == Some(&b'/') {
+            let end = name_at(i + 1);
+            let name = &svg[i + 1..end];
+            i = skip_space(end);
+            if bytes.get(i) != Some(&b'>') || open.pop() != Some(name) {
+                return refuse(format!("a stray </{name}>"));
+            }
+            at = i + 1;
+            continue;
+        }
+        let end = name_at(i);
+        let name = &svg[i..end];
+        if name.is_empty() {
+            return refuse("a declaration or a stray <".into());
+        }
+        if !SVG_ELEMENTS.contains(&name) {
+            return refuse(format!("a <{name}>"));
+        }
+        if open.is_empty() {
+            roots += 1;
+            if roots > 1 || name != "svg" {
+                return refuse(format!("a <{name}> outside of the picture"));
+            }
+        }
+        i = end;
+        let mut seen: Vec<&str> = Vec::new();
+        loop {
+            let after = skip_space(i);
+            match bytes.get(after) {
+                Some(b'>') => {
+                    open.push(name);
+                    i = after + 1;
+                    break;
+                }
+                Some(b'/') if bytes.get(after + 1) == Some(&b'>') => {
+                    i = after + 2;
+                    break;
+                }
+                Some(_) if after > i => {}
+                _ => return refuse(format!("a <{name}> that does not read")),
+            }
+            let end = name_at(after);
+            let attribute = &svg[after..end];
+            if attribute.is_empty() || !SVG_ATTRIBUTES.contains(&attribute) {
+                return refuse(format!("an attribute {attribute:?}"));
+            }
+            if seen.contains(&attribute) {
+                return refuse(format!("the attribute {attribute} twice"));
+            }
+            seen.push(attribute);
+            let eq = skip_space(end);
+            if bytes.get(eq) != Some(&b'=') {
+                return refuse(format!("an attribute {attribute} without a value"));
+            }
+            let quote_at = skip_space(eq + 1);
+            let quote = match bytes.get(quote_at) {
+                Some(&q @ (b'"' | b'\'')) => q,
+                _ => return refuse(format!("an attribute {attribute} without quotes")),
+            };
+            let Some(close) = svg[quote_at + 1..]
+                .find(quote as char)
+                .map(|j| quote_at + 1 + j)
+            else {
+                return refuse(format!("an attribute {attribute} left open"));
+            };
+            let raw = &svg[quote_at + 1..close];
+            if raw.contains('<') {
+                return refuse(format!("a < in the attribute {attribute}"));
+            }
+            let value = match decode(raw) {
+                Ok(value) => value,
+                Err(e) => return refuse(e),
+            };
+            if let Err(e) = inert(&value) {
+                return refuse(format!("{e} in the attribute {attribute}"));
+            }
+            i = close + 1;
+        }
+        at = i;
+    }
+    if roots == 0 {
+        return refuse("no picture".into());
+    }
+    Ok(())
+}
+
+/// `text` with its entities decoded; an entity XML does not know is refused
+/// (an SVG of `mmdflux` declares none of its own).
+fn decode(text: &str) -> Result<String, String> {
+    let mut out = String::new();
+    let mut rest = text;
+    while let Some(amp) = rest.find('&') {
+        out.push_str(&rest[..amp]);
+        let after = &rest[amp + 1..];
+        let Some(semi) = after.find(';').filter(|&s| s <= 10) else {
+            return Err("a stray &".into());
+        };
+        let entity = &after[..semi];
+        let c = match entity {
+            "lt" => Some('<'),
+            "gt" => Some('>'),
+            "amp" => Some('&'),
+            "quot" => Some('"'),
+            "apos" => Some('\''),
+            _ => entity
+                .strip_prefix("#x")
+                .or_else(|| entity.strip_prefix("#X"))
+                .map(|hex| u32::from_str_radix(hex, 16))
+                .or_else(|| entity.strip_prefix('#').map(|dec| dec.parse::<u32>()))
+                .and_then(Result::ok)
+                .and_then(char::from_u32),
+        };
+        match c {
+            Some(c) => out.push(c),
+            None => return Err(format!("an entity &{entity};")),
+        }
+        rest = &after[semi + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// `Ok` when the value of an attribute reaches nothing outside the picture.
+fn inert(value: &str) -> Result<(), String> {
+    let squeezed: String = value
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if squeezed.contains('\\') {
+        return Err("a CSS escape".into());
+    }
+    for active in [
         "javascript:",
+        "vbscript:",
         "data:",
         "expression(",
         "@import",
-        "vbscript:",
-    ];
-    let refuse = |why: &str| Err(format!("the SVG has {why} in it: it is not opened"));
-    let lower = svg.to_ascii_lowercase();
-    let mut rest = lower.as_str();
-    while let Some(at) = rest.find('<') {
-        let after = &rest[at + 1..];
-        let end = after.find('>').unwrap_or(after.len());
-        let tag = &after[..end];
-        rest = &after[end..];
-        if tag.starts_with('!') || tag.starts_with('?') {
-            return refuse("a declaration");
+        "image-set(",
+    ] {
+        if squeezed.contains(active) {
+            return Err(active.to_string());
         }
-        let name = tag
-            .trim_start_matches('/')
-            .split(|c: char| c.is_whitespace() || c == '/')
-            .next()
-            .unwrap_or("");
-        if TAGS.contains(&name) {
-            return refuse(&format!("a <{name}>"));
-        }
-        // Attribute names: a word right before `=`.
-        for (i, _) in tag.match_indices('=') {
-            let before = tag[..i].trim_end();
-            let start = before
-                .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == ':' || c == '-' || c == '_'))
-                .map_or(0, |p| p + 1);
-            let attribute = &before[start..];
-            if attribute.starts_with("on") || NAMES.contains(&attribute) {
-                return refuse(&format!("an attribute {attribute}"));
-            }
-        }
-        if let Some(value) = VALUES.iter().find(|v| tag.contains(*v)) {
-            return refuse(value);
-        }
-        let mut urls = tag.match_indices("url(");
-        if urls.any(|(i, _)| {
-            !tag[i + 4..]
-                .trim_start_matches(['\'', '"', ' '])
-                .starts_with('#')
-        }) {
-            return refuse("a url(…) outside of it");
-        }
+    }
+    let mut urls = squeezed.match_indices("url(");
+    if urls.any(|(i, _)| {
+        !squeezed[i + 4..]
+            .trim_start_matches(['\'', '"'])
+            .starts_with('#')
+    }) {
+        return Err("a url(…) outside of it".into());
     }
     Ok(())
 }

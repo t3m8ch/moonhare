@@ -207,6 +207,13 @@ const ATTACKS: &[&str] = &[
     "%%{init: {'themeVariables': {'primaryColor': '\"/><script>alert(7)</script>'}}}%%\ngraph LR\n  A --> B",
     "graph LR\n  A[\"<script>alert(8)</script>\"] -->|<img src=x onerror=alert(9)>| B",
     "sequenceDiagram\n  A->>B: <script>alert(10)</script>",
+    // Any case, any end of line, a `>` inside quotes.
+    "graph TD\n A-->B\n STYLE A fill:#f00\" foo=\"a>\" onmouseover=\"alert(document.domain)",
+    "graph TD\r A-->B\r style A fill:#f00\" foo=\"a>\" onmouseover=\"alert(11)",
+    "graph TD\r\n A-->B\r\n Style A fill:#f00\" onmouseover=\"alert(12)",
+    "graph TD\n A-->B\n LINKSTYLE 0 stroke:red\" foo=\"a>\" onmouseover=\"alert(13)",
+    "graph TD\n A-->B\n CLASSDEF c fill:red\" foo=\"a>\" onmouseover=\"alert(14)\n CLASS A c",
+    "graph TD\n A-->B\n style A fill:#f00\" x=\"--\" onmouseover=\"alert(15)",
 ];
 
 #[test]
@@ -236,6 +243,20 @@ fn an_svg_has_nothing_in_it_that_runs_or_reaches_out() {
 #[test]
 fn an_svg_with_anything_active_is_refused() {
     for active in [
+        "<svg><rect fill=\"#f00\" foo=\"a>\" onmouseover=\"alert(1)\"/></svg>",
+        "<svg><rect fill='a>' onmouseover='alert(1)'/></svg>",
+        "<svg><rect fill=\"#f00\" ONMOUSEOVER=\"alert(1)\"/></svg>",
+        "<svg><rect fill=\"&#117;rl(http://evil.example)\"/></svg>",
+        "<svg><rect style=\"fill:u\\72l(http://evil.example)\"/></svg>",
+        "<svg><rect fill=\"#f00\"/><!-- x --></svg>",
+        "<svg><text><![CDATA[x]]></text></svg>",
+        "<svg><rect fill=\"&evil;\"/></svg>",
+        "<svg><rect fill=\"#f00\" fill=\"#0f0\"/></svg>",
+        "<svg><rect fill=#f00 /></svg>",
+        "<svg><g></svg>",
+        "<svg></svg><svg></svg>",
+        "<rect/>",
+        "",
         "<svg><script>alert(1)</script></svg>",
         "<svg><rect onload=\"alert(1)\"/></svg>",
         "<svg><rect fill=\"#f00\" onmouseover = 'x'/></svg>",
@@ -289,4 +310,51 @@ fn front_matter_directives_and_styling_are_left_out_and_nothing_else() {
         without_styling(source),
         "graph LR\n  A[style] --> B\n  %% a comment\n  B --> C"
     );
+}
+
+#[test]
+fn each_guard_of_the_svg_holds_on_its_own() {
+    // Left out by the first guard, the styling cannot spoil the picture.
+    let styled = "graph TD\n A-->B\n STYLE A fill:#f00\" onmouseover=\"alert(1)";
+    let picture = svg(styled).unwrap();
+    assert!(!picture.contains("onmouseover"), "{picture}");
+    // Past the first guard (an edge-like `--` in it), the second refuses it.
+    let past = "graph TD\n A-->B\n style A fill:#f00\" x=\"--\" onmouseover=\"alert(1)";
+    assert!(without_styling(past).contains("onmouseover"));
+    let err = svg(past).unwrap_err();
+    assert!(err.contains("not opened"), "{err}");
+}
+
+#[test]
+fn styling_is_left_out_whatever_its_case_and_ends_of_lines() {
+    for source in [
+        "graph TD\r  A-->B\r  style A fill:red\r  B-->C",
+        "graph TD\r\n  A-->B\r\n  STYLE A fill:red\r\n  B-->C",
+        "graph TD\n  A-->B\n  ClassDef c fill:red\n  CLASS A c\n  LinkStyle 0 stroke:red\n  B-->C",
+    ] {
+        assert_eq!(
+            without_styling(source),
+            "graph TD\n  A-->B\n  B-->C",
+            "{source:?}"
+        );
+    }
+}
+
+#[test]
+fn what_only_looks_like_styling_is_kept() {
+    for source in [
+        // A class diagram declares classes with `class`.
+        "classDiagram\n  class Animal{\n    +String name\n  }\n  class List~T~\n  Animal <|-- Duck",
+        // `;` inside a label or a message.
+        "graph TD\n  A[\"x; class y z\"] --> B(\"a; style b\")",
+        "sequenceDiagram\n  S->>S: style check; class names",
+        // An edge from a node whose name is a keyword.
+        "graph TD\n  Style --> Click",
+    ] {
+        assert_eq!(without_styling(source), source);
+    }
+    let picture = draw("classDiagram\n  class Animal{\n    +String name\n  }")
+        .unwrap()
+        .join("\n");
+    assert!(picture.contains("name"), "{picture}");
 }

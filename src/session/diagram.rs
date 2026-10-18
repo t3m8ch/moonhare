@@ -69,6 +69,14 @@ struct Pictures {
     queue: RefCell<VecDeque<(PictureKey, String)>>,
     /// The picture being laid out now.
     running: Cell<Option<PictureKey>>,
+    /// [`Drawings::generation`] when it started.
+    started_at: Cell<u64>,
+    /// The pictures that were too slow to lay out, and the generation of
+    /// the drawings then: once a layout given up on comes, they are laid out
+    /// again, so "too long" goes away by itself.
+    too_slow: RefCell<HashMap<PictureKey, u64>>,
+    /// How long laying out one picture may take.
+    budget: Duration,
     sender: Sender<Laid>,
     receiver: Receiver<Laid>,
 }
@@ -82,6 +90,9 @@ impl Default for Pictures {
             latest: RefCell::default(),
             queue: RefCell::default(),
             running: Cell::new(None),
+            started_at: Cell::new(0),
+            too_slow: RefCell::default(),
+            budget: crate::diagram::RENDER_TIMEOUT,
             sender,
             receiver,
         }
@@ -97,6 +108,11 @@ impl Pictures {
             hasher.finish()
         };
         let key = (hash, room, density);
+        let since = self.too_slow.borrow().get(&key).copied();
+        if since.is_some_and(|since| self.drawings.generation() > since) {
+            self.too_slow.borrow_mut().remove(&key);
+            self.drawn.borrow_mut().remove(&key);
+        }
         if let Some(done) = self.drawn.borrow().get(&key) {
             return match done {
                 Ok(lines) => Picture::Ready(lines.clone()),
@@ -143,16 +159,21 @@ impl Pictures {
             return;
         };
         self.running.set(Some(key));
+        self.started_at.set(self.drawings.generation());
         let sender = self.sender.clone();
         let (_, room, density) = key;
+        let budget = self.budget;
         self.drawings
-            .fit_later(mermaid, room, density, move |done| {
+            .fit_later(mermaid, room, density, budget, move |done| {
                 let _ = sender.send((key, done));
             });
     }
 
     /// Keep a picture that was laid out and start the next.
     fn take(&self, (key, done): Laid) {
+        if done.as_ref().is_err_and(|e| e == crate::diagram::TOO_SLOW) {
+            (self.too_slow.borrow_mut()).insert(key, self.started_at.get());
+        }
         self.keep(key, done);
         if self.running.get() == Some(key) {
             self.running.set(None);
@@ -170,16 +191,27 @@ impl Pictures {
         came
     }
 
+    /// Whether a picture is being laid out, or one too slow waits for a
+    /// layout still being drawn.
     fn busy(&self) -> bool {
-        self.running.get().is_some() || !self.queue.borrow().is_empty()
+        self.running.get().is_some()
+            || !self.queue.borrow().is_empty()
+            || (!self.too_slow.borrow().is_empty() && self.drawings.drawing_now())
     }
 
-    /// Block until every picture asked for is laid out.
+    /// Block until every picture asked for is laid out (a layout given up
+    /// on is waited for too: the next frame lays its picture out again).
     fn wait(&self) {
-        while self.running.get().is_some() {
-            match self.receiver.recv() {
-                Ok(laid) => self.take(laid),
-                Err(_) => break,
+        loop {
+            if self.running.get().is_some() {
+                match self.receiver.recv() {
+                    Ok(laid) => self.take(laid),
+                    Err(_) => break,
+                }
+            } else if self.busy() {
+                std::thread::sleep(Duration::from_millis(5));
+            } else {
+                break;
             }
         }
     }
@@ -206,7 +238,8 @@ const SVG_KEPT: Duration = Duration::from_secs(60);
 /// SVGs of earlier sessions that are older than this are removed too.
 const SVG_LEFT_OVER: Duration = Duration::from_secs(24 * 60 * 60);
 
-/// The prefix and suffix of the name of an SVG `o` writes.
+/// The prefix and suffix of the name of an SVG `o` writes; its page beside
+/// it ends in `.html` instead.
 const SVG_NAME: (&str, &str) = ("moonhare-diagram-", ".svg");
 
 impl Svgs {
@@ -235,7 +268,8 @@ impl Svgs {
         for entry in entries.flatten() {
             let name = entry.file_name();
             let name = name.to_string_lossy();
-            if !(name.starts_with(SVG_NAME.0) && name.ends_with(SVG_NAME.1)) {
+            let ours = name.ends_with(SVG_NAME.1) || name.ends_with(".html");
+            if !(name.starts_with(SVG_NAME.0) && ours) {
                 continue;
             }
             let modified = entry.metadata().and_then(|m| m.modified());
@@ -373,8 +407,9 @@ impl Session {
         })
     }
 
-    /// Draw `mermaid` as SVG into a temporary file and hand it to the system
-    /// viewer ([`system_viewer`]), which shows it as a picture, at any zoom.
+    /// Draw `mermaid` as SVG into a temporary file and hand the system viewer
+    /// ([`system_viewer`]) a page that shows it as an image ([`write_page`]),
+    /// at any zoom.
     /// The work is done on a thread of its own: what came of it is said
     /// when it is done.
     fn open_outside(&mut self, mermaid: &str) {
@@ -1143,6 +1178,11 @@ fn show_outside(mermaid: &str, viewer: &OsString, svgs: &Svgs) -> Shown {
         Err(e) => return failed(format!("Cannot write the SVG of the diagram: {e}")),
     };
     svgs.add(path.clone());
+    let path = match write_page(&path) {
+        Ok(page) => page,
+        Err(e) => return failed(format!("Cannot write the page of the diagram: {e}")),
+    };
+    svgs.add(path.clone());
     let shown = path.display().to_string();
     let name = viewer.to_string_lossy().into_owned();
     let child = std::process::Command::new(viewer)
@@ -1181,6 +1221,46 @@ fn write_svg(svg: &str) -> std::io::Result<std::path::PathBuf> {
     let (_, path) = file.keep().map_err(|e| e.error)?;
     Ok(path)
 }
+
+/// The page `o` hands the viewer, beside the SVG at `svg`: the SVG is shown
+/// as an image (`<img>`), and a browser never runs a script of an image or
+/// loads anything it points to; the page's own policy allows nothing but
+/// local images besides. Whatever got past [`crate::diagram::check_svg`]
+/// stays inert.
+fn write_page(svg: &std::path::Path) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write;
+    use std::os::unix::fs::OpenOptionsExt;
+    let name = svg.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+    {
+        return Err(std::io::Error::other("the SVG has an unusual name"));
+    }
+    let page = svg.with_extension("html");
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&page)?;
+    write!(file, "{}", page_of(name))?;
+    Ok(page)
+}
+
+/// The page that shows the SVG named `name` beside it as an image.
+fn page_of(name: &str) -> String {
+    format!(
+        "<!doctype html>\n<html><head><meta charset=\"utf-8\">\n\
+         <meta http-equiv=\"Content-Security-Policy\" content=\"{SVG_PAGE_POLICY}\">\n\
+         <title>moonhare: diagram</title>\n\
+         <style>body {{ margin: 1em; background: #fff; }} img {{ max-width: 100%; }}</style>\n\
+         </head><body><img src=\"{name}\" alt=\"diagram\"></body></html>\n"
+    )
+}
+
+/// What the page of a diagram may load: local images, its own style.
+const SVG_PAGE_POLICY: &str = "default-src 'none'; img-src file: data:; style-src 'unsafe-inline'";
 
 /// The density a picture is drawn at: the minimap is made of the fitted one.
 fn drawn_as(density: Density) -> Density {
@@ -1262,6 +1342,51 @@ pub(super) fn clear_area(theme: &Theme, buf: &mut Buffer, area: Rect) {
 mod tests {
     use super::*;
     use crate::analyst::Diagram;
+
+    #[test]
+    fn a_picture_too_slow_to_lay_out_comes_once_its_layout_is_drawn() {
+        let renderer: Renderer = Arc::new(|source: &str, _| {
+            std::thread::sleep(Duration::from_millis(300));
+            crate::diagram::draw(source).map(|lines| lines.join("\n"))
+        });
+        let mut pictures = Pictures::default();
+        pictures.set_renderer(renderer);
+        pictures.budget = Duration::from_millis(30);
+        let mermaid = "graph TD\n    A[Collect] --> B[Render]";
+        let room = Room {
+            width: 80,
+            height: 20,
+        };
+
+        assert!(matches!(
+            pictures.get(mermaid, room, Density::Fit),
+            Picture::Drawing(None)
+        ));
+        while pictures.running.get().is_some() {
+            pictures.tick();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        match pictures.get(mermaid, room, Density::Fit) {
+            Picture::Failed(e) => assert_eq!(e, crate::diagram::TOO_SLOW),
+            _ => panic!("not too slow"),
+        }
+        // The layout given up on is still drawn: until it comes, the
+        // pictures are busy, and then the picture is laid out again.
+        assert!(pictures.busy());
+        pictures.wait();
+        let lines = match pictures.get(mermaid, room, Density::Fit) {
+            Picture::Ready(lines) => lines,
+            Picture::Drawing(_) => {
+                pictures.wait();
+                match pictures.get(mermaid, room, Density::Fit) {
+                    Picture::Ready(lines) => lines,
+                    _ => panic!("not drawn"),
+                }
+            }
+            Picture::Failed(e) => panic!("still failed: {e}"),
+        };
+        assert!(lines.iter().any(|l| l.contains("Collect")), "{lines:?}");
+    }
 
     #[test]
     fn a_diagram_kept_from_the_older_prompt_is_asked_again() {
