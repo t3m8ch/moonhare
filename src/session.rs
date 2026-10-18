@@ -115,8 +115,58 @@ impl Frame {
     }
 }
 
-/// Per-line tokens of one side, for highlighting.
+/// Per-line tokens of one side, for highlighting: on each line sorted by
+/// column and not overlapping (see [`paint_order`]).
 type LineTokens = Vec<Vec<Token>>;
+
+/// The tokens of one line as they paint it: sorted by column, without
+/// overlaps or empty ones. Where tokens overlap, a byte takes the first of
+/// them in the engine's order. Lets a frame find the token of each character
+/// in one pass instead of a search per character (a 400 KB line has tens of
+/// thousands of tokens).
+fn paint_order(mut tokens: Vec<Token>) -> Vec<Token> {
+    tokens.retain(|t| t.start_col < t.end_col);
+    let ordered = tokens.windows(2).all(|w| w[0].end_col <= w[1].start_col);
+    if ordered {
+        return tokens;
+    }
+    // Sweep the boundaries, keeping the tokens that cover the current piece;
+    // the earliest of them paints it.
+    let mut bounds: Vec<u32> = tokens
+        .iter()
+        .flat_map(|t| [t.start_col, t.end_col])
+        .collect();
+    bounds.sort_unstable();
+    bounds.dedup();
+    let mut by_start: Vec<usize> = (0..tokens.len()).collect();
+    by_start.sort_by_key(|&i| tokens[i].start_col);
+    let mut next = by_start.into_iter().peekable();
+    let mut active = std::collections::BTreeSet::new();
+    let mut painted: Vec<(usize, Token)> = Vec::new();
+    for w in bounds.windows(2) {
+        let (from, to) = (w[0], w[1]);
+        while let Some(&i) = next.peek().filter(|&&i| tokens[i].start_col <= from) {
+            active.insert(i);
+            next.next();
+        }
+        active.retain(|&i| tokens[i].end_col > from);
+        let Some(&winner) = active.first() else {
+            continue;
+        };
+        match painted.last_mut() {
+            Some((i, t)) if *i == winner && t.end_col == from => t.end_col = to,
+            _ => painted.push((
+                winner,
+                Token {
+                    start_col: from,
+                    end_col: to,
+                    ..tokens[winner].clone()
+                },
+            )),
+        }
+    }
+    painted.into_iter().map(|(_, t)| t).collect()
+}
 
 struct Loaded {
     diff: FileDiff,
@@ -133,7 +183,7 @@ impl Loaded {
             for t in diff.tokens(side) {
                 by_line[t.line as usize].push(t.clone());
             }
-            by_line
+            by_line.into_iter().map(paint_order).collect()
         };
         let width = |line: &String| line.chars().map(copy::cell_width).sum::<usize>();
         let max_width = (diff.old_lines.iter().chain(&diff.new_lines))
@@ -1835,17 +1885,11 @@ impl Session {
             self.theme(),
             &l.lines(side)[line],
             &l.tokens(side)[line],
-            bg,
-            frag_bg,
-        );
-        draw_cells(
-            self.theme(),
-            buf,
-            code_x,
-            y,
+            (bg, frag_bg),
+            self.hscroll,
             code_w,
-            shifted(&cells, self.hscroll),
         );
+        draw_cells(self.theme(), buf, code_x, y, code_w, &cells);
     }
 
     fn render_inline(&self, buf: &mut Buffer, l: &Loaded, area: Rect, top: u16, height: usize) {
@@ -1904,22 +1948,16 @@ impl Session {
             }
             buf.set_stringn(area.x, y, &gutter, width, gutter_style);
             let gw = gutter.chars().count();
+            let code_w = width.saturating_sub(gw);
             let cells = code_cells(
                 self.theme(),
                 &l.lines(side)[idx],
                 &l.tokens(side)[idx],
-                bg,
-                frag_bg,
-            );
-            let code_w = width.saturating_sub(gw);
-            draw_cells(
-                self.theme(),
-                buf,
-                area.x + gw as u16,
-                y,
+                (bg, frag_bg),
+                self.hscroll,
                 code_w,
-                shifted(&cells, self.hscroll),
             );
+            draw_cells(self.theme(), buf, area.x + gw as u16, y, code_w, &cells);
             if is_cursor {
                 let marker = Style::new()
                     .fg(self.theme().accent)
@@ -2022,26 +2060,38 @@ fn fit(s: &str, width: usize, keep_tail: bool) -> String {
     }
 }
 
-/// Styled characters of one source line: syntax colours from the tokens, a
-/// line background, and a stronger background on changed fragments. Tabs are
-/// expanded.
+/// Styled cells of one source line from column `from`: syntax colours from
+/// the line's tokens (in [`paint_order`]), a line background, and a stronger
+/// background on changed fragments. Tabs are expanded. Only the cells a
+/// `width`-column window needs are built, plus one to tell that the line goes
+/// on past it: a frame costs the same whatever the length of the line.
 fn code_cells(
     theme: &Theme,
     text: &str,
     tokens: &[Token],
-    bg: Option<Color>,
-    fragment_bg: Option<Color>,
+    (bg, fragment_bg): (Option<Color>, Option<Color>),
+    from: usize,
+    width: usize,
 ) -> Vec<(char, Style)> {
-    let mut cells = Vec::with_capacity(text.len());
+    let until = from.saturating_add(width).saturating_add(1);
+    let mut cells = Vec::with_capacity(width + 1);
+    let mut col = 0;
+    let mut tokens = tokens.iter().peekable();
     for (byte, ch) in text.char_indices() {
+        if col >= until {
+            break;
+        }
+        let n = copy::cell_width(ch);
+        if col + n <= from {
+            col += n;
+            continue;
+        }
+        while tokens.next_if(|t| t.end_col as usize <= byte).is_some() {}
         let mut style = Style::new().fg(theme.fg);
         if let Some(bg) = bg {
             style = style.bg(bg);
         }
-        if let Some(t) = tokens
-            .iter()
-            .find(|t| (t.start_col as usize) <= byte && byte < t.end_col as usize)
-        {
+        if let Some(t) = tokens.peek().filter(|t| t.start_col as usize <= byte) {
             style = style.fg(theme.highlight(t.highlight));
             if t.changed {
                 if let Some(fbg) = fragment_bg {
@@ -2049,27 +2099,18 @@ fn code_cells(
                 }
             }
         }
-        if ch == '\t' {
-            cells.extend(std::iter::repeat_n((' ', style), TAB_WIDTH));
-        } else {
-            // A wide character takes its cell and one more, which is only
-            // a placeholder; a zero-width one has no cell.
-            match copy::cell_width(ch) {
-                0 => {}
-                1 => cells.push((ch, style)),
-                n => {
-                    cells.push((ch, style));
-                    cells.extend(std::iter::repeat_n((copy::CONTINUATION, style), n - 1));
-                }
+        // A tab is spaces; a wide character takes its cell and one more,
+        // which is only a placeholder; a zero-width one has no cell.
+        let first = if ch == '\t' { ' ' } else { ch };
+        let rest = if ch == '\t' { ' ' } else { copy::CONTINUATION };
+        for i in 0..n {
+            if (from..until).contains(&(col + i)) {
+                cells.push((if i == 0 { first } else { rest }, style));
             }
         }
+        col += n;
     }
     cells
-}
-
-/// The cells from column `offset` on.
-fn shifted(cells: &[(char, Style)], offset: usize) -> &[(char, Style)] {
-    &cells[offset.min(cells.len())..]
 }
 
 /// Draw cells into `width` columns, ending with `…` when cut.
@@ -2096,5 +2137,61 @@ fn draw_cells(
     if cut && width > 0 {
         let style = cells[shown].1.fg(theme.dim);
         buf.set_string(x + shown as u16, y, "…", style);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diff::Highlight;
+
+    fn token(start: u32, end: u32, highlight: Highlight, changed: bool) -> Token {
+        Token {
+            line: 0,
+            start_col: start,
+            end_col: end,
+            highlight,
+            changed,
+        }
+    }
+
+    /// The token that paints `byte`: the first one in engine order covering it.
+    fn first_covering(tokens: &[Token], byte: usize) -> Option<(Highlight, bool)> {
+        tokens
+            .iter()
+            .find(|t| (t.start_col as usize) <= byte && byte < t.end_col as usize)
+            .map(|t| (t.highlight, t.changed))
+    }
+
+    #[test]
+    fn paint_order_paints_each_byte_with_the_first_token_covering_it() {
+        use Highlight::*;
+        let cases = vec![
+            vec![token(0, 3, Keyword, false), token(4, 9, String, true)],
+            vec![token(4, 9, String, true), token(0, 3, Keyword, false)],
+            vec![token(0, 10, Comment, false), token(2, 5, Normal, true)],
+            vec![token(2, 5, Normal, true), token(0, 10, Comment, false)],
+            vec![
+                token(3, 8, Type, false),
+                token(0, 4, Keyword, true),
+                token(6, 6, Error, true),
+                token(7, 12, String, false),
+                token(10, 11, Delimiter, true),
+            ],
+        ];
+        for tokens in cases {
+            let painted = paint_order(tokens.clone());
+            assert!(
+                painted.windows(2).all(|w| w[0].end_col <= w[1].start_col),
+                "{painted:?}"
+            );
+            for byte in 0..14 {
+                assert_eq!(
+                    first_covering(&painted, byte),
+                    first_covering(&tokens, byte),
+                    "byte {byte} of {tokens:?} -> {painted:?}"
+                );
+            }
+        }
     }
 }
