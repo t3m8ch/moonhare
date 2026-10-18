@@ -17,6 +17,9 @@ pub const SPACE_P: char = '\u{10}';
 /// key as the `z` of the commit list, with keys of its own.
 pub const Z_TREE: char = '\u{1a}';
 
+/// The internal name of `z` in the diff pane: folds of unchanged lines.
+pub const Z_DIFF: char = '\u{1c}';
+
 /// The `Space` keys that work while the file picker is open.
 pub const PICKER_SPACE: &[&str] = &["g", "i"];
 
@@ -312,7 +315,7 @@ pub fn prefix_name(prefix: char) -> String {
         ' ' => "Space".into(),
         CTRL_W => "Ctrl-w".into(),
         SPACE_P => "Space p".into(),
-        Z_TREE => "z".into(),
+        Z_TREE | Z_DIFF => "z".into(),
         c => c.to_string(),
     }
 }
