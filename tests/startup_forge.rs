@@ -114,13 +114,23 @@ fn the_first_frame_does_not_wait_for_the_forge() {
 
 #[test]
 fn a_failing_forge_shows_the_warning_once_it_answers() {
-    let (mut h, gate, _) = open(Err(ForgeError::Unavailable("gh is not installed".into())));
-    assert!(!h.screen().contains("gh is not installed"));
+    let (mut h, gate, _) = open(Err(ForgeError::Network("cannot reach GitHub".into())));
+    assert!(!h.screen().contains("cannot reach GitHub"));
 
     gate.open();
     h.session().wait_for_forge();
     let screen = h.screen();
-    assert!(screen.contains("⚠ gh is not installed"), "{screen}");
+    assert!(screen.contains("⚠ cannot reach GitHub"), "{screen}");
+    assert!(!screen.contains("PR: loading"), "{screen}");
+}
+
+#[test]
+fn a_forge_that_is_not_there_is_no_warning() {
+    let (mut h, gate, _) = open(Err(ForgeError::Unavailable("gh is not installed".into())));
+    gate.open();
+    h.session().wait_for_forge();
+    let screen = h.screen();
+    assert!(!screen.contains("gh is not installed"), "{screen}");
     assert!(!screen.contains("PR: loading"), "{screen}");
 }
 
