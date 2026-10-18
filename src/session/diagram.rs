@@ -878,8 +878,20 @@ fn failure_lines(error: &str, mermaid: &str) -> Vec<String> {
         .collect()
 }
 
-/// A diagram depends on the Range, the language and what it is drawn for.
+/// The version of the diagram's prompt: a part of its key, so a diagram
+/// asked for with an older prompt is asked again, while Summaries, Groups and
+/// Explanations kept on the disk stay valid. Bump it when that prompt changes.
+const DIAGRAM_PROMPT: &str = "p2";
+
+/// A diagram depends on the Range, the language, what it is drawn for and the
+/// version of its prompt.
 fn diagram_cache_key(request: &DiagramRequest) -> String {
+    diagram_cache_key_of(request, DIAGRAM_PROMPT)
+}
+
+/// [`diagram_cache_key`] for the prompt of version `prompt`; before there
+/// was one, `""`.
+fn diagram_cache_key_of(request: &DiagramRequest, prompt: &str) -> String {
     let subject = match &request.subject {
         DiagramSubject::File { path } => format!("file\u{2}{path}"),
         DiagramSubject::Fragment { path, line } => format!("fragment\u{2}{path}\u{2}{line}"),
@@ -887,10 +899,16 @@ fn diagram_cache_key(request: &DiagramRequest) -> String {
             format!("group\u{2}{name}\u{2}{}", files.join("\u{3}"))
         }
     };
-    AnalystCache::key(
-        "diagram",
-        &[&request.base, &request.head, &request.language, &subject],
-    )
+    let mut parts = vec![
+        request.base.as_str(),
+        &request.head,
+        &request.language,
+        &subject,
+    ];
+    if !prompt.is_empty() {
+        parts.insert(0, prompt);
+    }
+    AnalystCache::key("diagram", &parts)
 }
 
 fn key_of(request: &DiagramRequest) -> Key {
@@ -911,5 +929,38 @@ pub(super) fn clear_area(theme: &Theme, buf: &mut Buffer, area: Rect) {
             cell.reset();
             cell.set_fg(theme.fg);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::analyst::Diagram;
+
+    #[test]
+    fn a_diagram_kept_from_the_older_prompt_is_asked_again() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = AnalystCache::new(dir.path());
+        let request = DiagramRequest {
+            repo: dir.path().to_path_buf(),
+            base: "base".into(),
+            head: "head".into(),
+            language: "en".into(),
+            subject: DiagramSubject::File { path: "a".into() },
+            settings: Default::default(),
+            room: Room {
+                width: 80,
+                height: 24,
+            },
+        };
+        let old = Diagram {
+            mermaid: "graph LR\n A --> B".into(),
+        };
+        // Under the key a diagram had before the prompt was versioned.
+        cache.store_diagram(&diagram_cache_key_of(&request, ""), &old);
+        assert!(cache.load_diagram(&diagram_cache_key(&request)).is_none());
+
+        cache.store_diagram(&diagram_cache_key(&request), &old);
+        assert_eq!(cache.load_diagram(&diagram_cache_key(&request)), Some(old));
     }
 }
