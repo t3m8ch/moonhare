@@ -272,7 +272,7 @@ fn an_unknown_theme_is_refused_with_a_message() {
         "{screen}"
     );
     h.keys(":theme<CR>");
-    assert!(h.screen().contains("theme: dark (set)"), "{}", h.screen());
+    assert!(h.screen().contains("theme: dark"), "{}", h.screen());
 }
 
 #[test]

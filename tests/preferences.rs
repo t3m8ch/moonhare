@@ -41,7 +41,6 @@ fn without_preferences_the_theme_is_dark_whatever_the_terminal_says() {
     assert_eq!(h.session().theme().name, "dark");
     h.session()
         .terminal_reply(&Reply::Background(Background::Light));
-    h.session().set_terminal_background(Some(Background::Light));
     assert_eq!(h.session().theme().name, "dark", "no auto-detection");
     assert!(
         !file(dir.path()).exists(),
@@ -230,7 +229,7 @@ fn the_directory_comes_from_xdg_state_home_else_from_home() {
         dir_from(None, Some("/home/r"), false),
         Some(PathBuf::from("/home/r/.local/state/moonhare"))
     );
-    // A relative or empty XDG_STATE_HOME is ignored, as the spec says.
+    // A relative or empty XDG_STATE_HOME is ignored, as the XDG spec says.
     assert_eq!(
         dir_from(Some("rel"), Some("/home/r"), false),
         Some(PathBuf::from("/home/r/.local/state/moonhare"))

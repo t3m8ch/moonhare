@@ -54,10 +54,10 @@ impl Session {
     pub(super) fn theme_command(&mut self, arg: &str) {
         if arg.is_empty() {
             let how = match self.theme_setting.choice {
-                Choice::Auto => "auto",
-                _ => "set",
+                Choice::Auto => " (auto)",
+                _ => "",
             };
-            self.message = Some(format!("theme: {} ({how})", self.theme().name));
+            self.message = Some(format!("theme: {}{how}", self.theme().name));
             return;
         }
         match self.set_theme(arg) {

@@ -55,14 +55,9 @@ impl Preferences {
     pub fn open(dir: &Path) -> Preferences {
         let file = dir.join(FILE);
         Preferences {
-            lines: read_lines(&file),
+            lines: read_lines(&file).unwrap_or_default(),
             file: Some(file),
         }
-    }
-
-    /// Where they are kept; `None` when only in memory.
-    pub fn path(&self) -> Option<&Path> {
-        self.file.as_deref()
     }
 
     /// The value of `key`, if set.
@@ -74,10 +69,12 @@ impl Preferences {
     }
 
     /// Set `key` to `value` and save. The file is read anew first, so what
-    /// another moonhare saved meanwhile is kept.
+    /// another moonhare saved meanwhile is kept; a file that cannot be read
+    /// now (not one that reads as damaged) is left alone.
     pub fn set(&mut self, key: &str, value: &str) -> Result<(), String> {
         if let Some(file) = &self.file {
-            self.lines = read_lines(file);
+            self.lines = read_lines(file)
+                .map_err(|e| format!("Cannot read preferences at {}: {e}", file.display()))?;
         }
         let line = format!("{key} = {value}");
         let mut found = false;
@@ -112,18 +109,20 @@ fn entry(line: &str) -> Option<(&str, &str)> {
     (!key.is_empty()).then(|| (key, value.trim()))
 }
 
-fn read_lines(file: &Path) -> Vec<String> {
-    let read = || -> Option<Vec<String>> {
-        if std::fs::metadata(file).ok()?.len() > MAX_FILE_BYTES {
-            return None;
-        }
-        let text = String::from_utf8(std::fs::read(file).ok()?).ok()?;
-        if text.contains('\0') {
-            return None;
-        }
-        Some(text.lines().map(str::to_string).collect())
+/// The lines of `file`: none when it is missing, too large, not UTF-8 or
+/// holds NUL (damaged or not ours). `Err` when it is there but cannot be read.
+fn read_lines(file: &Path) -> std::io::Result<Vec<String>> {
+    let bytes = match std::fs::metadata(file) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotADirectory => return Ok(Vec::new()),
+        Err(e) => return Err(e),
+        Ok(meta) if meta.len() > MAX_FILE_BYTES => return Ok(Vec::new()),
+        Ok(_) => std::fs::read(file)?,
     };
-    read().unwrap_or_default()
+    Ok(match String::from_utf8(bytes) {
+        Ok(text) if !text.contains('\0') => text.lines().map(str::to_string).collect(),
+        _ => Vec::new(),
+    })
 }
 
 fn write(file: &Path, lines: &[String]) -> std::io::Result<()> {
