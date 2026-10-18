@@ -1,8 +1,12 @@
 //! Diagrams inside the session: `:diagram`, its background request, cache and
 //! overlay.
 
+use std::cell::RefCell;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::HashMap;
 use std::collections::HashSet;
+use std::hash::{Hash, Hasher};
+use std::rc::Rc;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
@@ -12,21 +16,65 @@ use super::*;
 
 use crate::analyst::{Analyst, DiagramRequest, DiagramSubject};
 use crate::analyst_cache::AnalystCache;
+use crate::diagram::{Density, Room};
 
 /// What a diagram is cached under: head of the Range, language, subject.
 type Key = (String, String, DiagramSubject);
 
-/// The diagram is drawn on the worker's thread, not the event loop's.
-type Answer = (Key, Result<Drawn, String>);
+/// The Mermaid text of a diagram that came back, or why it did not.
+type Answer = (Key, Result<String, String>);
 
-/// A diagram that came back, drawn once.
-struct Drawn {
-    mermaid: String,
-    lines: Result<Vec<String>, String>,
+/// What a picture is drawn for: its Mermaid text (hashed), the room and the
+/// density.
+type PictureKey = (u64, Room, Density);
+
+/// Pictures drawn so far are kept, up to this many.
+const PICTURES: usize = 64;
+
+/// Mermaid texts drawn as pictures, once for each room and density: a frame
+/// draws nothing it drew before.
+#[derive(Default)]
+struct Pictures {
+    drawn: RefCell<HashMap<PictureKey, Rc<Vec<String>>>>,
+    /// Why a text could not be drawn: it is not tried again for another room,
+    /// so a text that takes too long costs that time once.
+    failed: RefCell<HashMap<u64, String>>,
+}
+
+impl Pictures {
+    fn get(&self, mermaid: &str, room: Room, density: Density) -> Result<Rc<Vec<String>>, String> {
+        let hash = {
+            let mut hasher = DefaultHasher::new();
+            mermaid.hash(&mut hasher);
+            hasher.finish()
+        };
+        if let Some(e) = self.failed.borrow().get(&hash) {
+            return Err(e.clone());
+        }
+        let key = (hash, room, density);
+        if let Some(lines) = self.drawn.borrow().get(&key) {
+            return Ok(lines.clone());
+        }
+        match crate::diagram::draw_in(mermaid, room, density) {
+            Ok(lines) => {
+                let lines = Rc::new(lines);
+                let mut drawn = self.drawn.borrow_mut();
+                if drawn.len() >= PICTURES {
+                    drawn.clear();
+                }
+                drawn.insert(key, lines.clone());
+                Ok(lines)
+            }
+            Err(e) => {
+                self.failed.borrow_mut().insert(hash, e.clone());
+                Err(e)
+            }
+        }
+    }
 }
 
 pub(super) struct Diagrams {
-    cache: HashMap<Key, Drawn>,
+    cache: HashMap<Key, String>,
     /// Why the last request for a key failed. A failure is not cached: the
     /// next `:diagram` asks again.
     errors: HashMap<Key, String>,
@@ -41,8 +89,7 @@ pub(super) struct Diagrams {
     view: Pan,
     /// How far the diagrams of the Summary are moved sideways.
     inline: Pan,
-    /// Mermaid texts of Summaries, drawn once.
-    drawings: HashMap<String, Result<Vec<String>, String>>,
+    pictures: Pictures,
 }
 
 impl Default for Diagrams {
@@ -58,7 +105,7 @@ impl Default for Diagrams {
             open: None,
             view: Pan::default(),
             inline: Pan::default(),
-            drawings: HashMap::new(),
+            pictures: Pictures::default(),
         }
     }
 }
@@ -127,13 +174,7 @@ impl Session {
             if let Some(diagram) = cache.load_diagram(&cache_key) {
                 self.diagrams.pending.remove(&key);
                 self.diagrams.from_cache.insert(key.clone());
-                self.diagrams.cache.insert(
-                    key,
-                    Drawn {
-                        lines: crate::diagram::draw(&diagram.mermaid),
-                        mermaid: diagram.mermaid,
-                    },
-                );
+                self.diagrams.cache.insert(key, diagram.mermaid);
                 return;
             }
         }
@@ -142,10 +183,7 @@ impl Session {
             let answer = analyst
                 .diagram(&request)
                 .inspect(|diagram| cache.store_diagram(&cache_key, diagram))
-                .map(|diagram| Drawn {
-                    lines: crate::diagram::draw(&diagram.mermaid),
-                    mermaid: diagram.mermaid,
-                })
+                .map(|diagram| diagram.mermaid)
                 .map_err(|e| e.to_string());
             let _ = sender.send((key_of(&request), answer));
         });
@@ -258,10 +296,8 @@ impl Session {
         };
         (summary.diagram.iter().cloned())
             .chain(crate::markdown::fenced_blocks(&summary.text, "mermaid"))
-            .filter_map(|mermaid| match self.diagrams.drawings.get(&mermaid) {
-                Some(Ok(lines)) => Some(lines.clone()),
-                _ => None,
-            })
+            .filter_map(|mermaid| self.summary_picture(&mermaid).ok())
+            .map(|lines| lines.to_vec())
             .max_by_key(|lines| Size::of(lines).cols)
             .unwrap_or_default()
     }
@@ -279,32 +315,29 @@ impl Session {
         self.diagrams.inline = Pan::at(0, 0);
     }
 
-    /// Draw the Mermaid text of a Summary now, so that frames need not.
-    pub(super) fn remember_drawing(&mut self, mermaid: &str) {
-        self.diagrams
-            .drawings
-            .insert(mermaid.to_string(), crate::diagram::draw(mermaid));
+    /// The picture of a Mermaid text of the Summary, fitted to its overlay.
+    fn summary_picture(&self, mermaid: &str) -> Result<Rc<Vec<String>>, String> {
+        let view = self.summary_text_size();
+        let room = Room {
+            width: view.cols,
+            height: view.rows,
+        };
+        self.diagrams.pictures.get(mermaid, room, Density::Fit)
     }
 
-    /// Whether the Mermaid text was drawn, or failed to be.
-    pub(super) fn has_drawing(&self, mermaid: &str) -> bool {
-        self.diagrams.drawings.contains_key(mermaid)
-    }
-
-    /// The lines under a Summary for its diagram, scrolled sideways, or the
+    /// The lines under a Summary for its diagram, moved sideways, or the
     /// reason it is missing and the source.
     pub(super) fn drawing_lines(&self, mermaid: &str) -> Vec<String> {
-        match self.diagrams.drawings.get(mermaid) {
-            Some(Ok(lines)) => {
+        match self.summary_picture(mermaid) {
+            Ok(lines) => {
                 let view = self.summary_text_size();
-                let left = self.diagrams.inline.left(lines, view);
+                let left = self.diagrams.inline.left(&lines, view);
                 lines
                     .iter()
                     .map(|l| pan::slice(l, left, view.cols))
                     .collect()
             }
-            Some(Err(e)) => failure_lines(e, mermaid),
-            None => Vec::new(),
+            Err(e) => failure_lines(&e, mermaid),
         }
     }
 
@@ -317,12 +350,8 @@ impl Session {
             self.diagrams.open = None;
             return true;
         }
-        let source = self.diagrams.open.as_ref().and_then(|key| {
-            self.diagrams
-                .cache
-                .get(key)
-                .map(|drawn| drawn.mermaid.clone())
-        });
+        let source =
+            (self.diagrams.open.as_ref()).and_then(|key| self.diagrams.cache.get(key).cloned());
         match key.code {
             KeyCode::Char('r') => self.refresh_diagram(),
             KeyCode::Char('y') => {
@@ -430,11 +459,17 @@ impl Session {
             })
         };
         let picture = match self.diagrams.cache.get(key) {
-            Some(Drawn { lines: Ok(l), .. }) => l.clone(),
-            Some(Drawn {
-                lines: Err(e),
-                mermaid,
-            }) => failure_lines(e, mermaid),
+            Some(mermaid) => {
+                let text = self.diagram_place().text;
+                let room = Room {
+                    width: text.width as usize,
+                    height: text.height as usize,
+                };
+                match self.diagrams.pictures.get(mermaid, room, Density::Fit) {
+                    Ok(lines) => lines.to_vec(),
+                    Err(e) => failure_lines(&e, mermaid),
+                }
+            }
             None => {
                 return match self.diagrams.errors.get(key) {
                     Some(e) => vec![format!("Analyst: {}", crate::diagram::sanitize(e))],

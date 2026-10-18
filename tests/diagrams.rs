@@ -141,14 +141,19 @@ fn the_summary_has_no_diagram_when_the_analyst_attached_none() {
 #[test]
 fn the_summary_diagram_scrolls_with_h_and_l_and_y_copies_it_with_the_summary() {
     let fx = feature_branch();
-    let analyst = with_summary_diagram(Some(WIDE));
+    let tree = big_tree();
+    let analyst = with_summary_diagram(Some(&tree));
     let mut h = review_with(&fx, &analyst);
     h.session().wait_for_analyst();
     h.keys("<Space>s");
-    assert!(!h.screen().contains("Foxtrot"), "{}", h.screen());
+    assert!(h.screen().contains("Column0Step0"), "{}", h.screen());
+    assert!(!h.screen().contains("Column11Step0"), "{}", h.screen());
 
     h.keys("$");
-    assert!(h.screen().contains("Foxtrot"), "{}", h.screen());
+    assert!(h.screen().contains("Column11Step0"), "{}", h.screen());
+    assert!(!h.screen().contains("Column0Step0"), "{}", h.screen());
+    h.keys("h");
+    assert!(h.screen().contains("Column11Step0"), "{}", h.screen());
 
     // y copies the Markdown of the Summary, the diagram as a Mermaid block.
     h.keys("y");
@@ -156,12 +161,12 @@ fn the_summary_diagram_scrolls_with_h_and_l_and_y_copies_it_with_the_summary() {
     assert_eq!(copied.len(), 1);
     assert!(copied[0].starts_with("Summary text"), "{copied:?}");
     assert!(
-        copied[0].ends_with(&format!("```mermaid\n{}\n```\n", WIDE.trim_end())),
+        copied[0].ends_with(&format!("```mermaid\n{}\n```\n", tree.trim_end())),
         "{copied:?}"
     );
 
     h.keys("q<Space>s");
-    assert!(h.screen().contains("Alpha"), "{}", h.screen());
+    assert!(h.screen().contains("Column0Step0"), "{}", h.screen());
 }
 
 /// An Analyst whose first diagram fails (a timeout, no login) and later ones work.
@@ -299,25 +304,51 @@ fn y_copies_the_mermaid_source_whether_or_not_it_could_be_drawn() {
 }
 
 #[test]
-fn a_wide_diagram_scrolls_sideways_with_h_and_l() {
+fn a_wide_left_to_right_diagram_is_turned_to_fit_and_y_still_copies_it_as_written() {
     let fx = feature_branch();
     let analyst = FakeAnalyst::drawing(WIDE);
+    let mut session = Session::open(fx.path(), 100, 40).expect("session opens");
+    session.set_analyst(analyst.clone());
+    let mut h = Harness::from_session(session);
+    h.keys(":diagram<CR>");
+    h.session().wait_for_analyst();
+    let screen = h.screen();
+    for name in ["Alpha", "Bravo", "Charlie", "Delta", "Echo", "Foxtrot"] {
+        assert!(screen.contains(name), "{name}:\n{screen}");
+    }
+    assert!(!screen.contains("колонки"), "{screen}");
+
+    h.keys("y");
+    assert_eq!(h.copied(), vec![WIDE.to_string()]);
+}
+
+#[test]
+fn the_diagram_is_fitted_again_when_the_terminal_is_resized() {
+    let fx = feature_branch();
+    let analyst = FakeAnalyst::drawing(
+        "graph TD\n    A[the first step of a rather long process that goes on for a while] --> B[the second step]",
+    );
     let mut h = review_with(&fx, &analyst);
     h.keys(":diagram<CR>");
     h.session().wait_for_analyst();
-    assert!(h.screen().contains("Alpha"), "{}", h.screen());
-    assert!(!h.screen().contains("Foxtrot"), "{}", h.screen());
+    let whole = "the first step of a rather long process that goes on for a while";
+    assert!(h.screen().contains(whole), "{}", h.screen());
 
-    h.keys("$");
-    let scrolled = h.screen();
-    assert!(scrolled.contains("Foxtrot"), "{scrolled}");
-    assert!(!scrolled.contains("Alpha"), "{scrolled}");
+    h.resize(64, 30);
+    let narrow = h.screen();
+    assert!(!narrow.contains(whole), "{narrow}");
+    assert!(narrow.contains("while"), "{narrow}");
+    assert!(!narrow.contains("колонки"), "{narrow}");
 
-    h.keys("0");
-    assert!(h.screen().contains("Alpha"), "{}", h.screen());
+    for (w, ht) in [(20, 6), (1, 1), (0, 0), (100, 30)] {
+        h.resize(w, ht);
+        h.keys("ljL$G");
+        let _ = h.screen();
+    }
+    assert!(h.screen().contains(whole), "{}", h.screen());
 }
 
-/// A tree wider and taller than any window: twelve columns of eight steps
+/// A tree wider and taller than any window: twelve columns of sixteen steps
 /// whose names cannot be wrapped, under one root.
 fn big_tree() -> String {
     let mut lines = vec!["flowchart TD".to_string()];
@@ -325,7 +356,7 @@ fn big_tree() -> String {
         lines.push(format!(
             "    Root[TheRootOfEverything] --> C{c}S0[Column{c}Step0]"
         ));
-        for s in 1..8 {
+        for s in 1..16 {
             lines.push(format!(
                 "    C{c}S{}[Column{c}Step{}] --> C{c}S{s}[Column{c}Step{s}]",
                 s - 1,

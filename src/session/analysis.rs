@@ -352,12 +352,6 @@ impl Session {
         self.analysis.errors.remove(&key);
         self.analysis.built.retain(|k| *k != key);
         self.analysis.built.push(key.clone());
-        if let Some(mermaid) = &summary.diagram {
-            self.remember_drawing(mermaid);
-        }
-        for mermaid in crate::markdown::fenced_blocks(&summary.text, "mermaid") {
-            self.remember_drawing(&mermaid);
-        }
         self.analysis.cache.insert(key, summary);
     }
 
@@ -583,9 +577,8 @@ impl Session {
     /// The Summary drawn from its Markdown, Mermaid blocks as diagrams, and
     /// the diagram the Analyst attached under it.
     fn summary_lines(&self, summary: &Summary, width: usize) -> Vec<Line<'static>> {
-        let pictures = |language: &str, code: &str| {
-            (language == "mermaid" && self.has_drawing(code)).then(|| self.drawing_lines(code))
-        };
+        let pictures =
+            |language: &str, code: &str| (language == "mermaid").then(|| self.drawing_lines(code));
         let mut lines = crate::markdown::render_with(self.theme(), &summary.text, width, &pictures);
         if let Some(mermaid) = &summary.diagram {
             lines.push(Line::default());
