@@ -991,6 +991,14 @@ impl Session {
 
     // ------------------------------------------------------------ events
 
+    /// The step of the event loop: `event` came `since` after the one
+    /// before. The time counts before the event does, so the event sees the
+    /// clock of when it came.
+    pub fn input(&mut self, since: std::time::Duration, event: Event) {
+        self.watch(since);
+        self.handle(event);
+    }
+
     pub fn handle(&mut self, event: Event) {
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => {

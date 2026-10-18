@@ -423,6 +423,23 @@ fn a_late_reply_in_pieces_a_moment_apart_is_still_dropped() {
     assert_eq!(h.screen(), before, "the reply moved the screen");
 }
 
+/// As the event loop of `main` feeds a session: each event with the time
+/// that passed since the one before.
+#[test]
+fn a_late_reply_after_the_program_sat_idle_is_still_dropped() {
+    use std::time::Duration;
+    let fx = feature_branch();
+    let mut h = expecting(&fx);
+    let before = h.screen();
+    let mut idle = Duration::from_millis(1_500);
+    for event in late_reply(alt_backslash()) {
+        h.session().input(idle, event);
+        idle = Duration::from_millis(2);
+    }
+    h.settle();
+    assert_eq!(h.screen(), before, "the reply moved the screen");
+}
+
 /// The screens `events` leave in a session that expects a late reply and in
 /// one that does not, both opened before either takes a key (what is
 /// Reviewed is kept on disk).

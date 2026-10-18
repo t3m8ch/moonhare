@@ -293,10 +293,9 @@ fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Re
             wake
         };
         redraw = if event::poll(wake)? {
-            session.handle(event::read()?);
             // Typing must not starve the watch on the branch: the time spent
-            // here counts too.
-            session.watch(last.elapsed());
+            // here counts too, before the event, which comes at that time.
+            session.input(last.elapsed(), event::read()?);
             true
         } else {
             session.elapse(wake.max(last.elapsed()))
