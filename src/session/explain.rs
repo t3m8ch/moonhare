@@ -4,7 +4,9 @@
 
 use std::sync::mpsc::{channel, Receiver, Sender};
 
-use super::analysis::{wrap, Pending};
+use ratatui::text::Line;
+
+use super::analysis::{plain_lines, Pending};
 use super::*;
 use crate::analyst::{AnalystError, ExplainRequest, ExplainTarget, Explanation};
 use crate::analyst_cache::AnalystCache;
@@ -70,6 +72,11 @@ impl Session {
             } else if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
                 self.explain.overlay = None;
                 self.explain.error = None;
+            } else if key.code == KeyCode::Char('y') {
+                if let Some(State::Done(text)) = self.explain.overlay.as_ref().map(|o| &o.state) {
+                    let text = text.clone();
+                    self.copy_to_clipboard(&text, "the explanation");
+                }
             }
             return true;
         }
@@ -285,8 +292,8 @@ impl Session {
         }
     }
 
-    /// The text of the overlay, wrapped to its box.
-    pub(super) fn explain_lines(&self) -> Vec<String> {
+    /// The text of the overlay, laid out for its box.
+    pub(super) fn explain_lines(&self) -> Vec<Line<'static>> {
         let Some(overlay) = &self.explain.overlay else {
             return Vec::new();
         };
@@ -296,10 +303,12 @@ impl Session {
                 super::analysis::spinner(self.clock()),
                 self.work_seconds("Explanation")
             ),
-            State::Done(text) => text.clone(),
+            State::Done(text) => {
+                return crate::markdown::render(text, scroll::text_cols(self.overlay_area()))
+            }
             State::Failed(error) => format!("Analyst: {error}"),
         };
-        wrap(&text, scroll::text_cols(self.overlay_area()))
+        plain_lines(&text, scroll::text_cols(self.overlay_area()))
     }
 
     pub(super) fn explain_scroll_mut(&mut self) -> Option<&mut scroll::Scroll> {
@@ -313,6 +322,6 @@ impl Session {
         let area = self.overlay_area();
         clear_area(buf, area);
         draw_box(buf, area, &overlay.title);
-        scroll::render_lines(buf, area, &self.explain_lines(), &overlay.scroll);
+        scroll::render_styled(buf, area, &self.explain_lines(), &overlay.scroll);
     }
 }

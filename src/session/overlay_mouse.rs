@@ -189,10 +189,7 @@ impl Session {
         if !self.mouse.text_press {
             self.mouse.text = None;
         }
-        let (total, rows) = (
-            self.overlay_lines().len(),
-            scroll::text_rows(self.overlay_box()),
-        );
+        let (total, rows) = (self.overlay_total(), scroll::text_rows(self.overlay_box()));
         if let Some(scroll) = self.overlay_scroll() {
             scroll.wheel(down, total, rows);
         }
@@ -210,23 +207,24 @@ impl Session {
         }
     }
 
-    fn overlay_lines(&self) -> Vec<String> {
+    /// The rows of text of the overlay that is on top.
+    fn overlay_total(&self) -> usize {
         if let Some((_, _, lines)) = self.editor_popup() {
-            lines
+            lines.len()
         } else if self.prompt_view.is_some() {
-            self.prompt_lines()
+            self.prompt_lines().len()
         } else if self.help.is_some() {
-            self.help_lines()
+            self.help_lines().len()
         } else if self.group_info_open() {
-            self.group_info_lines()
+            self.group_info_lines().len()
         } else if self.explain_open() {
-            self.explain_lines()
+            self.explain_lines().len()
         } else if self.diagram_open() {
-            self.open_lines()
+            self.open_lines().len()
         } else if self.summary_open() {
-            self.summary_view().1
+            self.summary_view().1.len()
         } else {
-            Vec::new()
+            0
         }
     }
 

@@ -648,6 +648,7 @@ impl Session {
     pub(super) fn group_hint(&self) -> Option<String> {
         let n = self.cursor_group()?;
         let (name, description, _) = self.group_text(n);
+        let description = crate::markdown::one_line(&description);
         Some(format!("{} {name}: {description}", n + 1))
     }
 
@@ -691,16 +692,19 @@ impl Session {
             self.panel.info = Some((n, scroll));
         } else if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
             self.panel.info = None;
+        } else if key.code == KeyCode::Char('y') {
+            let description = self.group_text(n).1;
+            self.copy_to_clipboard(&description, "the description");
         }
         true
     }
 
-    /// The description, wrapped to its box.
-    pub(super) fn group_info_lines(&self) -> Vec<String> {
+    /// The description, laid out for its box.
+    pub(super) fn group_info_lines(&self) -> Vec<ratatui::text::Line<'static>> {
         let Some((n, _)) = self.panel.info else {
             return Vec::new();
         };
-        super::analysis::wrap(
+        crate::markdown::render(
             &self.group_text(n).1,
             scroll::text_cols(self.overlay_area()),
         )
@@ -720,6 +724,6 @@ impl Session {
         clear_area(buf, area);
         let (name, _, _) = self.group_text(*n);
         draw_box(buf, area, &format!(" Group {} {name} (Esc close) ", n + 1));
-        scroll::render_lines(buf, area, &self.group_info_lines(), scroll);
+        scroll::render_styled(buf, area, &self.group_info_lines(), scroll);
     }
 }

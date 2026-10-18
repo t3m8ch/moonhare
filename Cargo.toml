@@ -8,6 +8,7 @@ difftastic = { path = "vendor/difftastic" }
 ratatui = "0.30"
 serde_json = "1"
 mmdflux = { version = "2.6.1", default-features = false }
+pulldown-cmark = { version = "0.13.4", default-features = false }
 tempfile = "3"
 unicode-width = "0.2"
 

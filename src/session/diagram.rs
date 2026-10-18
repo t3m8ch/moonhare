@@ -249,6 +249,11 @@ impl Session {
             .insert(mermaid.to_string(), crate::diagram::draw(mermaid));
     }
 
+    /// Whether the Mermaid text was drawn, or failed to be.
+    pub(super) fn has_drawing(&self, mermaid: &str) -> bool {
+        self.diagrams.drawings.contains_key(mermaid)
+    }
+
     /// The lines under a Summary for its diagram, scrolled sideways, or the
     /// reason it is missing and the source.
     pub(super) fn drawing_lines(&self, mermaid: &str) -> Vec<String> {
