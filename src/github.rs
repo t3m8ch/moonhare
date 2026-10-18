@@ -8,6 +8,8 @@ use crate::forge::{Forge, ForgeError, PullRequest};
 
 pub struct GitHub {
     program: PathBuf,
+    /// The clone `gh` is asked about; the current directory when `None`.
+    dir: Option<PathBuf>,
     /// How long `gh pr view` may take before the Forge counts as unreachable.
     timeout: Duration,
 }
@@ -23,8 +25,15 @@ impl GitHub {
     pub fn with_program(program: impl Into<PathBuf>) -> GitHub {
         GitHub {
             program: program.into(),
+            dir: None,
             timeout: DEFAULT_TIMEOUT,
         }
+    }
+
+    /// Ask about the clone at `dir` instead of the current directory.
+    pub fn in_dir(mut self, dir: impl Into<PathBuf>) -> GitHub {
+        self.dir = Some(dir.into());
+        self
     }
 
     /// Give up on `gh pr view` after `timeout`.
@@ -96,13 +105,69 @@ impl GitHub {
     }
 
     fn view(&self, selector: &str) -> Result<PullRequest, ForgeError> {
+        self.check_network_remote()?;
         let out = self.run_with_timeout(
-            Command::new(&self.program).args(["pr", "view", "--json", PR_FIELDS, "--", selector]),
+            self.command(&self.program)
+                .args(["pr", "view", "--json", PR_FIELDS, "--", selector]),
         )?;
         if !out.status.success() {
             return Err(classify(&String::from_utf8_lossy(&out.stderr)));
         }
         parse_pull_request(&out.stdout)
+    }
+}
+
+impl GitHub {
+    /// `program`, run in the clone asked about.
+    fn command(&self, program: impl AsRef<std::ffi::OsStr>) -> Command {
+        let mut command = Command::new(program);
+        if let Some(dir) = &self.dir {
+            command.current_dir(dir);
+        }
+        command
+    }
+
+    /// Whether the clone has a remote over the network. Without one there is
+    /// no Forge to ask, and `gh` is not even started. Which network remote is
+    /// GitHub is left to `gh`: it knows the hosts it is logged into and SSH
+    /// aliases, and says so when none of the remotes is on GitHub.
+    fn check_network_remote(&self) -> Result<(), ForgeError> {
+        // If git itself cannot say, let `gh` find out.
+        let Ok(out) = self.command("git").args(["remote", "-v"]).output() else {
+            return Ok(());
+        };
+        if !out.status.success() {
+            return Ok(());
+        }
+        let listing = String::from_utf8_lossy(&out.stdout);
+        let urls: Vec<&str> = listing
+            .lines()
+            .filter_map(|line| line.split_whitespace().nth(1))
+            .collect();
+        if urls.is_empty() {
+            Err(ForgeError::Unavailable(
+                "the repository has no git remote, so no GitHub pull request is looked up".into(),
+            ))
+        } else if urls.iter().all(|url| is_on_disk(url)) {
+            Err(ForgeError::Unavailable(
+                "every git remote is a path on disk, so no GitHub pull request is looked up".into(),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+
+/// Whether a remote URL is a path on disk (`/srv/repo`, `../repo`,
+/// `file:///srv/repo`) rather than a host: `https://host/…`,
+/// `ssh://host/…` or the scp-like `[user@]host:path`.
+fn is_on_disk(url: &str) -> bool {
+    if let Some((scheme, _)) = url.split_once("://") {
+        return scheme == "file";
+    }
+    match url.split_once(':') {
+        Some((before, _)) => before.is_empty() || before.contains('/'),
+        None => true,
     }
 }
 
@@ -113,6 +178,19 @@ fn classify(stderr: &str) -> ForgeError {
         || stderr.contains("Could not resolve to a PullRequest")
     {
         ForgeError::NotFound(stderr.to_string())
+    } else if [
+        "no git remotes found",
+        "point to a known GitHub host",
+        "not logged into any GitHub hosts",
+        "To get started with GitHub CLI",
+    ]
+    .iter()
+    .any(|m| stderr.contains(m))
+    {
+        ForgeError::Unavailable(format!(
+            "gh has no GitHub to ask: {}",
+            stderr.lines().next().unwrap_or_default()
+        ))
     } else if [
         "error connecting to",
         "dial tcp",
@@ -162,6 +240,9 @@ impl Forge for GitHub {
     fn pull_request(&self, number: u64) -> Result<PullRequest, ForgeError> {
         self.view(&number.to_string()).map_err(|e| match e {
             ForgeError::NotFound(_) => ForgeError::NotFound(format!("no pull request #{number}")),
+            ForgeError::Unavailable(m) => {
+                ForgeError::Unavailable(format!("cannot open pull request #{number}: {m}"))
+            }
             other => other,
         })
     }
