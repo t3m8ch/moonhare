@@ -22,7 +22,7 @@ mod keys;
 
 use std::collections::VecDeque;
 use std::io::{self, Read};
-use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use ratatui::crossterm::event::{Event, KeyCode};
@@ -43,7 +43,7 @@ pub const STOP_THEME_REPORTS: &str = "\x1b[?2031l";
 /// is late by this much.
 pub const ESC_GAP: Duration = Duration::from_millis(25);
 /// How long a reply that has surely begun may wait for its next piece.
-pub const REPLY_GAP: Duration = Duration::from_secs(1);
+const REPLY_GAP: Duration = Duration::from_secs(1);
 /// Longer than any reply moonhare asks for: dropped when reached.
 const REPLY_MAX: usize = 128;
 
@@ -104,11 +104,10 @@ fn osc(held: &[u8]) -> Held {
         return Held::Keys;
     }
     let body = |end: usize| {
-        let reply = std::str::from_utf8(&held[start..end])
+        std::str::from_utf8(&held[start..end])
             .ok()
             .and_then(theme::background_from_osc11)
-            .map_or(Reply::Other, Reply::Background);
-        reply
+            .map_or(Reply::Other, Reply::Background)
     };
     let n = held.len();
     match held[n - 1] {
@@ -173,7 +172,7 @@ impl Decoder {
     /// When held bytes have waited long enough; `None` when none are held.
     pub fn deadline(&self) -> Option<Instant> {
         let at = self.held_at?;
-        Some(at + if self.sure() { REPLY_GAP } else { ESC_GAP })
+        Some(at + if sure(&self.held) { REPLY_GAP } else { ESC_GAP })
     }
 
     /// Time has come to `now` without input: held bytes past their
@@ -184,15 +183,11 @@ impl Decoder {
         }
         let held = std::mem::take(&mut self.held);
         self.held_at = None;
-        if !matches!(classify(&bytes(&held)), Held::Start { sure: true }) {
+        if !sure(&held) {
             for (b, more) in held {
                 self.key(b, more);
             }
         }
-    }
-
-    fn sure(&self) -> bool {
-        !self.held.is_empty() && matches!(classify(&bytes(&self.held)), Held::Start { sure: true })
     }
 
     fn step(&mut self, b: u8, more: bool) {
@@ -267,6 +262,11 @@ impl Iterator for Decoder {
     }
 }
 
+/// Whether `held` is surely the start of a reply.
+fn sure(held: &[(u8, bool)]) -> bool {
+    !held.is_empty() && matches!(classify(&bytes(held)), Held::Start { sure: true })
+}
+
 fn bytes(held: &[(u8, bool)]) -> Vec<u8> {
     held.iter().map(|(b, _)| *b).collect()
 }
@@ -296,16 +296,17 @@ impl TerminalInput {
         let (tx, chunks) = mpsc::channel();
         watch_resizes(tx.clone())?;
         spawn_reader(reader, tx)?;
-        Ok(TerminalInput {
-            chunks,
-            decoder: Decoder::default(),
-        })
+        Ok(TerminalInput::reading(chunks))
     }
 
     /// Read `reader` as the terminal (for tests).
     pub fn from_reader(reader: impl Read + Send + 'static) -> TerminalInput {
         let (tx, chunks) = mpsc::channel();
         spawn_reader(Box::new(reader), tx).expect("spawn the input reader");
+        TerminalInput::reading(chunks)
+    }
+
+    fn reading(chunks: Receiver<Chunk>) -> TerminalInput {
         TerminalInput {
             chunks,
             decoder: Decoder::default(),
@@ -320,6 +321,18 @@ impl TerminalInput {
             if let Some(input) = self.decoder.next() {
                 return Ok(Some(input));
             }
+            // What was read while the loop was busy comes first: held bytes
+            // time out only when nothing read follows them.
+            match self.chunks.try_recv() {
+                Ok(chunk) => {
+                    if let Some(result) = self.take(chunk) {
+                        return result;
+                    }
+                    continue;
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => return Err(closed()),
+            }
             let now = Instant::now();
             if self.decoder.deadline().is_some_and(|due| due <= now) {
                 self.decoder.expire(now);
@@ -330,19 +343,32 @@ impl TerminalInput {
                 return Ok(None);
             }
             match self.chunks.recv_timeout(until - now) {
-                Ok(Chunk::Bytes(bytes, at)) => self.decoder.feed(&bytes, at),
-                Ok(Chunk::Resize(w, h)) => return Ok(Some(Input::Event(Event::Resize(w, h)))),
-                Ok(Chunk::Closed(e)) => return Err(e),
-                Err(RecvTimeoutError::Timeout) => {}
-                Err(RecvTimeoutError::Disconnected) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "the terminal is closed",
-                    ))
+                Ok(chunk) => {
+                    if let Some(result) = self.take(chunk) {
+                        return result;
+                    }
                 }
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => return Err(closed()),
             }
         }
     }
+
+    /// Take in a chunk read; what to return at once, if anything.
+    fn take(&mut self, chunk: Chunk) -> Option<io::Result<Option<Input>>> {
+        match chunk {
+            Chunk::Bytes(bytes, at) => {
+                self.decoder.feed(&bytes, at);
+                None
+            }
+            Chunk::Resize(w, h) => Some(Ok(Some(Input::Event(Event::Resize(w, h))))),
+            Chunk::Closed(e) => Some(Err(e)),
+        }
+    }
+}
+
+fn closed() -> io::Error {
+    io::Error::new(io::ErrorKind::UnexpectedEof, "the terminal is closed")
 }
 
 fn spawn_reader(mut reader: Box<dyn Read + Send>, tx: Sender<Chunk>) -> io::Result<()> {
@@ -352,10 +378,7 @@ fn spawn_reader(mut reader: Box<dyn Read + Send>, tx: Sender<Chunk>) -> io::Resu
             let mut buf = [0u8; 8192];
             loop {
                 let chunk = match reader.read(&mut buf) {
-                    Ok(0) => Chunk::Closed(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "the terminal is closed",
-                    )),
+                    Ok(0) => Chunk::Closed(closed()),
                     Ok(n) => Chunk::Bytes(buf[..n].to_vec(), Instant::now()),
                     Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                     Err(e) => Chunk::Closed(e),

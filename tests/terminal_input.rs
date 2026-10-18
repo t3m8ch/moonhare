@@ -354,3 +354,22 @@ fn the_live_input_reads_a_pipe_and_resolves_a_lone_esc_without_more_input() {
     drop(writer);
     assert!(input.next(wait).is_err(), "the end of input is an error");
 }
+
+#[test]
+fn a_reply_cut_after_its_esc_is_a_reply_even_when_read_late() {
+    // The loop was busy drawing while both pieces came, a moment apart.
+    let (reader, mut writer) = std::io::pipe().unwrap();
+    let mut input = TerminalInput::from_reader(reader);
+    use std::io::Write;
+    writer.write_all(b"\x1b").unwrap();
+    std::thread::sleep(Duration::from_millis(5));
+    writer.write_all(&LIGHT_ST[1..]).unwrap();
+    writer.write_all(b"j").unwrap();
+    std::thread::sleep(ESC_GAP * 4);
+    let wait = Duration::from_secs(5);
+    assert_eq!(
+        input.next(wait).unwrap(),
+        Some(background(Background::Light))
+    );
+    assert_eq!(input.next(wait).unwrap(), Some(key('j')));
+}

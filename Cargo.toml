@@ -13,6 +13,5 @@ pulldown-cmark = { version = "0.13.4", default-features = false }
 tempfile = "3"
 unicode-width = "0.2"
 
-
 [dev-dependencies]
 libc = "0.2"
