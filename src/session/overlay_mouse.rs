@@ -37,6 +37,8 @@ impl Session {
             area
         } else if self.prompt_view.is_some() || self.help.is_some() {
             full
+        } else if self.diagram_open() && !self.group_info_open() && !self.explain_open() {
+            return Some(self.diagram_place().text);
         } else if self.group_info_open()
             || self.explain_open()
             || self.diagram_open()

@@ -198,7 +198,7 @@ const PLAIN: &[(&str, &str)] = &[
     ),
     (
         "hjkl HL 0$ gG",
-        "диаграмма: колонка/строка, полэкрана вбок, края; y: Mermaid, r: заново",
+        "диаграмма: колонка/строка, полэкрана, края; f: весь экран; y: Mermaid; r: заново",
     ),
     (
         "y",
@@ -315,7 +315,7 @@ pub fn hint_line(context: Context) -> String {
         Context::Explanation => "j/k: прокрутка  y: копировать Markdown  \
                                  r: пересчитать (мимо кэша)  Esc/q: закрыть"
             .into(),
-        Context::Diagram => "hjkl: движение  +/-/=: масштаб, обзор  y: Mermaid  \
+        Context::Diagram => "hjkl: движение  f: полный экран  +/-/=: масштаб, обзор  y: Mermaid  \
                              r: пересчитать  H/L, Ctrl-d/u: крупно  0/$, gg/G: края  Esc: закрыть"
             .into(),
         Context::CommitsVisual => {

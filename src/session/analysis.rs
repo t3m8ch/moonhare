@@ -469,6 +469,10 @@ impl Session {
             } else if key.code == KeyCode::Char('y') {
                 let source = self.summary_source().unwrap_or_default();
                 self.copy_to_clipboard(&source, "the Summary");
+            } else if key.code == KeyCode::Char('f')
+                && !key.modifiers.contains(KeyModifiers::CONTROL)
+            {
+                self.open_summary_diagram();
             } else {
                 self.summary_diagram_key(key);
             }

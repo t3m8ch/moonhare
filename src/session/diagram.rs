@@ -85,6 +85,11 @@ pub(super) struct Diagrams {
     receiver: Receiver<Answer>,
     /// The overlay is open on this diagram.
     open: Option<Key>,
+    /// The diagram of the Summary is shown on the whole terminal: its
+    /// Mermaid text.
+    summary_full: Option<String>,
+    /// The overlay covers the whole terminal, without its border.
+    full: bool,
     /// Where the overlay's view of its picture is.
     view: Pan,
     /// How densely the overlay lays its picture out.
@@ -107,6 +112,8 @@ impl Default for Diagrams {
             sender,
             receiver,
             open: None,
+            summary_full: None,
+            full: false,
             view: Pan::default(),
             density: Density::Fit,
             inline: Pan::default(),
@@ -118,7 +125,35 @@ impl Default for Diagrams {
 
 impl Session {
     pub(super) fn diagram_open(&self) -> bool {
-        self.diagrams.open.is_some()
+        self.diagrams.open.is_some() || self.diagrams.summary_full.is_some()
+    }
+
+    /// `f` in the Summary: its diagram (the one the Analyst attached, else
+    /// the first in its text) on the whole terminal.
+    pub(super) fn open_summary_diagram(&mut self) {
+        let mermaid = self.current_summary().and_then(|(summary, _)| {
+            (summary.diagram.clone()).or_else(|| {
+                crate::markdown::fenced_blocks(&summary.text, "mermaid")
+                    .into_iter()
+                    .next()
+            })
+        });
+        let Some(mermaid) = mermaid else {
+            self.message = Some("The Summary has no diagram to show full screen".into());
+            return;
+        };
+        self.diagrams.summary_full = Some(mermaid);
+        self.diagrams.full = true;
+        self.diagrams.view = Pan::default();
+        self.diagrams.density = Density::Fit;
+    }
+
+    /// The Mermaid text of the diagram the overlay shows, if it came.
+    fn shown_mermaid(&self) -> Option<&String> {
+        match &self.diagrams.summary_full {
+            Some(mermaid) => Some(mermaid),
+            None => self.diagrams.cache.get(self.diagrams.open.as_ref()?),
+        }
     }
 
     /// `:diagram`. Returns whether `command` was one of the diagram's.
@@ -154,6 +189,8 @@ impl Session {
             self.ask_diagram(analyst, key.clone(), false);
         }
         self.diagrams.open = Some(key);
+        self.diagrams.summary_full = None;
+        self.diagrams.full = false;
         self.diagrams.view = Pan::default();
         self.diagrams.density = Density::Fit;
         true
@@ -199,6 +236,11 @@ impl Session {
     /// `r` in the overlay: draw the open diagram again, whatever is cached.
     /// The old picture stays on screen until the new one comes.
     fn refresh_diagram(&mut self) {
+        if self.diagrams.summary_full.is_some() {
+            self.message =
+                Some("The diagram of the Summary is drawn again with it: :analyze".into());
+            return;
+        }
         let Some(key) = self.diagrams.open.clone() else {
             return;
         };
@@ -292,7 +334,7 @@ impl Session {
             self.diagrams.inline_density = to;
             let to_lines = self.widest_summary_drawing();
             let view = self.summary_text_size();
-            let left = pan::recentre(&self.diagrams.inline, &from, &to_lines, view);
+            let left = pan::recentre(&self.diagrams.inline, (&from, view), (&to_lines, view));
             self.diagrams.inline = Pan::at(left.left(&to_lines, view), 0);
             return;
         }
@@ -392,15 +434,36 @@ impl Session {
 
     /// Keys of the diagram overlay; returns whether the key was used.
     pub(super) fn diagram_key(&mut self, key: KeyEvent) -> bool {
-        if self.diagrams.open.is_none() {
+        if !self.diagram_open() {
             return false;
         }
-        if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
-            self.diagrams.open = None;
-            return true;
+        let summary = self.diagrams.summary_full.is_some();
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Char(_) if ctrl => {}
+            // Back from the whole terminal; from the Summary's diagram, to it.
+            KeyCode::Esc | KeyCode::Char('f') if summary => {
+                self.diagrams.summary_full = None;
+                self.diagrams.full = false;
+                return true;
+            }
+            KeyCode::Esc if self.diagrams.full => {
+                self.diagrams.full = false;
+                return true;
+            }
+            KeyCode::Char('f') => {
+                self.change_room(|d| d.full = !d.full);
+                return true;
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.diagrams.open = None;
+                self.diagrams.summary_full = None;
+                self.diagrams.full = false;
+                return true;
+            }
+            _ => {}
         }
-        let source =
-            (self.diagrams.open.as_ref()).and_then(|key| self.diagrams.cache.get(key).cloned());
+        let source = self.shown_mermaid().cloned();
         match key.code {
             KeyCode::Char('r') => self.refresh_diagram(),
             KeyCode::Char('y') => {
@@ -444,13 +507,22 @@ impl Session {
         true
     }
 
+    /// Change what decides the room of the picture (full screen or not),
+    /// keeping the centre of the view on the picture laid out again.
+    fn change_room(&mut self, change: impl FnOnce(&mut Diagrams)) {
+        let (old, old_view) = (self.open_lines(), self.diagram_view());
+        change(&mut self.diagrams);
+        let (new, new_view) = (self.open_lines(), self.diagram_view());
+        self.diagrams.view = pan::recentre(&self.diagrams.view, (&old, old_view), (&new, new_view));
+    }
+
     /// Lay the open picture out at `to`, keeping the centre of the view.
     fn change_density(&mut self, to: Density) {
         let from = self.diagrams.density;
         if drawn_as(from) != drawn_as(to) {
             let (old, new) = (self.open_lines_at(from), self.open_lines_at(to));
-            self.diagrams.view =
-                pan::recentre(&self.diagrams.view, &old, &new, self.diagram_view());
+            let view = self.diagram_view();
+            self.diagrams.view = pan::recentre(&self.diagrams.view, (&old, view), (&new, view));
         }
         self.diagrams.density = to;
     }
@@ -498,8 +570,18 @@ impl Session {
         self.diagrams.view.wheel(forward, sideways, &lines, view);
     }
 
-    /// Where the diagram overlay draws its picture.
-    fn diagram_place(&self) -> pan::Place {
+    /// Where the diagram overlay draws its picture: inside the border, or
+    /// on the whole terminal above a line that says what it is.
+    pub(super) fn diagram_place(&self) -> pan::Place {
+        if self.diagrams.full {
+            let (width, height) = self.size;
+            let text = Rect::new(0, 0, width, height.saturating_sub(1));
+            return pan::Place {
+                text,
+                edges: None,
+                label: Some((Rect::new(0, height.saturating_sub(1), width, 1), 0)),
+            };
+        }
         let area = self.overlay_area();
         pan::Place {
             text: Rect::new(
@@ -508,7 +590,7 @@ impl Session {
                 area.width.saturating_sub(4),
                 area.height.saturating_sub(2),
             ),
-            edges: area,
+            edges: Some(area),
             label: Some((
                 Rect::new(
                     area.x,
@@ -522,30 +604,48 @@ impl Session {
     }
 
     pub(super) fn render_diagram_overlay(&self, buf: &mut Buffer) {
-        let Some(key) = &self.diagrams.open else {
-            return;
+        let title = match (&self.diagrams.summary_full, &self.diagrams.open) {
+            (Some(_), _) => " Diagram: Summary ".to_string(),
+            (None, Some(key)) => {
+                let what = match &key.2 {
+                    DiagramSubject::File { path } | DiagramSubject::Fragment { path, .. } => path,
+                    DiagramSubject::Group { name, .. } => name,
+                };
+                let cached = if self.diagrams.pending.contains(key)
+                    && self.diagrams.cache.contains_key(key)
+                {
+                    " updating"
+                } else if self.diagram_from_cache() {
+                    " cached"
+                } else {
+                    ""
+                };
+                format!(" Diagram: {what}{cached} ")
+            }
+            (None, None) => return,
         };
-        let area = self.overlay_area();
-        clear_area(self.theme(), buf, area);
-        let what = match &key.2 {
-            DiagramSubject::File { path } | DiagramSubject::Fragment { path, .. } => path,
-            DiagramSubject::Group { name, .. } => name,
-        };
-        let cached = if self.diagrams.pending.contains(key) && self.diagrams.cache.contains_key(key)
-        {
-            " updating"
-        } else if self.diagram_from_cache() {
-            " cached"
-        } else {
-            ""
-        };
-        draw_box(
-            self.theme(),
-            buf,
-            area,
-            &format!(" Diagram: {what}{cached} "),
-        );
         let place = self.diagram_place();
+        if self.diagrams.full {
+            let (width, height) = self.size;
+            clear_area(self.theme(), buf, Rect::new(0, 0, width, height));
+            let line = match &self.message {
+                Some(message) => format!(" {message}"),
+                None => format!("{title}· f/Esc: назад"),
+            };
+            if let Some((row, _)) = place.label {
+                buf.set_stringn(
+                    row.x,
+                    row.y,
+                    &line,
+                    row.width as usize,
+                    Style::new().fg(self.theme().dim),
+                );
+            }
+        } else {
+            let area = self.overlay_area();
+            clear_area(self.theme(), buf, area);
+            draw_box(self.theme(), buf, area, &title);
+        }
         let lines = self.open_lines();
         match self.overview_of(&lines) {
             Some(overview) => self.render_overview(buf, &place, &overview),
@@ -602,6 +702,13 @@ impl Session {
 
     /// The lines the open overlay shows at `density`.
     fn open_lines_at(&self, density: Density) -> Vec<String> {
+        let density = drawn_as(density);
+        if let Some(mermaid) = &self.diagrams.summary_full {
+            return match (self.diagrams.pictures).get(mermaid, self.diagram_room(), density) {
+                Ok(lines) => lines.to_vec(),
+                Err(e) => failure_lines(&e, mermaid),
+            };
+        }
         let Some(key) = &self.diagrams.open else {
             return Vec::new();
         };
@@ -621,7 +728,6 @@ impl Session {
         };
         let picture = match self.diagrams.cache.get(key) {
             Some(mermaid) => {
-                let density = drawn_as(density);
                 match (self.diagrams.pictures).get(mermaid, self.diagram_room(), density) {
                     Ok(lines) => lines.to_vec(),
                     Err(e) => failure_lines(&e, mermaid),

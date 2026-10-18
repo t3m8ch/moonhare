@@ -672,3 +672,92 @@ fn the_summary_diagram_changes_density_too() {
     h.keys("-");
     assert!(!dotted(&h.screen()), "{}", h.screen());
 }
+
+#[test]
+fn f_shows_the_diagram_on_the_whole_terminal_and_f_or_esc_go_back() {
+    let (_fx, mut h) = big();
+    h.keys("0gg");
+    assert!(h.screen().contains("┌ Diagram"), "{}", h.screen());
+
+    h.keys("f");
+    let screen = h.screen();
+    // No border, no sidebar, no status line: the picture and a line under it.
+    assert!(!screen.contains("┌ Diagram"), "{screen}");
+    assert!(!screen.contains("Commits"), "{screen}");
+    assert!(!screen.contains("NORMAL"), "{screen}");
+    assert_eq!(position(&screen, "колонки").1, 100, "{screen}");
+    assert_eq!(position(&screen, "строки").1, 29, "{screen}");
+    assert!(screen.lines().last().unwrap().contains("f/Esc"), "{screen}");
+
+    // Keys and the wheel move it as in the window.
+    h.keys("j");
+    assert_eq!(position(&h.screen(), "строки").0, 2);
+    h.wheel_down(50, 15);
+    assert_eq!(position(&h.screen(), "строки").0, 5);
+
+    h.keys("f");
+    assert!(h.screen().contains("┌ Diagram"), "{}", h.screen());
+    h.keys("f<Esc>");
+    assert!(h.screen().contains("┌ Diagram"), "{}", h.screen());
+    h.keys("q");
+    assert!(!h.screen().contains("┌ Diagram"), "{}", h.screen());
+}
+
+#[test]
+fn full_screen_lays_the_diagram_out_for_the_whole_terminal() {
+    let fx = feature_branch();
+    let analyst = FakeAnalyst::drawing(WIDE);
+    let mut session = Session::open(fx.path(), 220, 40).expect("session opens");
+    session.set_analyst(analyst.clone());
+    let mut h = Harness::from_session(session);
+    h.keys(":diagram<CR>");
+    h.session().wait_for_analyst();
+    let row = |screen: &str, name: &str| screen.lines().position(|l| l.contains(name));
+    let windowed = h.screen();
+    assert_ne!(
+        row(&windowed, "Alpha"),
+        row(&windowed, "Foxtrot"),
+        "{windowed}"
+    );
+
+    h.keys("f");
+    let full = h.screen();
+    assert_eq!(row(&full, "Alpha"), row(&full, "Foxtrot"), "{full}");
+}
+
+#[test]
+fn f_in_the_summary_shows_its_diagram_on_the_whole_terminal() {
+    let fx = feature_branch();
+    let analyst = with_summary_diagram(Some(&big_tree()));
+    let mut h = review_with(&fx, &analyst);
+    h.session().wait_for_analyst();
+    h.keys("<Space>s");
+    assert!(h.screen().contains("Summary text"), "{}", h.screen());
+
+    h.keys("f");
+    let screen = h.screen();
+    assert!(!screen.contains("Summary text"), "{screen}");
+    assert!(screen.contains("TheRootOfEverything"), "{screen}");
+    assert!(screen.contains("колонки"), "{screen}");
+    h.keys("Lj");
+    assert_eq!(position(&h.screen(), "строки").0, 2);
+
+    h.keys("<Esc>");
+    assert!(h.screen().contains("Summary text"), "{}", h.screen());
+    h.keys("f");
+    assert!(!h.screen().contains("Summary text"));
+    h.keys("f");
+    assert!(h.screen().contains("Summary text"), "{}", h.screen());
+}
+
+#[test]
+fn f_in_a_summary_without_a_diagram_says_so() {
+    let fx = feature_branch();
+    let analyst = with_summary_diagram(None);
+    let mut h = review_with(&fx, &analyst);
+    h.session().wait_for_analyst();
+    h.keys("<Space>sf");
+    let screen = h.screen();
+    assert!(screen.contains("Summary text"), "{screen}");
+    assert!(screen.contains("no diagram"), "{screen}");
+}

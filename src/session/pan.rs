@@ -191,9 +191,9 @@ pub(super) fn slice(line: &str, left: usize, cols: usize) -> String {
 pub(super) struct Place {
     /// Where the picture goes.
     pub text: Rect,
-    /// The box whose edges carry the markers: the border of an overlay, or
-    /// the text itself when there is none.
-    pub edges: Rect,
+    /// The box whose edges carry the markers, the border of an overlay;
+    /// with none, they go in front of the position.
+    pub edges: Option<Rect>,
     /// The row the position is written on, right-aligned, and how far from
     /// its edges.
     pub label: Option<(Rect, u16)>,
@@ -219,37 +219,53 @@ pub(super) fn render(theme: &Theme, buf: &mut Buffer, place: &Place, lines: &[St
     if size.cols <= view.cols && size.rows <= view.rows {
         return;
     }
-    let edges = place.edges;
+    let more = [
+        ('◀', left > 0),
+        ('▶', left + view.cols < size.cols),
+        ('▲', top > 0),
+        ('▼', top + view.rows < size.rows),
+    ];
+    if let Some((row, margin)) = place.label {
+        let mut label = position(left, top, view, size);
+        if place.edges.is_none() {
+            let marks: String = more
+                .iter()
+                .map(|&(mark, on)| if on { mark } else { ' ' })
+                .collect();
+            label = format!(" {marks}{label}");
+        }
+        let len = label.chars().count() as u16;
+        if row.width >= len + 2 * margin {
+            let x = row.x + row.width - margin - len;
+            buf.set_stringn(x, row.y, &label, len as usize, Style::new().fg(theme.dim));
+            if place.edges.is_none() {
+                for (i, &(_, on)) in more.iter().enumerate() {
+                    if on {
+                        buf[(x + 1 + i as u16, row.y)].set_fg(theme.accent);
+                    }
+                }
+            }
+        }
+    }
+    let Some(edges) = place.edges else {
+        return;
+    };
     let marker = Style::new().fg(theme.accent);
     let (mid_x, mid_y) = (edges.x + edges.width / 2, edges.y + edges.height / 2);
     let (right, bottom) = (
         edges.x + edges.width.saturating_sub(1),
         edges.y + edges.height.saturating_sub(1),
     );
-    if let Some((row, margin)) = place.label {
-        let label = position(left, top, view, size);
-        let len = label.chars().count() as u16;
-        if row.width >= len + 2 * margin {
-            buf.set_stringn(
-                row.x + row.width - margin - len,
-                row.y,
-                &label,
-                len as usize,
-                Style::new().fg(theme.dim),
-            );
+    let at = [
+        (edges.x, mid_y),
+        (right, mid_y),
+        (mid_x, edges.y),
+        (mid_x, bottom),
+    ];
+    for ((mark, on), (x, y)) in more.iter().zip(at) {
+        if *on {
+            buf.set_string(x, y, mark.to_string(), marker);
         }
-    }
-    if left > 0 {
-        buf.set_string(edges.x, mid_y, "◀", marker);
-    }
-    if left + view.cols < size.cols {
-        buf.set_string(right, mid_y, "▶", marker);
-    }
-    if top > 0 {
-        buf.set_string(mid_x, edges.y, "▲", marker);
-    }
-    if top + view.rows < size.rows {
-        buf.set_string(mid_x, bottom, "▼", marker);
     }
 }
 
@@ -265,17 +281,30 @@ fn position(left: usize, top: usize, view: Size, size: Size) -> String {
     )
 }
 
-/// The view of `to` whose centre is where the centre of `pan`'s view of
-/// `from` is, in shares of the pictures' sizes: a picture laid out again
-/// keeps the place the Reviewer was looking at in sight.
-pub(super) fn recentre(pan: &Pan, from: &[String], to: &[String], view: Size) -> Pan {
+/// The view of `to` (in a box of its size) whose centre is where the centre
+/// of `pan`'s view of `from` is, in shares of the pictures' sizes: a picture
+/// laid out again keeps the place the Reviewer was looking at in sight.
+pub(super) fn recentre(pan: &Pan, from: (&[String], Size), to: (&[String], Size)) -> Pan {
+    let ((from, from_view), (to, to_view)) = (from, to);
     let (old, new) = (Size::of(from), Size::of(to));
-    let along = |first: usize, shown: usize, old: usize, new: usize| {
+    let along = |first: usize, shown: usize, old: usize, wanted: usize, new: usize| {
         let centre = (first as f64 + shown.min(old) as f64 / 2.0) / old.max(1) as f64;
-        (centre * new as f64 - shown as f64 / 2.0).max(0.0).round() as usize
+        (centre * new as f64 - wanted as f64 / 2.0).max(0.0).round() as usize
     };
     Pan::at(
-        along(pan.left(from, view), view.cols, old.cols, new.cols),
-        along(pan.top(from, view), view.rows, old.rows, new.rows),
+        along(
+            pan.left(from, from_view),
+            from_view.cols,
+            old.cols,
+            to_view.cols,
+            new.cols,
+        ),
+        along(
+            pan.top(from, from_view),
+            from_view.rows,
+            old.rows,
+            to_view.rows,
+            new.rows,
+        ),
     )
 }
