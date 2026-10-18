@@ -170,11 +170,6 @@ impl Decoder {
         self.held_at = (!self.held.is_empty()).then_some(now);
     }
 
-    /// The next input made out of what was fed.
-    pub fn next(&mut self) -> Option<Input> {
-        self.out.pop_front()
-    }
-
     /// When held bytes have waited long enough; `None` when none are held.
     pub fn deadline(&self) -> Option<Instant> {
         let at = self.held_at?;
@@ -260,6 +255,15 @@ impl Decoder {
             Ok(None) => {}
             Err(_) => self.keys.clear(),
         }
+    }
+}
+
+/// The inputs made out of what was fed, oldest first.
+impl Iterator for Decoder {
+    type Item = Input;
+
+    fn next(&mut self) -> Option<Input> {
+        self.out.pop_front()
     }
 }
 

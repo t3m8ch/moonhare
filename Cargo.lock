@@ -1043,6 +1043,7 @@ name = "moonhare"
 version = "0.1.0"
 dependencies = [
  "difftastic",
+ "libc",
  "mmdflux",
  "pulldown-cmark",
  "ratatui",

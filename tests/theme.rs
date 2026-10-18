@@ -4,6 +4,7 @@
 mod support;
 
 use moonhare::session::Session;
+use moonhare::terminal_input::{self, Reply};
 use moonhare::theme::{self, Background, Theme, DARK, LIGHT};
 use ratatui::style::Color;
 use support::{feature_branch, Harness};
@@ -285,4 +286,73 @@ fn the_light_theme_survives_truecolor() {
     };
     let (r, g, b) = moonhare::color::indexed_to_rgb(i);
     assert_eq!(frame.fg_at(x, y), Color::Rgb(r, g, b));
+}
+
+// ------------------------------------------------------- terminal replies
+
+#[test]
+fn a_background_reply_switches_the_auto_theme_whenever_it_comes() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.settle();
+    let (x, y) = cell(&mut h, "add a");
+    assert_eq!(
+        h.frame().fg_at(x, y),
+        DARK.fg,
+        "the first frame does not wait"
+    );
+
+    h.wait(2_000);
+    h.session()
+        .terminal_reply(&Reply::Background(Background::Light));
+    assert_eq!(h.frame().fg_at(x, y), LIGHT.fg);
+    // The terminal's colour scheme changed (DEC 2031).
+    h.session()
+        .terminal_reply(&Reply::Background(Background::Dark));
+    assert_eq!(h.frame().fg_at(x, y), DARK.fg);
+    h.session().terminal_reply(&Reply::Other);
+    assert_eq!(h.frame().fg_at(x, y), DARK.fg);
+}
+
+#[test]
+fn a_chosen_theme_outranks_the_terminal_background() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.settle();
+    let (x, y) = cell(&mut h, "add a");
+    h.keys(":theme dark<CR>");
+    h.session()
+        .terminal_reply(&Reply::Background(Background::Light));
+    assert_eq!(h.frame().fg_at(x, y), DARK.fg);
+    assert!(h.session().take_terminal_output().is_empty());
+    // Back to auto: the background known so far, and asked anew.
+    h.keys(":theme auto<CR>");
+    assert_eq!(h.frame().fg_at(x, y), LIGHT.fg);
+    assert_eq!(
+        h.session().take_terminal_output(),
+        vec![terminal_input::QUERY_BACKGROUND.to_string()]
+    );
+    h.session()
+        .terminal_reply(&Reply::Background(Background::Dark));
+    assert_eq!(h.frame().fg_at(x, y), DARK.fg);
+}
+
+#[test]
+fn osc_11_colours_tell_light_from_dark() {
+    use moonhare::theme::background_from_osc11 as bg;
+    assert_eq!(bg("rgb:ffff/ffff/ffff"), Some(Background::Light));
+    assert_eq!(bg("rgb:fdfd/f6f6/e3e3"), Some(Background::Light));
+    assert_eq!(bg("rgb:1e/1e/2e"), Some(Background::Dark));
+    assert_eq!(bg("rgb:0/0/0"), Some(Background::Dark));
+    assert_eq!(bg("rgba:ffff/ffff/ffff/8000"), Some(Background::Light));
+    for bad in [
+        "",
+        "rgb:ff/ff",
+        "rgb:ff/ff/zz",
+        "rgb:+f/f/f",
+        "rgb:fffff/0/0",
+        "#ffffff",
+    ] {
+        assert_eq!(bg(bad), None, "{bad:?}");
+    }
 }

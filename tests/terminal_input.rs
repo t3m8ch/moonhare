@@ -19,7 +19,10 @@ fn key(c: char) -> Input {
 }
 
 fn alt(c: char) -> Input {
-    Input::Event(Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::ALT)))
+    Input::Event(Event::Key(KeyEvent::new(
+        KeyCode::Char(c),
+        KeyModifiers::ALT,
+    )))
 }
 
 fn code(c: KeyCode) -> Input {
@@ -172,10 +175,7 @@ fn other_replies_are_dropped_not_typed() {
 
 #[test]
 fn a_reply_cut_off_for_good_is_dropped_and_typing_goes_on() {
-    let out = decode_at(
-        &[(0, b"\x1b]11;rgb:ffff/ff"), (3_000, b"jk")],
-        5_000,
-    );
+    let out = decode_at(&[(0, b"\x1b]11;rgb:ffff/ff"), (3_000, b"jk")], 5_000);
     assert_eq!(out, vec![key('j'), key('k')]);
 }
 
@@ -222,10 +222,7 @@ fn esc_then_bracket_with_any_pause_is_keys() {
         );
     }
     // A count after the bracket.
-    assert_eq!(
-        decode(b"\x1b]1j"),
-        vec![alt(']'), key('1'), key('j')]
-    );
+    assert_eq!(decode(b"\x1b]1j"), vec![alt(']'), key('1'), key('j')]);
     assert_eq!(
         decode(b"\x1b]11j"),
         vec![alt(']'), key('1'), key('1'), key('j')]
