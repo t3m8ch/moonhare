@@ -7,8 +7,8 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 
 use super::analysis::Pending;
+use super::pan::{self, Pan, Size};
 use super::*;
-use unicode_width::UnicodeWidthStr;
 
 use crate::analyst::{Analyst, DiagramRequest, DiagramSubject};
 use crate::analyst_cache::AnalystCache;
@@ -37,10 +37,10 @@ pub(super) struct Diagrams {
     receiver: Receiver<Answer>,
     /// The overlay is open on this diagram.
     open: Option<Key>,
-    /// Columns the picture is scrolled to the left.
-    hscroll: usize,
-    /// How far the picture is scrolled up.
-    scroll: scroll::Scroll,
+    /// Where the overlay's view of its picture is.
+    view: Pan,
+    /// How far the diagrams of the Summary are moved sideways.
+    inline: Pan,
     /// Mermaid texts of Summaries, drawn once.
     drawings: HashMap<String, Result<Vec<String>, String>>,
 }
@@ -56,8 +56,8 @@ impl Default for Diagrams {
             sender,
             receiver,
             open: None,
-            hscroll: 0,
-            scroll: Default::default(),
+            view: Pan::default(),
+            inline: Pan::default(),
             drawings: HashMap::new(),
         }
     }
@@ -101,8 +101,7 @@ impl Session {
             self.ask_diagram(analyst, key.clone(), false);
         }
         self.diagrams.open = Some(key);
-        self.diagrams.hscroll = 0;
-        self.diagrams.scroll = Default::default();
+        self.diagrams.view = Pan::default();
         true
     }
 
@@ -231,44 +230,53 @@ impl Session {
         }
     }
 
-    /// `h`, `l` scroll the picture of `lines` sideways and `y` copies `source`.
-    fn picture_key(&mut self, code: KeyCode, source: Option<String>, lines: &[String]) {
-        match code {
-            KeyCode::Char('l') => {
-                let widest = lines.iter().map(|l| l.width()).max().unwrap_or(0);
-                let limit = widest.saturating_sub(self.overlay_text_width());
-                self.diagrams.hscroll = (self.diagrams.hscroll + HSCROLL_STEP).min(limit);
-            }
-            KeyCode::Char('h') => {
-                self.diagrams.hscroll = self.diagrams.hscroll.saturating_sub(HSCROLL_STEP)
-            }
-            KeyCode::Char('y') => {
-                if let Some(source) = source {
-                    self.copy_to_clipboard(&source, "the Mermaid source");
-                }
-            }
-            _ => {}
+    /// Keys for the diagrams inside the Summary overlay: they move sideways.
+    pub(super) fn summary_diagram_key(&mut self, key: KeyEvent) {
+        let sideways = matches!(
+            key.code,
+            KeyCode::Char('h' | 'l' | 'H' | 'L' | '0' | '$') | KeyCode::Left | KeyCode::Right
+        );
+        if !sideways {
+            return;
         }
+        let lines = self.widest_summary_drawing();
+        let view = self.summary_text_size();
+        self.diagrams.inline.key(key, &lines, view);
     }
 
-    /// Keys for the diagram inside the Summary overlay.
-    pub(super) fn summary_diagram_key(&mut self, code: KeyCode) {
-        let Some(mermaid) = self
-            .current_summary()
-            .and_then(|(summary, _)| summary.diagram.clone())
-        else {
-            return;
+    /// A notch of the wheel sideways over the Summary.
+    pub(super) fn summary_diagram_wheel(&mut self, forward: bool) {
+        let lines = self.widest_summary_drawing();
+        let view = self.summary_text_size();
+        self.diagrams.inline.wheel(forward, true, &lines, view);
+    }
+
+    /// The widest of the drawings of the Summary shown: how far they move.
+    fn widest_summary_drawing(&self) -> Vec<String> {
+        let Some((summary, _)) = self.current_summary() else {
+            return Vec::new();
         };
-        let lines = match self.diagrams.drawings.get(&mermaid) {
-            Some(Ok(lines)) => lines.clone(),
-            _ => failure_lines("", &mermaid),
-        };
-        self.picture_key(code, Some(mermaid), &lines);
+        (summary.diagram.iter().cloned())
+            .chain(crate::markdown::fenced_blocks(&summary.text, "mermaid"))
+            .filter_map(|mermaid| match self.diagrams.drawings.get(&mermaid) {
+                Some(Ok(lines)) => Some(lines.clone()),
+                _ => None,
+            })
+            .max_by_key(|lines| Size::of(lines).cols)
+            .unwrap_or_default()
+    }
+
+    fn summary_text_size(&self) -> Size {
+        let area = self.overlay_area();
+        Size {
+            cols: scroll::text_cols(area),
+            rows: scroll::text_rows(area),
+        }
     }
 
     /// A Summary overlay was opened: its diagram starts unscrolled.
     pub(super) fn reset_picture_scroll(&mut self) {
-        self.diagrams.hscroll = 0;
+        self.diagrams.inline = Pan::at(0, 0);
     }
 
     /// Draw the Mermaid text of a Summary now, so that frames need not.
@@ -287,10 +295,14 @@ impl Session {
     /// reason it is missing and the source.
     pub(super) fn drawing_lines(&self, mermaid: &str) -> Vec<String> {
         match self.diagrams.drawings.get(mermaid) {
-            Some(Ok(lines)) => lines
-                .iter()
-                .map(|l| l.chars().skip(self.diagrams.hscroll).collect())
-                .collect(),
+            Some(Ok(lines)) => {
+                let view = self.summary_text_size();
+                let left = self.diagrams.inline.left(lines, view);
+                lines
+                    .iter()
+                    .map(|l| pan::slice(l, left, view.cols))
+                    .collect()
+            }
             Some(Err(e)) => failure_lines(e, mermaid),
             None => Vec::new(),
         }
@@ -311,26 +323,58 @@ impl Session {
                 .get(key)
                 .map(|drawn| drawn.mermaid.clone())
         });
-        let lines = self.open_lines();
-        let rows = scroll::text_rows(self.overlay_area());
-        let mut scroll = self.diagrams.scroll;
-        if scroll.key(key, lines.len(), rows) {
-            self.diagrams.scroll = scroll;
-            return true;
+        match key.code {
+            KeyCode::Char('r') => self.refresh_diagram(),
+            KeyCode::Char('y') => {
+                if let Some(source) = source {
+                    self.copy_to_clipboard(&source, "the Mermaid source");
+                }
+            }
+            _ => {
+                let lines = self.open_lines();
+                let view = self.diagram_place().text;
+                let view = Size {
+                    cols: view.width as usize,
+                    rows: view.height as usize,
+                };
+                self.diagrams.view.key(key, &lines, view);
+            }
         }
-        if key.code == KeyCode::Char('r') {
-            self.refresh_diagram();
-            return true;
-        }
-        self.picture_key(key.code, source, &lines);
         true
     }
 
-    pub(super) fn diagram_scroll_mut(&mut self) -> Option<&mut scroll::Scroll> {
-        self.diagrams
-            .open
-            .is_some()
-            .then_some(&mut self.diagrams.scroll)
+    /// A notch of the wheel over the diagram overlay.
+    pub(super) fn diagram_wheel(&mut self, forward: bool, sideways: bool) {
+        let lines = self.open_lines();
+        let text = self.diagram_place().text;
+        let view = Size {
+            cols: text.width as usize,
+            rows: text.height as usize,
+        };
+        self.diagrams.view.wheel(forward, sideways, &lines, view);
+    }
+
+    /// Where the diagram overlay draws its picture.
+    fn diagram_place(&self) -> pan::Place {
+        let area = self.overlay_area();
+        pan::Place {
+            text: Rect::new(
+                area.x + 2,
+                area.y + 1,
+                area.width.saturating_sub(4),
+                area.height.saturating_sub(2),
+            ),
+            edges: area,
+            label: Some((
+                Rect::new(
+                    area.x,
+                    area.y + area.height.saturating_sub(1),
+                    area.width,
+                    1,
+                ),
+                2,
+            )),
+        }
     }
 
     pub(super) fn render_diagram_overlay(&self, buf: &mut Buffer) {
@@ -357,15 +401,13 @@ impl Session {
             area,
             &format!(" Diagram: {what}{cached} "),
         );
-        let lines: Vec<String> = (self.open_lines().iter())
-            .map(|l| l.chars().skip(self.diagrams.hscroll).collect())
-            .collect();
-        scroll::render_lines(self.theme(), buf, area, &lines, &self.diagrams.scroll);
-    }
-
-    /// Width in cells of the text inside the overlay's border.
-    fn overlay_text_width(&self) -> usize {
-        self.overlay_area().width.saturating_sub(4) as usize
+        pan::render(
+            self.theme(),
+            buf,
+            &self.diagram_place(),
+            &self.open_lines(),
+            &self.diagrams.view,
+        );
     }
 
     /// The lines the open overlay shows.

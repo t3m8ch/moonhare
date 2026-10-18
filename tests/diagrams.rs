@@ -147,7 +147,7 @@ fn the_summary_diagram_scrolls_with_h_and_l_and_y_copies_it_with_the_summary() {
     h.keys("<Space>s");
     assert!(!h.screen().contains("Foxtrot"), "{}", h.screen());
 
-    h.keys("llllllll");
+    h.keys("$");
     assert!(h.screen().contains("Foxtrot"), "{}", h.screen());
 
     // y copies the Markdown of the Summary, the diagram as a Mermaid block.
@@ -308,11 +308,191 @@ fn a_wide_diagram_scrolls_sideways_with_h_and_l() {
     assert!(h.screen().contains("Alpha"), "{}", h.screen());
     assert!(!h.screen().contains("Foxtrot"), "{}", h.screen());
 
-    h.keys("llllllll");
+    h.keys("$");
     let scrolled = h.screen();
     assert!(scrolled.contains("Foxtrot"), "{scrolled}");
     assert!(!scrolled.contains("Alpha"), "{scrolled}");
 
-    h.keys("hhhhhhhhhhhh");
+    h.keys("0");
     assert!(h.screen().contains("Alpha"), "{}", h.screen());
+}
+
+/// A tree wider and taller than any window: twelve columns of eight steps
+/// whose names cannot be wrapped, under one root.
+fn big_tree() -> String {
+    let mut lines = vec!["flowchart TD".to_string()];
+    for c in 0..12 {
+        lines.push(format!(
+            "    Root[TheRootOfEverything] --> C{c}S0[Column{c}Step0]"
+        ));
+        for s in 1..8 {
+            lines.push(format!(
+                "    C{c}S{}[Column{c}Step{}] --> C{c}S{s}[Column{c}Step{s}]",
+                s - 1,
+                s - 1
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+fn open_big(h: &mut Harness) {
+    h.keys(":diagram<CR>");
+    h.session().wait_for_analyst();
+}
+
+fn big() -> (Fixture, Harness) {
+    let fx = feature_branch();
+    let analyst = FakeAnalyst::drawing(&big_tree());
+    let mut h = review_with(&fx, &analyst);
+    open_big(&mut h);
+    (fx, h)
+}
+
+/// `(first, last, all)` of the columns or rows the border names.
+fn position(screen: &str, what: &str) -> (usize, usize, usize) {
+    let at = screen
+        .find(&format!("{what} "))
+        .unwrap_or_else(|| panic!("no {what} on the border:\n{screen}"));
+    let rest = &screen[at + what.len() + 1..];
+    let numbers: Vec<usize> = rest
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|s| !s.is_empty())
+        .take(3)
+        .map(|s| s.parse().unwrap())
+        .collect();
+    (numbers[0], numbers[1], numbers[2])
+}
+
+/// The markers on the border of the overlay of a 100x30 terminal, in the
+/// order left, right, top, bottom.
+fn markers(screen: &str) -> String {
+    let rows: Vec<Vec<char>> = screen.lines().map(|l| l.chars().collect()).collect();
+    let at = |x: usize, y: usize| rows.get(y).and_then(|r| r.get(x)).copied();
+    let mut found = String::new();
+    if (3..27).any(|y| at(2, y) == Some('◀')) {
+        found.push('◀');
+    }
+    if (3..27).any(|y| at(97, y) == Some('▶')) {
+        found.push('▶');
+    }
+    if (3..97).any(|x| at(x, 2) == Some('▲')) {
+        found.push('▲');
+    }
+    if (3..97).any(|x| at(x, 27) == Some('▼')) {
+        found.push('▼');
+    }
+    found
+}
+
+#[test]
+fn the_view_opens_on_the_top_of_the_diagram_with_its_top_block_in_sight() {
+    let (_fx, mut h) = big();
+    let screen = h.screen();
+    // The root is centred over twelve columns, far right of the left edge:
+    // the view is moved to it rather than opening on blank space.
+    assert!(screen.contains("TheRootOfEverything"), "{screen}");
+    assert_eq!(position(&screen, "строки").0, 1, "{screen}");
+
+    // Reopened after moving, it starts over.
+    h.keys("jjjq:diagram<CR>");
+    assert_eq!(position(&h.screen(), "строки").0, 1);
+}
+
+#[test]
+fn a_wide_and_tall_diagram_shows_markers_and_its_position_on_the_border() {
+    let (_fx, mut h) = big();
+    h.keys("0gg");
+    let screen = h.screen();
+    let (first, last, all) = position(&screen, "колонки");
+    assert_eq!((first, last), (1, 92), "{screen}");
+    assert!(all > 92, "{screen}");
+    let (top, bottom, rows) = position(&screen, "строки");
+    assert_eq!((top, bottom), (1, 24), "{screen}");
+    assert!(rows > 24, "{screen}");
+    assert_eq!(markers(&screen), "▶▼", "{screen}");
+
+    h.keys("$G");
+    let screen = h.screen();
+    assert_eq!(position(&screen, "колонки").1, all, "{screen}");
+    assert_eq!(position(&screen, "строки").1, rows, "{screen}");
+    assert_eq!(markers(&screen), "◀▲", "{screen}");
+}
+
+#[test]
+fn h_j_k_l_and_the_arrows_move_by_a_column_and_a_row() {
+    let (_fx, mut h) = big();
+    h.keys("0gg");
+    h.keys("ll");
+    assert_eq!(position(&h.screen(), "колонки").0, 3);
+    h.keys("h");
+    assert_eq!(position(&h.screen(), "колонки").0, 2);
+    h.keys("jjj");
+    assert_eq!(position(&h.screen(), "строки").0, 4);
+    h.keys("k");
+    assert_eq!(position(&h.screen(), "строки").0, 3);
+    h.keys("<Down><Up><Up>");
+    assert_eq!(position(&h.screen(), "строки").0, 2);
+}
+
+#[test]
+fn big_steps_move_by_half_a_window_and_a_page() {
+    let (_fx, mut h) = big();
+    h.keys("0gg");
+    h.keys("L");
+    assert_eq!(position(&h.screen(), "колонки").0, 47);
+    h.keys("H");
+    assert_eq!(position(&h.screen(), "колонки").0, 1);
+    h.keys("<C-d>");
+    assert_eq!(position(&h.screen(), "строки").0, 13);
+    h.keys("<C-u>");
+    assert_eq!(position(&h.screen(), "строки").0, 1);
+    h.keys("<C-f>");
+    assert_eq!(position(&h.screen(), "строки").0, 24);
+    h.keys("<C-b>");
+    assert_eq!(position(&h.screen(), "строки").0, 1);
+}
+
+#[test]
+fn the_wheel_moves_down_and_shift_with_the_wheel_moves_sideways() {
+    let (_fx, mut h) = big();
+    h.keys("0gg");
+    h.wheel_down(50, 15);
+    assert_eq!(position(&h.screen(), "строки").0, 4);
+    h.wheel_up(50, 15);
+    assert_eq!(position(&h.screen(), "строки").0, 1);
+    h.shift_wheel_down(50, 15);
+    let moved = position(&h.screen(), "колонки").0;
+    assert!(moved > 1, "{}", h.screen());
+    h.wheel_right(50, 15);
+    assert!(position(&h.screen(), "колонки").0 > moved);
+}
+
+#[test]
+fn a_diagram_that_fits_shows_no_markers_and_no_position() {
+    let fx = feature_branch();
+    let analyst = FakeAnalyst::drawing(FLOW);
+    let mut h = review_with(&fx, &analyst);
+    h.keys(":diagram<CR>");
+    h.session().wait_for_analyst();
+    let screen = h.screen();
+    assert!(!screen.contains("колонки"), "{screen}");
+    assert_eq!(markers(&screen), "", "{screen}");
+}
+
+#[test]
+fn shift_with_the_wheel_moves_the_summary_diagram_sideways() {
+    let fx = feature_branch();
+    let analyst = with_summary_diagram(Some(&big_tree()));
+    let mut h = review_with(&fx, &analyst);
+    h.session().wait_for_analyst();
+    h.keys("<Space>s");
+    assert!(h.screen().contains("Column0Step0"), "{}", h.screen());
+
+    for _ in 0..10 {
+        h.shift_wheel_down(50, 15);
+    }
+    assert!(!h.screen().contains("Column0Step0"), "{}", h.screen());
+    h.keys("0");
+    assert!(h.screen().contains("Column0Step0"), "{}", h.screen());
 }

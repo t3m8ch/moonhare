@@ -248,12 +248,32 @@ impl Harness {
         self.mouse(MouseEventKind::ScrollDown, column, row)
     }
 
+    /// The wheel turned down with Shift held: sideways in most terminals.
+    pub fn shift_wheel_down(&mut self, column: u16, row: u16) -> &mut Self {
+        self.mouse_with(MouseEventKind::ScrollDown, KeyModifiers::SHIFT, column, row)
+    }
+
+    /// A sideways wheel (or a touchpad), turned to the right.
+    pub fn wheel_right(&mut self, column: u16, row: u16) -> &mut Self {
+        self.mouse(MouseEventKind::ScrollRight, column, row)
+    }
+
     fn mouse(&mut self, kind: MouseEventKind, column: u16, row: u16) -> &mut Self {
+        self.mouse_with(kind, KeyModifiers::NONE, column, row)
+    }
+
+    fn mouse_with(
+        &mut self,
+        kind: MouseEventKind,
+        modifiers: KeyModifiers,
+        column: u16,
+        row: u16,
+    ) -> &mut Self {
         self.session.handle(Event::Mouse(MouseEvent {
             kind,
             column,
             row,
-            modifiers: KeyModifiers::NONE,
+            modifiers,
         }));
         self.session.wait_for_diff();
         self

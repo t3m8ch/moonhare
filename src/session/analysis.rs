@@ -476,7 +476,7 @@ impl Session {
                 let source = self.summary_source().unwrap_or_default();
                 self.copy_to_clipboard(&source, "the Summary");
             } else {
-                self.summary_diagram_key(key.code);
+                self.summary_diagram_key(key);
             }
             return true;
         }

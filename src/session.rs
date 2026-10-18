@@ -302,6 +302,7 @@ mod mouse;
 mod nav;
 mod overlay;
 mod overlay_mouse;
+mod pan;
 mod prompt;
 mod reload;
 mod rounds;
