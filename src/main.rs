@@ -20,13 +20,6 @@ fn main() -> ExitCode {
         }
     };
     let (width, height) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
-    // The query for the background holds the terminal in raw mode while the
-    // session opens: a panic in that time must not leave it there.
-    let hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let _ = ratatui::crossterm::terminal::disable_raw_mode();
-        hook(info);
-    }));
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let usage = || {
         eprintln!("usage: moonhare [--lang <code>] [--effort <low|medium|high|xhigh|max>] [--model <name>] [--theme <light|dark|auto>] [<branch> | <base>..<head> | --pr <number>]")
@@ -52,16 +45,12 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Ask the terminal for its background while the session opens: `auto`
-    // follows it, and so does a later `:theme auto`.
-    let mut background = BackgroundProbe::new();
     let forge: std::sync::Arc<GitHub> = std::sync::Arc::new(GitHub::new());
     let mut terminal = None;
     let opened = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["--pr", n] => match n.trim_start_matches('#').parse::<u64>() {
             Ok(n) => match Opening::pull_request(&cwd, forge, n, width, height) {
                 Ok(opening) => {
-                    background.wait();
                     // The Forge may take a while: show a loading screen that
                     // can be left, not an empty terminal.
                     let mut t = ratatui::init();
@@ -89,12 +78,10 @@ fn main() -> ExitCode {
             Session::open_target_with_forge(&cwd, &target, forge, width, height)
         }
         _ => {
-            background.wait();
             usage();
             return ExitCode::FAILURE;
         }
     };
-    let detected = background.wait();
     let mut session = match opened {
         Ok(s) => s,
         Err(e) => {
@@ -128,10 +115,13 @@ fn main() -> ExitCode {
     if let Some(language) = language {
         session.set_language(&language);
     }
-    session.set_terminal_background(detected.background);
-    if detected.timed_out {
-        session.expect_late_reply();
-    }
+    // `auto` follows the background `$COLORFGBG` names; dark without it.
+    let colorfgbg = std::env::var("COLORFGBG").ok();
+    session.set_terminal_background(
+        colorfgbg
+            .as_deref()
+            .and_then(theme::background_from_colorfgbg),
+    );
     session.set_choice(choice);
     session.set_analyst(std::sync::Arc::new(ClaudeAnalyst::new()));
 
@@ -156,65 +146,6 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
-}
-
-/// How long the terminal may take to tell its background.
-const BACKGROUND_TIMEOUT: Duration = Duration::from_millis(200);
-
-/// What a thread that asks while the session opens learnt of the terminal
-/// background.
-struct BackgroundProbe {
-    asking: Option<std::thread::JoinHandle<Probed>>,
-    probed: Probed,
-}
-
-#[derive(Clone, Copy, Default)]
-struct Probed {
-    /// The background, told by the terminal or by `$COLORFGBG`.
-    background: Option<theme::Background>,
-    /// The terminal did not answer in time: its reply may still come.
-    timed_out: bool,
-}
-
-impl BackgroundProbe {
-    /// Start asking.
-    fn new() -> BackgroundProbe {
-        let asking = std::thread::spawn(|| {
-            let reply = query();
-            let colorfgbg = std::env::var("COLORFGBG").ok();
-            Probed {
-                background: theme::detect(|| reply.background(), colorfgbg.as_deref()),
-                timed_out: reply == theme::Reply::TimedOut,
-            }
-        });
-        BackgroundProbe {
-            asking: Some(asking),
-            probed: Probed::default(),
-        }
-    }
-
-    /// What was learnt, once the thread is done; it holds the terminal in raw
-    /// mode while it asks, so wait before drawing or printing.
-    fn wait(&mut self) -> Probed {
-        if let Some(asking) = self.asking.take() {
-            self.probed = asking.join().unwrap_or_default();
-        }
-        self.probed
-    }
-}
-
-#[cfg(unix)]
-fn query() -> theme::Reply {
-    use std::io::IsTerminal;
-    if !io::stdout().is_terminal() {
-        return theme::Reply::Silent;
-    }
-    theme::query_background(BACKGROUND_TIMEOUT)
-}
-
-#[cfg(not(unix))]
-fn query() -> theme::Reply {
-    theme::Reply::Silent
 }
 
 /// Remove `--flag <value>` from `args` and return the value. `Err` when the

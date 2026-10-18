@@ -219,7 +219,6 @@ mod file_panel;
 mod file_picker;
 mod forge_load;
 mod groups;
-mod late_reply;
 mod long_list;
 mod marks;
 mod mechanical_view;
@@ -308,8 +307,6 @@ pub struct Session {
     /// The theme the Reviewer asked for and the terminal background `auto`
     /// follows.
     theme_setting: themes::ThemeSetting,
-    /// A reply of the terminal that may come late, as keys.
-    late_reply: late_reply::LateReply,
     mode: Mode,
     pending: Option<char>,
     /// How long `pending` has been waiting.
@@ -517,7 +514,6 @@ impl Session {
             sidebar_custom: None,
             truecolor: false,
             theme_setting: themes::ThemeSetting::default(),
-            late_reply: late_reply::LateReply::default(),
             mode: Mode::Normal,
             pending: None,
             pending_for: std::time::Duration::ZERO,
@@ -564,8 +560,7 @@ impl Session {
             let delay = crate::hints::WHICH_KEY_DELAY;
             changed = before < delay && self.pending_for >= delay;
         }
-        let given_back = self.late_reply_elapse();
-        self.poll_reload(elapsed) || changed || given_back
+        self.poll_reload(elapsed) || changed
     }
 
     /// Time passing, for the watch on the branch only. The real loop calls it
@@ -584,14 +579,9 @@ impl Session {
     /// due: the real loop sleeps this long instead of redrawing idly.
     pub fn next_tick_in(&self) -> Option<std::time::Duration> {
         let waiting = self.pending.is_some() && self.help.is_none();
-        let which_key = waiting
-            .then(|| crate::hints::WHICH_KEY_DELAY.checked_sub(self.pending_for))
-            .flatten()
-            .filter(|left| !left.is_zero());
-        match (which_key, self.late_reply_due()) {
-            (Some(a), Some(b)) => Some(a.min(b)),
-            (a, b) => a.or(b),
-        }
+        waiting
+            .then(|| crate::hints::WHICH_KEY_DELAY.checked_sub(self.pending_for))?
+            .filter(|left| !left.is_zero())
     }
 
     /// The pull request the Range belongs to: its title and description.
@@ -1000,17 +990,6 @@ impl Session {
     }
 
     pub fn handle(&mut self, event: Event) {
-        match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => {
-                for key in self.through_late_reply(key) {
-                    self.dispatch(Event::Key(key));
-                }
-            }
-            event => self.dispatch(event),
-        }
-    }
-
-    fn dispatch(&mut self, event: Event) {
         let waiting = self.pending;
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),

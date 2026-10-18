@@ -86,6 +86,32 @@ fn clicks_far_apart_in_time_are_not_a_double_click() {
     assert_eq!(h.copied(), Vec::<String>::new());
 }
 
+/// As the event loop of `main` feeds the session: each event with the time
+/// since the one before, so a long pause before a double click is no part
+/// of it.
+#[test]
+fn a_double_click_after_a_pause_is_a_double_click() {
+    use ratatui::crossterm::event::{Event, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+    use std::time::Duration;
+    let fx = changed_file();
+    let mut h = Harness::open(&fx, 100, 24);
+    let (x, y) = h.frame().find("new_call").unwrap();
+    let at = |kind| {
+        Event::Mouse(MouseEvent {
+            kind,
+            column: x + 2,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        })
+    };
+    let down = || at(MouseEventKind::Down(MouseButton::Left));
+    let up = || at(MouseEventKind::Up(MouseButton::Left));
+    for (since, event) in [(2_000, down()), (5, up()), (60, down()), (5, up())] {
+        h.session().input(Duration::from_millis(since), event);
+    }
+    assert_eq!(h.copied(), vec!["new_call".to_string()]);
+}
+
 #[test]
 fn the_selection_is_highlighted_until_escape_or_a_click_elsewhere() {
     let fx = changed_file();

@@ -6,7 +6,7 @@ use crate::theme::{Background, Choice};
 #[derive(Default)]
 pub(super) struct ThemeSetting {
     choice: Choice,
-    /// What the terminal told of its background; `None` when it did not.
+    /// The terminal background (as `$COLORFGBG` names it); `None` when unknown.
     background: Option<Background>,
 }
 
@@ -30,7 +30,7 @@ impl Session {
         self.theme_setting.choice = choice;
     }
 
-    /// The background the terminal told, which `auto` follows.
+    /// The terminal background, which `auto` follows.
     pub fn set_terminal_background(&mut self, background: Option<Background>) {
         self.theme_setting.background = background;
     }

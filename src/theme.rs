@@ -4,7 +4,8 @@
 //! colour of a role (`fg`, `dim`, `added_bg`, a syntax highlight, …). Two
 //! themes are built in: [`DARK`], the long-standing look for a dark terminal,
 //! and [`LIGHT`] for a light one. Which one is drawn is a [`Choice`]: `auto`
-//! follows the terminal [`Background`], told by [`detect`].
+//! follows the terminal [`Background`], as `$COLORFGBG` names it
+//! ([`background_from_colorfgbg`]); dark when nothing does.
 //!
 //! Colours are 256-palette entries so that [`crate::color::to_truecolor`]
 //! renders both themes as exact RGB.
@@ -16,12 +17,6 @@ use ratatui::style::Color;
 
 use crate::color::indexed_to_rgb;
 use crate::diff::Highlight;
-
-mod detect;
-
-pub use detect::{background_from_colorfgbg, background_from_osc11, detect, Reply};
-#[cfg(unix)]
-pub use detect::{query_background, query_background_on};
 
 /// Whether the terminal draws on a dark or a light background.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -276,7 +271,7 @@ impl Theme {
 }
 
 /// WCAG relative luminance of an sRGB colour.
-pub(crate) fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
+fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
     let channel = |c: u8| {
         let c = c as f64 / 255.0;
         if c <= 0.04045 {
@@ -286,4 +281,20 @@ pub(crate) fn luminance((r, g, b): (u8, u8, u8)) -> f64 {
         }
     };
     0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+}
+
+/// Relative luminance of a mid grey (CIE L* = 50): lighter is a light
+/// background.
+const MIDPOINT: f64 = 0.184;
+
+/// The background named by `$COLORFGBG` (`fg;bg` or `fg;default;bg`, as
+/// palette indices). `None` when it names none.
+pub fn background_from_colorfgbg(value: &str) -> Option<Background> {
+    let bg: u8 = value.rsplit(';').next()?.trim().parse().ok()?;
+    Some(match bg {
+        0..=6 | 8 => Background::Dark,
+        7 | 9..=15 => Background::Light,
+        n if luminance(indexed_to_rgb(n)) > MIDPOINT => Background::Light,
+        _ => Background::Dark,
+    })
 }
