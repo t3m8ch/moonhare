@@ -319,6 +319,9 @@ pub struct Session {
     warning: Option<String>,
     /// The pull request behind the Range, when the Forge knows one.
     pull_request: Option<PullRequest>,
+    /// Why there is no pull request, once the Forge has answered without
+    /// one. Shown by `:pr`, never as a warning.
+    forge_note: Option<String>,
     /// The request for that pull request, while it is on its way.
     forge_load: forge_load::ForgeLoad,
     quit: bool,
@@ -375,8 +378,9 @@ impl Session {
 
     /// Like [`Session::open_target`], and ask `forge` for the pull request of
     /// the branch. The Review opens at once; the answer is fetched in the
-    /// background and the status line shows that it is awaited. If the Forge
-    /// cannot answer, the reason is shown in the status line.
+    /// background and the status line shows that it is awaited. If there is
+    /// no Forge to ask, the Review goes on quietly and `:pr` tells why; a real
+    /// failure, such as the network, is a warning in the status line.
     pub fn open_target_with_forge(
         repo_path: &Path,
         target: &Target,
@@ -522,6 +526,7 @@ impl Session {
             message: None,
             warning,
             pull_request: None,
+            forge_note: None,
             forge_load: Default::default(),
             quit: false,
             analysis: Default::default(),
@@ -1278,6 +1283,7 @@ impl Session {
             "reset" => self.reset_review(),
             "reload" => self.reload(),
             "comment" => self.comment_on_range(),
+            "pr" => self.pr_command(),
             other if other.split_whitespace().next() == Some("sidebar") => {
                 self.sidebar_command(other["sidebar".len()..].trim())
             }
@@ -1589,6 +1595,18 @@ impl Session {
         );
         let inner = (area.width as usize).saturating_sub(2);
         self.render_progress(buf, area);
+        if self.commits.is_empty() && area.height > 3 {
+            let style = Style::new().fg(self.theme().dim);
+            for (row, line) in ["No changes yet.", "New commits show up here."]
+                .iter()
+                .enumerate()
+                .take(area.height as usize - 3)
+            {
+                let y = area.y + 1 + row as u16;
+                buf.set_stringn(area.x + 1, y, line, inner, style);
+            }
+            return;
+        }
         let rows = self.sidebar_rows();
         let cursor = self.sidebar_cursor(&rows);
         self.render_tree_rows(
@@ -1609,6 +1627,13 @@ impl Session {
         let Some(file) = self.files.get(self.selected) else {
             let msg = if self.unreviewed_only && !self.scope_files.is_empty() {
                 "Nothing left to review: every file in this Scope is reviewed".to_string()
+            } else if self.commits.is_empty() {
+                // The branch has no commits of its own yet: the Author agent
+                // has not started. The Review waits for them.
+                format!(
+                    "No changes against {}: moonhare will show new commits when they appear",
+                    self.range.base_name
+                )
             } else {
                 format!(
                     "No changes between {} and {}",

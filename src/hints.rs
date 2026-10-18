@@ -182,7 +182,7 @@ const PLAIN: &[(&str, &str)] = &[
         "Ctrl-h/j/k/l",
         "окно слева/ниже/выше/справа (алиасы Ctrl-w)",
     ),
-    (":", "командная строка (:scope, :theme light|dark|auto, :q)"),
+    (":", "командная строка (:scope, :theme light|dark|auto, :pr, :q)"),
     ("?", "эта справка"),
 ];
 
