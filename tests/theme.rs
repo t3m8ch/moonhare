@@ -4,7 +4,7 @@
 mod support;
 
 use moonhare::session::Session;
-use moonhare::theme::{self, Background, Theme, DARK, LIGHT};
+use moonhare::theme::{self, Background, Reply, Theme, DARK, LIGHT};
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Color;
 use support::{feature_branch, Harness};
@@ -218,7 +218,7 @@ fn the_query_reads_the_reply_of_the_terminal() {
     let mut asked = Vec::new();
     let got =
         theme::query_background_on(&reader, &mut asked, std::time::Duration::from_millis(500));
-    assert_eq!(got, Some(Background::Light));
+    assert_eq!(got, Reply::Told(Background::Light));
     let asked = String::from_utf8(asked).unwrap();
     assert!(asked.contains("\x1b]11;?"), "{asked:?}");
 }
@@ -233,7 +233,7 @@ fn a_silent_terminal_holds_the_start_no_longer_than_the_timeout() {
         &mut Vec::new(),
         std::time::Duration::from_millis(50),
     );
-    assert_eq!(got, None);
+    assert_eq!(got, Reply::TimedOut);
     assert!(started.elapsed() < std::time::Duration::from_millis(400));
 }
 
@@ -246,7 +246,7 @@ fn a_terminal_without_osc_11_answers_only_the_attributes_and_is_not_waited_for()
     let started = std::time::Instant::now();
     let got =
         theme::query_background_on(&reader, &mut Vec::new(), std::time::Duration::from_secs(5));
-    assert_eq!(got, None);
+    assert_eq!(got, Reply::Silent);
     assert!(started.elapsed() < std::time::Duration::from_secs(1));
 }
 
@@ -359,33 +359,50 @@ fn the_light_theme_survives_truecolor() {
 
 // ------------------------------------------------------- a late reply
 
+fn key(c: char, m: KeyModifiers) -> Event {
+    Event::Key(KeyEvent::new(KeyCode::Char(c), m))
+}
+
+fn plain(text: &str) -> Vec<Event> {
+    text.chars().map(|c| key(c, KeyModifiers::NONE)).collect()
+}
+
 /// The keys crossterm makes of an OSC 11 reply that comes after the query
 /// gave up: `ESC ]` is Alt-`]`, `ESC \` is Alt-`\`, BEL is Ctrl-g.
 fn late_reply(end: Event) -> Vec<Event> {
-    let key = |c, m| Event::Key(KeyEvent::new(KeyCode::Char(c), m));
     let mut keys = vec![key(']', KeyModifiers::ALT)];
-    keys.extend(
-        "11;rgb:ffff/ffff/ffff"
-            .chars()
-            .map(|c| key(c, KeyModifiers::NONE)),
-    );
+    keys.extend(plain("11;rgb:ffff/ffff/ffff"));
     keys.push(end);
     keys
+}
+
+fn alt_backslash() -> Event {
+    key('\\', KeyModifiers::ALT)
+}
+
+fn feed(h: &mut Harness, events: impl IntoIterator<Item = Event>) {
+    for event in events {
+        h.session().handle(event);
+    }
+    h.settle();
+}
+
+/// A session whose query for the background gave up: a reply may come late.
+fn expecting(fx: &support::Fixture) -> Harness {
+    let mut h = Harness::open(fx, 160, 30);
+    h.session().expect_late_reply();
+    h.settle();
+    h
 }
 
 #[test]
 fn a_reply_of_the_terminal_that_comes_late_is_not_taken_for_keys() {
     let fx = feature_branch();
-    let mut h = Harness::open(&fx, 160, 30);
-    h.settle();
+    let mut h = expecting(&fx);
     let before = h.screen();
-    let alt_backslash = Event::Key(KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::ALT));
-    let bel = Event::Key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
-    for end in [alt_backslash, bel] {
-        for event in late_reply(end) {
-            h.session().handle(event);
-        }
-        h.settle();
+    let bel = key('g', KeyModifiers::CONTROL);
+    for end in [alt_backslash(), bel] {
+        feed(&mut h, late_reply(end));
         assert_eq!(h.screen(), before, "the reply moved the screen");
     }
     // Keys after it are keys again.
@@ -394,17 +411,79 @@ fn a_reply_of_the_terminal_that_comes_late_is_not_taken_for_keys() {
 }
 
 #[test]
-fn keys_that_do_not_belong_to_a_reply_end_the_swallowing() {
+fn a_late_reply_in_pieces_a_moment_apart_is_still_dropped() {
+    let fx = feature_branch();
+    let mut h = expecting(&fx);
+    let before = h.screen();
+    let keys = late_reply(alt_backslash());
+    let (first, rest) = keys.split_at(9);
+    feed(&mut h, first.to_vec());
+    h.wait(50);
+    feed(&mut h, rest.to_vec());
+    assert_eq!(h.screen(), before, "the reply moved the screen");
+}
+
+/// The screens `events` leave in a session that expects a late reply and in
+/// one that does not, both opened before either takes a key (what is
+/// Reviewed is kept on disk).
+fn with_and_without(events: &[Event], pause: u64) -> (String, String) {
+    let fx = feature_branch();
+    let mut with = expecting(&fx);
+    let mut without = Harness::open(&fx, 160, 30);
+    without.settle();
+    for h in [&mut with, &mut without] {
+        feed(h, events.to_vec());
+        if pause > 0 {
+            h.wait(pause);
+        }
+    }
+    (with.screen(), without.screen())
+}
+
+#[test]
+fn esc_then_a_key_that_tmux_joins_into_alt_is_given_back() {
+    // tmux sends Esc and a quick `]` as `ESC ]`: Alt-`]`.
+    for typed in [
+        vec![key(']', KeyModifiers::ALT), key('h', KeyModifiers::NONE)],
+        [vec![key(']', KeyModifiers::ALT)], plain(":theme light")].concat(),
+        [vec![key(']', KeyModifiers::ALT)], plain("11j")].concat(),
+    ] {
+        let (with, without) = with_and_without(&typed, 0);
+        assert_eq!(with, without, "{typed:?}");
+    }
+}
+
+#[test]
+fn a_pause_inside_what_looked_like_a_reply_gives_the_keys_back() {
+    let typed = [vec![key(']', KeyModifiers::ALT)], plain("11;")].concat();
+    let fx = feature_branch();
+    let mut h = expecting(&fx);
+    feed(&mut h, typed.clone());
+    assert!(
+        h.next_tick_in().is_some(),
+        "the keys are held, a wake-up due"
+    );
+    h.wait(200);
+    assert_eq!(h.next_tick_in(), None, "the keys are given back");
+    let (with, without) = with_and_without(&typed, 200);
+    assert_eq!(with, without);
+}
+
+#[test]
+fn nothing_is_dropped_unless_the_query_gave_up_or_after_a_while() {
+    let reply = late_reply(alt_backslash());
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 160, 30);
     h.settle();
-    h.session().handle(Event::Key(KeyEvent::new(
-        KeyCode::Char(']'),
-        KeyModifiers::ALT,
-    )));
-    // Esc is no part of a reply: it and what follows are keys again.
-    h.keys("<Esc>:theme light<CR>");
-    assert!(h.screen().contains("theme:light"), "{}", h.screen());
+    let before = h.screen();
+    feed(&mut h, reply.clone());
+    assert_ne!(h.screen(), before, "no query gave up: these are keys");
+
+    let mut h = expecting(&fx);
+    h.wait(3_100);
+    let before = h.screen();
+    feed(&mut h, reply);
+    assert_ne!(h.screen(), before, "the window is over: these are keys");
 }
 
 // ------------------------------------------------- a real terminal (pty)
@@ -414,6 +493,9 @@ fn keys_that_do_not_belong_to_a_reply_end_the_swallowing() {
 #[cfg(unix)]
 fn pty() -> (std::fs::File, std::fs::File) {
     use std::ffi::CStr;
+    // `ptsname` answers in a static buffer: one pty at a time.
+    static MAKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _making = MAKING.lock().unwrap_or_else(|e| e.into_inner());
     use std::os::fd::{AsRawFd, FromRawFd};
     use std::os::unix::fs::OpenOptionsExt;
     // SAFETY: plain libc calls on the descriptor they return; every result
@@ -444,10 +526,7 @@ fn pty() -> (std::fs::File, std::fs::File) {
 /// Run the query on the program's end of a pty, in a thread, so a query
 /// that hangs fails the test instead of holding it.
 #[cfg(unix)]
-fn query_pty(
-    program: std::fs::File,
-    timeout: std::time::Duration,
-) -> (Option<Background>, std::time::Duration) {
+fn query_pty(program: std::fs::File, timeout: std::time::Duration) -> (Reply, std::time::Duration) {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let started = std::time::Instant::now();
@@ -464,7 +543,7 @@ fn query_pty(
 fn a_silent_pty_holds_the_start_no_longer_than_the_timeout() {
     let (_terminal, program) = pty();
     let (got, took) = query_pty(program, std::time::Duration::from_millis(100));
-    assert_eq!(got, None);
+    assert_eq!(got, Reply::TimedOut);
     assert!(took < std::time::Duration::from_millis(600), "{took:?}");
 }
 
@@ -477,5 +556,5 @@ fn a_pty_that_answers_tells_its_background() {
         .write_all(b"\x1b]11;rgb:ffff/ffff/ffff\x1b\\\x1b[?62;22c")
         .unwrap();
     let (got, _) = query_pty(program, std::time::Duration::from_secs(2));
-    assert_eq!(got, Some(Background::Light));
+    assert_eq!(got, Reply::Told(Background::Light));
 }

@@ -60,21 +60,46 @@ pub fn detect(
     query().or_else(|| colorfgbg.and_then(background_from_colorfgbg))
 }
 
+/// What came of asking the terminal for its background.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Reply {
+    Told(Background),
+    /// No terminal, or one that answered without telling.
+    Silent,
+    /// The wait ran out: a reply may still come, late, as input.
+    TimedOut,
+}
+
+impl Reply {
+    pub fn background(self) -> Option<Background> {
+        match self {
+            Reply::Told(background) => Some(background),
+            Reply::Silent | Reply::TimedOut => None,
+        }
+    }
+}
+
 /// Ask the terminal behind `/dev/tty` for its background, waiting at most
-/// `timeout`. `None` when there is no terminal or it does not tell.
+/// `timeout`.
 #[cfg(unix)]
-pub fn query_background(timeout: std::time::Duration) -> Option<Background> {
+pub fn query_background(timeout: std::time::Duration) -> Reply {
     use std::os::unix::fs::OpenOptionsExt;
     // A descriptor of its own, non-blocking: a read never waits past the
     // deadline even where the wait for input fails to.
-    let mut tty = std::fs::OpenOptions::new()
+    let tty = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
         .custom_flags(libc::O_NONBLOCK | libc::O_NOCTTY)
-        .open("/dev/tty")
-        .ok()?;
-    let _raw = RawMode::enable()?;
-    let input = tty.try_clone().ok()?;
+        .open("/dev/tty");
+    let Ok(mut tty) = tty else {
+        return Reply::Silent;
+    };
+    let Some(_raw) = RawMode::enable() else {
+        return Reply::Silent;
+    };
+    let Ok(input) = tty.try_clone() else {
+        return Reply::Silent;
+    };
     query_background_on(&input, &mut tty, timeout)
 }
 
@@ -117,16 +142,18 @@ pub fn query_background_on(
     input: &impl std::os::fd::AsFd,
     output: &mut impl std::io::Write,
     timeout: std::time::Duration,
-) -> Option<Background> {
+) -> Reply {
     use std::io::ErrorKind;
     use std::os::fd::AsRawFd;
     use std::time::Instant;
 
-    output.write_all(b"\x1b]11;?\x1b\\\x1b[c").ok()?;
-    output.flush().ok()?;
+    let asked = output.write_all(b"\x1b]11;?\x1b\\\x1b[c");
+    if asked.and_then(|()| output.flush()).is_err() {
+        return Reply::Silent;
+    }
     let fd = input.as_fd().as_raw_fd();
     if fd >= libc::FD_SETSIZE as i32 {
-        return None;
+        return Reply::Silent;
     }
     let deadline = Instant::now() + timeout;
     let mut reply = Vec::new();
@@ -135,14 +162,14 @@ pub fn query_background_on(
         if let Some(bg) = background_from_osc11(&text) {
             // Read on to the attributes so they do not reach the screen as keys.
             if attributes_answered(&reply) {
-                return Some(bg);
+                return Reply::Told(bg);
             }
         } else if attributes_answered(&reply) {
-            return None;
+            return Reply::Silent;
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
-            return background_from_osc11(&text);
+            return background_from_osc11(&text).map_or(Reply::TimedOut, Reply::Told);
         }
         let mut wait = libc::timeval {
             tv_sec: left.as_secs() as libc::time_t,
@@ -165,7 +192,7 @@ pub fn query_background_on(
             if std::io::Error::last_os_error().kind() == ErrorKind::Interrupted {
                 continue;
             }
-            return None;
+            return Reply::Silent;
         }
         if ready == 0 {
             continue;
@@ -181,11 +208,12 @@ pub fn query_background_on(
                     std::thread::sleep(left.min(std::time::Duration::from_millis(5)));
                     continue;
                 }
-                _ => return None,
+                _ => return Reply::Silent,
             }
         }
         if n == 0 {
-            return background_from_osc11(&String::from_utf8_lossy(&reply));
+            let text = String::from_utf8_lossy(&reply);
+            return background_from_osc11(&text).map_or(Reply::Silent, Reply::Told);
         }
         reply.extend_from_slice(&chunk[..n as usize]);
     }

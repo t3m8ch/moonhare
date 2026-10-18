@@ -19,7 +19,7 @@ use crate::diff::Highlight;
 
 mod detect;
 
-pub use detect::{background_from_colorfgbg, background_from_osc11, detect};
+pub use detect::{background_from_colorfgbg, background_from_osc11, detect, Reply};
 #[cfg(unix)]
 pub use detect::{query_background, query_background_on};
 

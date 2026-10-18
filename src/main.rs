@@ -128,7 +128,10 @@ fn main() -> ExitCode {
     if let Some(language) = language {
         session.set_language(&language);
     }
-    session.set_terminal_background(detected);
+    session.set_terminal_background(detected.background);
+    if detected.timed_out {
+        session.expect_late_reply();
+    }
     session.set_choice(choice);
     session.set_analyst(std::sync::Arc::new(ClaudeAnalyst::new()));
 
@@ -158,48 +161,60 @@ fn main() -> ExitCode {
 /// How long the terminal may take to tell its background.
 const BACKGROUND_TIMEOUT: Duration = Duration::from_millis(200);
 
-/// The terminal background, told by a thread that asks while the session
-/// opens.
+/// What a thread that asks while the session opens learnt of the terminal
+/// background.
 struct BackgroundProbe {
-    asking: Option<std::thread::JoinHandle<Option<theme::Background>>>,
-    told: Option<theme::Background>,
+    asking: Option<std::thread::JoinHandle<Probed>>,
+    probed: Probed,
+}
+
+#[derive(Clone, Copy, Default)]
+struct Probed {
+    /// The background, told by the terminal or by `$COLORFGBG`.
+    background: Option<theme::Background>,
+    /// The terminal did not answer in time: its reply may still come.
+    timed_out: bool,
 }
 
 impl BackgroundProbe {
     /// Start asking.
     fn new() -> BackgroundProbe {
         let asking = std::thread::spawn(|| {
+            let reply = query();
             let colorfgbg = std::env::var("COLORFGBG").ok();
-            theme::detect(query, colorfgbg.as_deref())
+            Probed {
+                background: theme::detect(|| reply.background(), colorfgbg.as_deref()),
+                timed_out: reply == theme::Reply::TimedOut,
+            }
         });
         BackgroundProbe {
             asking: Some(asking),
-            told: None,
+            probed: Probed::default(),
         }
     }
 
-    /// The background, once the thread is done; it holds the terminal in raw
+    /// What was learnt, once the thread is done; it holds the terminal in raw
     /// mode while it asks, so wait before drawing or printing.
-    fn wait(&mut self) -> Option<theme::Background> {
+    fn wait(&mut self) -> Probed {
         if let Some(asking) = self.asking.take() {
-            self.told = asking.join().ok().flatten();
+            self.probed = asking.join().unwrap_or_default();
         }
-        self.told
+        self.probed
     }
 }
 
 #[cfg(unix)]
-fn query() -> Option<theme::Background> {
+fn query() -> theme::Reply {
     use std::io::IsTerminal;
     if !io::stdout().is_terminal() {
-        return None;
+        return theme::Reply::Silent;
     }
     theme::query_background(BACKGROUND_TIMEOUT)
 }
 
 #[cfg(not(unix))]
-fn query() -> Option<theme::Background> {
-    None
+fn query() -> theme::Reply {
+    theme::Reply::Silent
 }
 
 /// Remove `--flag <value>` from `args` and return the value. `Err` when the
