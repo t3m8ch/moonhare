@@ -769,3 +769,26 @@ fn f_in_a_summary_without_a_diagram_says_so() {
     assert!(screen.contains("Summary text"), "{screen}");
     assert!(screen.contains("no diagram"), "{screen}");
 }
+
+#[test]
+fn markers_and_the_frame_of_the_overview_take_the_colours_of_either_theme() {
+    use moonhare::theme::{Background, Theme, DARK, LIGHT};
+    for (background, theme) in [(Background::Dark, &DARK), (Background::Light, &LIGHT)] {
+        let (_fx, mut h) = big();
+        h.session().set_terminal_background(Some(background));
+        h.keys("0gg");
+        let frame = h.frame();
+        let (x, y) = frame
+            .find("▶")
+            .unwrap_or_else(|| panic!("{}", frame.text()));
+        assert_eq!(frame.fg_at(x, y), theme.accent, "{}", theme.name);
+        let (x, y) = frame.find("колонки").unwrap();
+        assert_eq!(frame.fg_at(x, y), theme.dim, "{}", theme.name);
+
+        h.keys("--");
+        let frame = h.frame();
+        let lit =
+            |t: &Theme| (0..100).any(|x| (0..30).any(|y| frame.bg_at(x, y) == t.selection_bg));
+        assert!(lit(theme), "{}", theme.name);
+    }
+}
