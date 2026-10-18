@@ -65,6 +65,32 @@ pub struct FileDiff {
 }
 
 impl FileDiff {
+    /// A modified file with the given lines and tokens, one row per line pair.
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        old_lines: Vec<String>,
+        new_lines: Vec<String>,
+        old_tokens: Vec<Token>,
+        new_tokens: Vec<Token>,
+    ) -> FileDiff {
+        let rows = (0..old_lines.len().max(new_lines.len()))
+            .map(|i| Row {
+                old: (i < old_lines.len()).then_some(i),
+                new: (i < new_lines.len()).then_some(i),
+            })
+            .collect();
+        FileDiff {
+            kind: FileKind::Modified,
+            language: None,
+            fallback: None,
+            old_lines,
+            new_lines,
+            rows,
+            old_tokens,
+            new_tokens,
+        }
+    }
+
     /// Every token of the side, changed or not, for highlighting.
     pub fn tokens(&self, side: Side) -> &[Token] {
         match side {
