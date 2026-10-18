@@ -4,12 +4,13 @@
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 
 use super::analysis::Pending;
 use super::*;
 use unicode_width::UnicodeWidthStr;
 
-use crate::analyst::{DiagramRequest, DiagramSubject};
+use crate::analyst::{Analyst, DiagramRequest, DiagramSubject};
 use crate::analyst_cache::AnalystCache;
 
 /// What a diagram is cached under: head of the Range, language, subject.
@@ -96,52 +97,80 @@ impl Session {
             _ => DiagramSubject::File { path },
         };
         let key = (self.range.head.clone(), self.language_code(), subject);
-        let now = self.clock();
-        if !self.diagrams.cache.contains_key(&key) && self.diagrams.pending.insert(key.clone(), now)
-        {
-            self.diagrams.errors.remove(&key);
-            let request = DiagramRequest {
-                repo: self.repo.root().to_path_buf(),
-                base: self.range.base.clone(),
-                head: key.0.clone(),
-                language: key.1.clone(),
-                settings: self.analysis.settings.clone(),
-                subject: key.2.clone(),
-            };
-            let cache = self.analyst_cache.clone();
-            let cache_key = diagram_cache_key(&request);
-            if let Some(diagram) = cache.load_diagram(&cache_key) {
-                self.diagrams.pending.remove(&key);
-                self.diagrams.from_cache.insert(key.clone());
-                self.diagrams.cache.insert(
-                    key.clone(),
-                    Drawn {
-                        lines: crate::diagram::draw(&diagram.mermaid),
-                        mermaid: diagram.mermaid,
-                    },
-                );
-                self.diagrams.open = Some(key);
-                self.diagrams.hscroll = 0;
-                self.diagrams.scroll = Default::default();
-                return true;
-            }
-            let sender = self.diagrams.sender.clone();
-            std::thread::spawn(move || {
-                let answer = analyst
-                    .diagram(&request)
-                    .inspect(|diagram| cache.store_diagram(&cache_key, diagram))
-                    .map(|diagram| Drawn {
-                        lines: crate::diagram::draw(&diagram.mermaid),
-                        mermaid: diagram.mermaid,
-                    })
-                    .map_err(|e| e.to_string());
-                let _ = sender.send((key_of(&request), answer));
-            });
+        if !self.diagrams.cache.contains_key(&key) {
+            self.ask_diagram(analyst, key.clone(), false);
         }
         self.diagrams.open = Some(key);
         self.diagrams.hscroll = 0;
         self.diagrams.scroll = Default::default();
         true
+    }
+
+    /// Ask for the diagram of `key` unless it is on its way. Unless `force`,
+    /// one in the disk cache is taken instead; with it the entry is rewritten.
+    fn ask_diagram(&mut self, analyst: Arc<dyn Analyst>, key: Key, force: bool) {
+        let now = self.clock();
+        if !self.diagrams.pending.insert(key.clone(), now) {
+            return;
+        }
+        self.diagrams.errors.remove(&key);
+        let request = DiagramRequest {
+            repo: self.repo.root().to_path_buf(),
+            base: self.range.base.clone(),
+            head: key.0.clone(),
+            language: key.1.clone(),
+            settings: self.analysis.settings.clone(),
+            subject: key.2.clone(),
+        };
+        let cache = self.analyst_cache.clone();
+        let cache_key = diagram_cache_key(&request);
+        if !force {
+            if let Some(diagram) = cache.load_diagram(&cache_key) {
+                self.diagrams.pending.remove(&key);
+                self.diagrams.from_cache.insert(key.clone());
+                self.diagrams.cache.insert(
+                    key,
+                    Drawn {
+                        lines: crate::diagram::draw(&diagram.mermaid),
+                        mermaid: diagram.mermaid,
+                    },
+                );
+                return;
+            }
+        }
+        let sender = self.diagrams.sender.clone();
+        std::thread::spawn(move || {
+            let answer = analyst
+                .diagram(&request)
+                .inspect(|diagram| cache.store_diagram(&cache_key, diagram))
+                .map(|diagram| Drawn {
+                    lines: crate::diagram::draw(&diagram.mermaid),
+                    mermaid: diagram.mermaid,
+                })
+                .map_err(|e| e.to_string());
+            let _ = sender.send((key_of(&request), answer));
+        });
+    }
+
+    /// `r` in the overlay: draw the open diagram again, whatever is cached.
+    /// The old picture stays on screen until the new one comes.
+    fn refresh_diagram(&mut self) {
+        let Some(key) = self.diagrams.open.clone() else {
+            return;
+        };
+        let Some(analyst) = self.analyst_handle() else {
+            self.message = Some("No Analyst is configured: there are no diagrams.".into());
+            return;
+        };
+        self.ask_diagram(analyst, key, true);
+    }
+
+    /// `:analyze all`: the diagrams drawn so far are forgotten and asked for
+    /// again when next opened.
+    pub(super) fn forget_diagrams(&mut self) {
+        self.diagrams.cache.clear();
+        self.diagrams.errors.clear();
+        self.diagrams.from_cache.clear();
     }
 
     /// Whether the diagram of this open overlay was read from the disk cache
@@ -289,6 +318,10 @@ impl Session {
             self.diagrams.scroll = scroll;
             return true;
         }
+        if key.code == KeyCode::Char('r') {
+            self.refresh_diagram();
+            return true;
+        }
         self.picture_key(key.code, source, &lines);
         true
     }
@@ -337,16 +370,36 @@ impl Session {
         let Some(key) = &self.diagrams.open else {
             return Vec::new();
         };
-        match self.diagrams.cache.get(key) {
+        let note = if self.diagrams.pending.contains(key) {
+            Some(format!(
+                "{} The Analyst is updating the diagram… {}s",
+                super::analysis::spinner(self.clock()),
+                self.work_seconds("Diagram")
+            ))
+        } else {
+            (self.diagrams.errors.get(key)).map(|e| {
+                format!(
+                    "Analyst: {} (the previous diagram is kept)",
+                    crate::diagram::sanitize(e)
+                )
+            })
+        };
+        let picture = match self.diagrams.cache.get(key) {
             Some(Drawn { lines: Ok(l), .. }) => l.clone(),
             Some(Drawn {
                 lines: Err(e),
                 mermaid,
             }) => failure_lines(e, mermaid),
-            None => match self.diagrams.errors.get(key) {
-                Some(e) => vec![format!("Analyst: {}", crate::diagram::sanitize(e))],
-                None => vec!["The diagram is being drawn…".into()],
-            },
+            None => {
+                return match self.diagrams.errors.get(key) {
+                    Some(e) => vec![format!("Analyst: {}", crate::diagram::sanitize(e))],
+                    None => vec!["The diagram is being drawn…".into()],
+                }
+            }
+        };
+        match note {
+            Some(note) => [note, String::new()].into_iter().chain(picture).collect(),
+            None => picture,
         }
     }
 }

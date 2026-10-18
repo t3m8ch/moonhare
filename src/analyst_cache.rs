@@ -54,6 +54,29 @@ impl AnalystCache {
         key
     }
 
+    /// Whether there is no answer kept at all.
+    pub fn is_empty(&self) -> bool {
+        std::fs::read_dir(&self.dir).map_or(true, |mut e| e.next().is_none())
+    }
+
+    /// Forget every answer of this Review (`:analyze all`). Nothing outside
+    /// the cache directory is touched.
+    pub fn clear(&self) -> Result<(), String> {
+        let entries = match std::fs::read_dir(&self.dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(format!("Cannot read the Analyst cache: {e}")),
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_file() {
+                std::fs::remove_file(&path)
+                    .map_err(|e| format!("Cannot delete {}: {e}", path.display()))?;
+            }
+        }
+        Ok(())
+    }
+
     fn path(&self, key: &str) -> PathBuf {
         self.dir.join(digest(key))
     }

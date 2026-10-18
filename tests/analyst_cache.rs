@@ -26,12 +26,19 @@ impl FakeClaude {
         };
         let d = fake.dir.path();
         let script = format!(
-            "#!/bin/sh\nd='{}'\necho call >> \"$d/calls\"\ncat > /dev/null\ncat \"$d/reply\"\n",
+            "#!/bin/sh\n[ \"$1\" = --probe ] && exit 0\nd='{}'\necho call >> \"$d/calls\"\ncat > /dev/null\ncat \"$d/reply\"\n",
             d.display()
         );
         let path = d.join("claude");
         fs::write(&path, script).unwrap();
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        // Another test thread may fork while the script is still open for
+        // writing, which makes exec fail with ETXTBSY and loses a call. Run
+        // it once to be sure it is settled.
+        let probe = || std::process::Command::new(&path).arg("--probe").status();
+        while probe().is_err() {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
         fake.says("first");
         fake
     }
@@ -44,12 +51,21 @@ impl FakeClaude {
                 "name": format!("group {word}"), "description": "d",
                 "mechanical": false, "files": ["src/a.rs", "src/b.rs", "README.md"]
             }],
-            "mermaid": "graph LR\n    A --> B",
+            "mermaid": format!("graph LR\n    A --> W{word}"),
             "explanation": format!("explanation {word}"),
         });
         let reply = serde_json::json!({
             "type": "result", "subtype": "success", "is_error": false,
             "result": "", "structured_output": output
+        });
+        fs::write(self.dir.path().join("reply"), reply.to_string()).unwrap();
+    }
+
+    /// From now on every request fails.
+    fn fails(&self) {
+        let reply = serde_json::json!({
+            "type": "result", "subtype": "error_during_execution", "is_error": true,
+            "result": "the fake is down"
         });
         fs::write(self.dir.path().join("reply"), reply.to_string()).unwrap();
     }
@@ -287,4 +303,196 @@ fn the_screen_says_cached_for_answers_read_from_disk() {
     second.keys("<Esc>:analyze<CR>");
     second.session().wait_for_analyst();
     assert!(!second.screen().contains("groups cached"));
+}
+
+/// The directory of the one Review the fixture has.
+fn review_dir(fx: &Fixture) -> std::path::PathBuf {
+    let reviews = fx.path().join(".git/moonhare/reviews");
+    let mut dirs: Vec<_> = fs::read_dir(&reviews)
+        .unwrap()
+        .flatten()
+        .map(|e| e.path())
+        .collect();
+    assert_eq!(dirs.len(), 1, "{dirs:?}");
+    dirs.pop().unwrap()
+}
+
+#[test]
+fn analyze_all_forgets_this_reviews_cache_and_asks_again() {
+    let fx = feature_branch();
+    let fake = FakeClaude::new();
+    let mut h = fake.session(&fx);
+    h.keys("<Space>X");
+    h.session().wait_for_analyst();
+    h.keys("<Esc>:diagram<CR>");
+    h.session().wait_for_analyst();
+    h.keys("<Esc>");
+    assert_eq!(fake.calls(), 4, "Summary, Groups, Explanation, Diagram");
+    assert_eq!(cache_files(&fx).len(), 4);
+
+    let review = review_dir(&fx);
+    fs::write(review.join("keep-me"), "not the Analyst's").unwrap();
+    let other = review.parent().unwrap().join("other-review/analyst");
+    fs::create_dir_all(&other).unwrap();
+    fs::write(other.join("entry"), "another Review's answer").unwrap();
+
+    fake.says("second");
+    h.keys(":analyze all<CR>");
+    assert!(h.screen().contains("y / n"), "{}", h.screen());
+    h.keys("y");
+    h.session().wait_for_analyst();
+    assert_eq!(fake.calls(), 6, "the Summary and the Groups at once");
+    let own: Vec<_> = cache_files(&fx)
+        .into_iter()
+        .filter(|f| f.starts_with(&review))
+        .collect();
+    assert_eq!(own.len(), 2, "only the new Summary and Groups: {own:?}");
+    assert!(review.join("keep-me").exists());
+    assert!(other.join("entry").exists());
+    assert!(h.screen().contains("group second"), "{}", h.screen());
+
+    h.keys("<Space>X");
+    h.session().wait_for_analyst();
+    assert_eq!(fake.calls(), 7, "the Explanation is asked for again");
+    assert!(h.screen().contains("explanation second"), "{}", h.screen());
+    h.keys("<Esc>:diagram<CR>");
+    h.session().wait_for_analyst();
+    assert_eq!(fake.calls(), 8, "and the Diagram");
+    assert!(h.screen().contains("Wsecond"), "{}", h.screen());
+}
+
+#[test]
+fn analyze_all_cancelled_deletes_nothing() {
+    let fx = feature_branch();
+    let fake = FakeClaude::new();
+    let mut h = fake.session(&fx);
+    let before = cache_files(&fx);
+    h.keys(":analyze all<CR>");
+    assert!(h.screen().contains("y / n"), "{}", h.screen());
+    h.keys("n");
+    h.session().wait_for_analyst();
+    assert_eq!(fake.calls(), 2);
+    assert_eq!(cache_files(&fx), before);
+    assert!(!h.screen().contains("y / n"));
+}
+
+#[test]
+fn r_in_the_explanation_asks_once_more_and_overwrites_the_entry() {
+    let fx = feature_branch();
+    let fake = FakeClaude::new();
+    let mut first = fake.session(&fx);
+    first.keys("<Space>X");
+    first.session().wait_for_analyst();
+    assert_eq!(fake.calls(), 3);
+
+    let mut h = fake.session(&fx);
+    h.keys("<Space>X");
+    assert!(h.screen().contains("cached"), "{}", h.screen());
+    fake.says("second");
+    h.keys("r");
+    let during = h.screen();
+    assert!(during.contains("explanation first"), "{during}");
+    assert!(during.contains("updating"), "{during}");
+    h.session().wait_for_analyst();
+    assert_eq!(fake.calls(), 4, "exactly one new request");
+    let screen = h.screen();
+    assert!(screen.contains("explanation second"), "{screen}");
+    assert!(!screen.contains("cached"), "{screen}");
+    assert!(!screen.contains("updating"), "{screen}");
+
+    fake.says("third");
+    let mut later = fake.session(&fx);
+    later.keys("<Space>X");
+    later.session().wait_for_analyst();
+    assert_eq!(fake.calls(), 4);
+    assert!(later.screen().contains("explanation second"));
+}
+
+#[test]
+fn a_failed_refresh_of_an_explanation_keeps_the_old_one() {
+    let fx = feature_branch();
+    let fake = FakeClaude::new();
+    let mut h = fake.session(&fx);
+    h.keys("<Space>X");
+    h.session().wait_for_analyst();
+    fake.fails();
+    h.keys("r");
+    h.session().wait_for_analyst();
+    assert_eq!(fake.calls(), 4);
+    let screen = h.screen();
+    assert!(screen.contains("explanation first"), "{screen}");
+    assert!(screen.contains("⚠ Analyst"), "{screen}");
+}
+
+#[test]
+fn r_in_the_diagram_asks_once_more_and_overwrites_the_entry() {
+    let fx = feature_branch();
+    let fake = FakeClaude::new();
+    let mut first = fake.session(&fx);
+    first.keys(":diagram<CR>");
+    first.session().wait_for_analyst();
+    assert_eq!(fake.calls(), 3);
+
+    let mut h = fake.session(&fx);
+    h.keys(":diagram<CR>");
+    assert!(h.screen().contains("cached"), "{}", h.screen());
+    fake.says("second");
+    h.keys("r");
+    let during = h.screen();
+    assert!(during.contains("Wfirst"), "{during}");
+    assert!(during.contains("updating"), "{during}");
+    h.session().wait_for_analyst();
+    assert_eq!(fake.calls(), 4, "exactly one new request");
+    let screen = h.screen();
+    assert!(screen.contains("Wsecond"), "{screen}");
+    assert!(!screen.contains("cached"), "{screen}");
+    assert!(!screen.contains("updating"), "{screen}");
+
+    let mut later = fake.session(&fx);
+    later.keys(":diagram<CR>");
+    later.session().wait_for_analyst();
+    assert_eq!(fake.calls(), 4);
+    assert!(later.screen().contains("Wsecond"));
+}
+
+#[test]
+fn a_failed_refresh_of_a_diagram_keeps_the_old_one() {
+    let fx = feature_branch();
+    let fake = FakeClaude::new();
+    let mut h = fake.session(&fx);
+    h.keys(":diagram<CR>");
+    h.session().wait_for_analyst();
+    fake.fails();
+    h.keys("r");
+    h.session().wait_for_analyst();
+    assert_eq!(fake.calls(), 4);
+    let screen = h.screen();
+    assert!(screen.contains("Wfirst"), "{screen}");
+    assert!(screen.contains("Analyst:"), "{screen}");
+}
+
+#[test]
+fn help_and_overlay_hints_name_the_refresh_keys() {
+    let fx = feature_branch();
+    let fake = FakeClaude::new();
+    let mut h = fake.session(&fx);
+    h.resize(140, 160);
+    h.keys("?");
+    let help = h.screen();
+    for (key, word) in [(":analyze [all]", "саммари"), (":analyze [all]", "кэш")] {
+        let found = help.lines().any(|l| {
+            let row = l.trim_start_matches(['│', ' ']);
+            row.starts_with(key) && l.contains(word)
+        });
+        assert!(found, "no help row for {key} ({word}):\n{help}");
+    }
+    assert!(help.contains("r в окне: пересчитать"), "{help}");
+    h.keys("<Esc><Space>X");
+    h.session().wait_for_analyst();
+    let last = h.screen().lines().last().unwrap_or("").to_string();
+    assert!(last.contains("r: пересчитать"), "{last}");
+    h.keys("<Esc>:diagram<CR>");
+    h.session().wait_for_analyst();
+    let last = h.screen().lines().last().unwrap_or("").to_string();
+    assert!(last.contains("r: пересчитать"), "{last}");
 }

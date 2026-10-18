@@ -15,7 +15,7 @@ fn space_pause_opens_which_key_listing_continuations() {
 #[test]
 fn which_key_and_help_list_the_sidebar_and_file_picker_keys() {
     let fx = feature_branch();
-    let mut h = Harness::open(&fx, 100, 60);
+    let mut h = Harness::open(&fx, 100, 80);
     h.keys("<Space>").wait(350);
     let screen = h.screen();
     assert!(screen.contains("сайдбар"), "{screen}");
@@ -29,7 +29,7 @@ fn which_key_and_help_list_the_sidebar_and_file_picker_keys() {
 #[test]
 fn help_lists_the_reviewed_marks() {
     let fx = feature_branch();
-    let mut h = Harness::open(&fx, 100, 60);
+    let mut h = Harness::open(&fx, 100, 80);
     h.keys("?");
     let screen = h.screen();
     assert!(screen.contains("отревьюено"), "{screen}");
@@ -106,7 +106,7 @@ fn which_key_and_help_list_the_analyst_summary() {
 #[test]
 fn which_key_and_help_list_the_groups_toggle() {
     let fx = feature_branch();
-    let mut h = Harness::open(&fx, 100, 60);
+    let mut h = Harness::open(&fx, 100, 80);
     h.keys("<Space>").wait(350);
     assert!(h.screen().contains("группы / дерево"), "{}", h.screen());
     h.keys("<Esc>?");
@@ -327,7 +327,7 @@ fn question_mark_shows_help_with_all_keys_and_zellij_caveat() {
 #[test]
 fn help_warns_that_ctrl_h_often_arrives_as_backspace() {
     let fx = feature_branch();
-    let mut h = Harness::open(&fx, 100, 60);
+    let mut h = Harness::open(&fx, 100, 80);
     h.keys("?");
     assert!(h.screen().contains("Backspace"));
 }

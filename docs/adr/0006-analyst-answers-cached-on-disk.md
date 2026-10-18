@@ -22,4 +22,5 @@ A file is a header line (`moonhare-analyst-cache <version>`), the key, and the a
 
 - Nothing ties an Explanation of a hunk to the rest of the code around it, or to the pull request text at the time; it is reused wherever the hunk reappears.
 - Two moonhare processes on one Review may write the same entry: the last writer wins, and both are valid.
+- The Reviewer refreshes answers by hand: `:analyze` rebuilds the Summary and Groups, `r` in the window of an Explanation or a Diagram asks for that one again and rewrites its entry (a failure keeps the old answer), and `:analyze all` deletes every entry of the Review after a confirmation and rebuilds the Summary and Groups.
 - The session tells the interface whether the Summary, Groups or diagram on screen came from the cache (`summary_from_cache`, `groups_from_cache`, `diagram_from_cache`).
