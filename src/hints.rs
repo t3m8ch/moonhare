@@ -13,6 +13,10 @@ pub const CTRL_W: char = '\u{17}';
 /// The internal name of the `Space p` prefix (Prompt keys).
 pub const SPACE_P: char = '\u{10}';
 
+/// The internal name of `z` in the file panel and the file picker: the same
+/// key as the `z` of the commit list, with keys of its own.
+pub const Z_TREE: char = '\u{1a}';
+
 /// The `Space` keys that work while the file picker is open.
 pub const PICKER_SPACE: &[&str] = &["g", "i"];
 
@@ -92,6 +96,15 @@ pub const BINDINGS: &[Binding] = &[
     b(Some('z'), "a", "список коммитов: свернуть/развернуть раунд"),
     b(Some('z'), "c", "список коммитов: свернуть раунд"),
     b(Some('z'), "o", "список коммитов: развернуть раунд"),
+    b(Some(Z_TREE), "M", "дерево файлов: свернуть все каталоги"),
+    b(Some(Z_TREE), "R", "дерево файлов: развернуть все каталоги"),
+    b(
+        Some(Z_TREE),
+        "a",
+        "дерево файлов: свернуть/развернуть каталог под курсором",
+    ),
+    b(Some(Z_TREE), "c", "дерево файлов: свернуть каталог"),
+    b(Some(Z_TREE), "o", "дерево файлов: развернуть каталог"),
     b(Some(CTRL_W), "h", "окно слева (коммиты)"),
     b(Some(CTRL_W), "j", "окно ниже (коммиты → файлы)"),
     b(Some(CTRL_W), "k", "окно выше (файлы → коммиты)"),
@@ -194,7 +207,7 @@ const PLAIN: &[(&str, &str)] = &[
         "Ctrl-h/j/k/l",
         "окно слева/ниже/выше/справа (алиасы Ctrl-w)",
     ),
-    (":", "командная строка (:scope, :theme light|dark|auto, :q)"),
+    (":", "командная строка (:scope, :theme light|dark|auto, :pr, :q)"),
     ("?", "эта справка"),
 ];
 
@@ -219,7 +232,7 @@ pub fn help_lines() -> Vec<String> {
     for x in BINDINGS {
         let chain = match x.prefix {
             Some(p @ (' ' | CTRL_W | SPACE_P)) => format!("{} {}", prefix_name(p), x.key),
-            Some(p) => format!("{p}{}", x.key),
+            Some(p) => format!("{}{}", prefix_name(p), x.key),
             None => x.key.to_string(),
         };
         lines.push(format!("{chain:<14} {}", x.label));
@@ -271,12 +284,17 @@ pub fn hint_line(context: Context) -> String {
                              /: поиск  n/N: совпадения  za: раунд  Ctrl-d/u: страница  \
                              Tab: окно  Space: команды  ?: справка"
             .into(),
-        Context::Files => "j/k: файлы и каталоги  h/l: свернуть/развернуть  Enter: открыть  \
+        Context::Files => {
+            "j/k: файлы и каталоги  h/l: свернуть/развернуть  zM/zR: свернуть/развернуть всё  \
+                           Enter: открыть  \
                            ]g/[g: группы  Tab: окно  Space: команды  ?: справка"
-            .into(),
-        Context::FilePicker => "j/k: строки  h/l: свернуть/развернуть  Enter: открыть  \
+                .into()
+        }
+        Context::FilePicker => {
+            "j/k: строки  h/l: свернуть/развернуть  zM/zR: всё  Enter: открыть  \
                                 gg/G: начало/конец  Space g: группы/дерево  Esc: закрыть"
-            .into(),
+                .into()
+        }
         Context::Explanation => "j/k: прокрутка  y: копировать Markdown  \
                                  r: пересчитать (мимо кэша)  Esc/q: закрыть"
             .into(),
@@ -316,6 +334,7 @@ pub fn prefix_name(prefix: char) -> String {
         ' ' => "Space".into(),
         CTRL_W => "Ctrl-w".into(),
         SPACE_P => "Space p".into(),
+        Z_TREE => "z".into(),
         c => c.to_string(),
     }
 }

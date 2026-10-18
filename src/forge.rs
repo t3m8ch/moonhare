@@ -20,13 +20,15 @@ pub struct PullRequest {
 /// Why the Forge could not answer. The tool carries on without it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ForgeError {
-    /// The client for the Forge is not installed.
+    /// There is no Forge to ask: no remote on it, its client is not
+    /// installed or not logged in. Not a failure: a pull request is optional,
+    /// so the Review goes on without one and says why only when asked.
     Unavailable(String),
     /// The Forge could not be reached.
     Network(String),
     /// The Forge answered that there is no such pull request.
     NotFound(String),
-    /// Anything else: not logged in, unexpected answer.
+    /// Anything else, such as an unexpected answer.
     Failed(String),
 }
 

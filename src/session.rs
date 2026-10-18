@@ -271,6 +271,8 @@ pub struct Session {
     picker: bool,
     /// The `Space f` file picker is open, with its cursor here.
     file_picker: Option<file_panel::At>,
+    /// Where the tree of the file picker is scrolled.
+    picker_scroll: file_panel::TreeScroll,
     /// The selected Mechanical file was expanded with `Enter`.
     mechanical_open: bool,
     files: Vec<ChangedFile>,
@@ -328,6 +330,9 @@ pub struct Session {
     warning: Option<String>,
     /// The pull request behind the Range, when the Forge knows one.
     pull_request: Option<PullRequest>,
+    /// Why there is no pull request, once the Forge has answered without
+    /// one. Shown by `:pr`, never as a warning.
+    no_pr_reason: Option<String>,
     /// The request for that pull request, while it is on its way.
     forge_load: forge_load::ForgeLoad,
     quit: bool,
@@ -345,9 +350,8 @@ pub struct Session {
     /// The Prompts copied so far, which cut the commits into Rounds.
     prompts: crate::rounds::Prompts,
     mouse: mouse::Mouse,
-    /// The file list scrolled by the wheel: where the cursor stood when it
-    /// was done, and the first row shown.
-    sidebar_scroll: Option<(file_panel::At, usize)>,
+    /// Where the tree of the sidebar's file panel is scrolled.
+    sidebar_scroll: file_panel::TreeScroll,
     /// The tree of the file panel: its cursor, folds and Group description.
     panel: file_panel::FilePanel,
 }
@@ -384,8 +388,9 @@ impl Session {
 
     /// Like [`Session::open_target`], and ask `forge` for the pull request of
     /// the branch. The Review opens at once; the answer is fetched in the
-    /// background and the status line shows that it is awaited. If the Forge
-    /// cannot answer, the reason is shown in the status line.
+    /// background and the status line shows that it is awaited. If there is
+    /// no Forge to ask, the Review goes on quietly and `:pr` tells why; a real
+    /// failure, such as the network, is a warning in the status line.
     pub fn open_target_with_forge(
         repo_path: &Path,
         target: &Target,
@@ -505,6 +510,7 @@ impl Session {
             confirm: None,
             hidden_cache: Default::default(),
             file_picker: None,
+            picker_scroll: file_panel::TreeScroll::default(),
             mechanical_open: false,
             scope_files: files.clone(),
             unreviewed_only: false,
@@ -531,6 +537,7 @@ impl Session {
             message: None,
             warning,
             pull_request: None,
+            no_pr_reason: None,
             forge_load: Default::default(),
             quit: false,
             analysis: Default::default(),
@@ -543,7 +550,7 @@ impl Session {
             prompt_view: None,
             prompts: crate::rounds::Prompts::open(&review_dir),
             mouse: mouse::Mouse::default(),
-            sidebar_scroll: None,
+            sidebar_scroll: file_panel::TreeScroll::default(),
             panel: Default::default(),
             diffs,
         };
@@ -690,17 +697,16 @@ impl Session {
             .saturating_sub(2 + marks::PROGRESS_ROWS) as usize
     }
 
-    /// The first sidebar row shown: scrolled so the selected file is visible.
+    /// The first sidebar row shown: where the panel was scrolled, moved only
+    /// as far as the cursor needs (unless the wheel took it away).
     fn sidebar_offset(&self) -> usize {
-        let cap = self.sidebar_capacity().max(1);
         let rows = self.sidebar_rows();
-        // The wheel scrolled the list away from the cursor.
-        if let Some((at, offset)) = &self.sidebar_scroll {
-            if *at == self.sidebar_at() {
-                return (*offset).min(rows.len().saturating_sub(cap));
-            }
-        }
-        file_panel::offset_for(self.sidebar_cursor(&rows).unwrap_or(0), cap)
+        self.sidebar_scroll.offset(
+            &rows,
+            &self.sidebar_at(),
+            self.sidebar_cursor(&rows),
+            self.sidebar_capacity(),
+        )
     }
 
     // ------------------------------------------------------------ data
@@ -1291,6 +1297,7 @@ impl Session {
             "reset" => self.reset_review(),
             "reload" => self.reload(),
             "comment" => self.comment_on_range(),
+            "pr" => self.pr_command(),
             other if other.split_whitespace().next() == Some("sidebar") => {
                 self.sidebar_command(other["sidebar".len()..].trim())
             }
@@ -1355,11 +1362,19 @@ impl Session {
                 let area = self.files_area();
                 // Row 0 of the sidebar is its border.
                 if mouse.row > area.y {
-                    let at = self.sidebar_offset() + (mouse.row - area.y - 1) as usize;
-                    if ((mouse.row - area.y - 1) as usize) < self.sidebar_capacity() {
-                        if let Some(row) = self.sidebar_rows().get(at) {
-                            self.click_sidebar_row(&row.clone());
+                    let line = (mouse.row - area.y - 1) as usize;
+                    let rows = self.sidebar_rows();
+                    let view = file_panel::View::new(
+                        &rows,
+                        self.sidebar_offset(),
+                        self.sidebar_capacity(),
+                    );
+                    match view.line(line) {
+                        Some(file_panel::Shown::Row(n)) => self.click_sidebar_row(&rows[n]),
+                        Some(file_panel::Shown::Pinned(pin)) => {
+                            self.click_sidebar_pin(&rows[pin.row()])
                         }
+                        None => {}
                     }
                 }
             }
@@ -1602,6 +1617,18 @@ impl Session {
         );
         let inner = (area.width as usize).saturating_sub(2);
         self.render_progress(buf, area);
+        if self.commits.is_empty() && area.height > 3 {
+            let style = Style::new().fg(self.theme().dim);
+            for (row, line) in ["No changes yet.", "New commits show up here."]
+                .iter()
+                .enumerate()
+                .take(area.height as usize - 3)
+            {
+                let y = area.y + 1 + row as u16;
+                buf.set_stringn(area.x + 1, y, line, inner, style);
+            }
+            return;
+        }
         let rows = self.sidebar_rows();
         let cursor = self.sidebar_cursor(&rows);
         self.render_tree_rows(
@@ -1622,6 +1649,13 @@ impl Session {
         let Some(file) = self.files.get(self.selected) else {
             let msg = if self.unreviewed_only && !self.scope_files.is_empty() {
                 "Nothing left to review: every file in this Scope is reviewed".to_string()
+            } else if self.commits.is_empty() {
+                // The branch has no commits of its own yet: the Author agent
+                // has not started. The Review waits for them.
+                format!(
+                    "No changes against {}: moonhare will show new commits when they appear",
+                    self.range.base_name
+                )
             } else {
                 format!(
                     "No changes between {} and {}",

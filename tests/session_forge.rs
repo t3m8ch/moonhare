@@ -106,7 +106,7 @@ fn the_pull_request_of_a_branch_is_available_to_other_modules() {
     assert_eq!(found.body, "Adds a.");
 }
 #[test]
-fn an_unavailable_forge_does_not_stop_the_review_and_the_reason_is_shown() {
+fn an_unavailable_forge_does_not_stop_the_review_and_the_reason_is_shown_on_request() {
     let (fx, _) = clone_with_a_branch_not_checked_out();
     let forge = FakeForge {
         pull_request: Err(ForgeError::Unavailable("gh is not installed".into())),
@@ -123,10 +123,13 @@ fn an_unavailable_forge_does_not_stop_the_review_and_the_reason_is_shown() {
     .unwrap();
     session.wait_for_forge();
     assert!(session.pull_request().is_none());
-    let screen = Harness::from_session(session).screen();
+    let mut h = Harness::from_session(session);
+    let screen = h.screen();
 
     assert!(screen.contains("a.rs"), "{screen}");
-    assert!(screen.contains("gh is not installed"), "{screen}");
+    assert!(!screen.contains("gh is not installed"), "{screen}");
+    let screen = h.keys(":pr<CR>").screen();
+    assert!(screen.contains("PR: — gh is not installed"), "{screen}");
 }
 
 #[test]

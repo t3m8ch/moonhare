@@ -134,14 +134,15 @@ impl Session {
         }
         if self.sidebar_visible() && !self.picker && self.files_area().contains(at) {
             // The list scrolls under the pointer; the file stays selected.
-            let last = (self.sidebar_rows().len()).saturating_sub(self.sidebar_capacity().max(1));
-            let offset = self.sidebar_offset();
-            let to = if down {
-                (offset + WHEEL_STEP).min(last)
-            } else {
-                offset.saturating_sub(WHEEL_STEP)
-            };
-            self.sidebar_scroll = Some((self.sidebar_at(), to));
+            let rows = self.sidebar_rows();
+            let by = if down { 1 } else { -1 } * WHEEL_STEP as isize;
+            self.sidebar_scroll.wheel(
+                &rows,
+                &self.sidebar_at(),
+                self.sidebar_cursor(&rows),
+                self.sidebar_capacity(),
+                by,
+            );
             return true;
         }
         false
