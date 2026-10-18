@@ -5,6 +5,7 @@ mod support;
 
 use moonhare::session::Session;
 use moonhare::theme::{self, Background, Theme, DARK, LIGHT};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Color;
 use support::{feature_branch, Harness};
 
@@ -341,4 +342,54 @@ fn the_light_theme_survives_truecolor() {
     };
     let (r, g, b) = moonhare::color::indexed_to_rgb(i);
     assert_eq!(frame.fg_at(x, y), Color::Rgb(r, g, b));
+}
+
+// ------------------------------------------------------- a late reply
+
+/// The keys crossterm makes of an OSC 11 reply that comes after the query
+/// gave up: `ESC ]` is Alt-`]`, `ESC \` is Alt-`\`, BEL is Ctrl-g.
+fn late_reply(end: Event) -> Vec<Event> {
+    let key = |c, m| Event::Key(KeyEvent::new(KeyCode::Char(c), m));
+    let mut keys = vec![key(']', KeyModifiers::ALT)];
+    keys.extend(
+        "11;rgb:ffff/ffff/ffff"
+            .chars()
+            .map(|c| key(c, KeyModifiers::NONE)),
+    );
+    keys.push(end);
+    keys
+}
+
+#[test]
+fn a_reply_of_the_terminal_that_comes_late_is_not_taken_for_keys() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.settle();
+    let before = h.screen();
+    let alt_backslash = Event::Key(KeyEvent::new(KeyCode::Char('\\'), KeyModifiers::ALT));
+    let bel = Event::Key(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL));
+    for end in [alt_backslash, bel] {
+        for event in late_reply(end) {
+            h.session().handle(event);
+        }
+        h.settle();
+        assert_eq!(h.screen(), before, "the reply moved the screen");
+    }
+    // Keys after it are keys again.
+    h.keys(":theme light<CR>");
+    assert!(h.screen().contains("theme:light"), "{}", h.screen());
+}
+
+#[test]
+fn keys_that_do_not_belong_to_a_reply_end_the_swallowing() {
+    let fx = feature_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.settle();
+    h.session().handle(Event::Key(KeyEvent::new(
+        KeyCode::Char(']'),
+        KeyModifiers::ALT,
+    )));
+    // Esc is no part of a reply: it and what follows are keys again.
+    h.keys("<Esc>:theme light<CR>");
+    assert!(h.screen().contains("theme:light"), "{}", h.screen());
 }

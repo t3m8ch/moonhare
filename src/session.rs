@@ -219,6 +219,7 @@ mod file_panel;
 mod file_picker;
 mod forge_load;
 mod groups;
+mod late_reply;
 mod long_list;
 mod marks;
 mod mechanical_view;
@@ -307,6 +308,9 @@ pub struct Session {
     /// The theme the Reviewer asked for and the terminal background `auto`
     /// follows.
     theme_setting: themes::ThemeSetting,
+    /// Keys of a late reply of the terminal swallowed so far, while one is
+    /// coming in.
+    late_reply: Option<usize>,
     mode: Mode,
     pending: Option<char>,
     /// How long `pending` has been waiting.
@@ -514,6 +518,7 @@ impl Session {
             sidebar_custom: None,
             truecolor: false,
             theme_setting: themes::ThemeSetting::default(),
+            late_reply: None,
             mode: Mode::Normal,
             pending: None,
             pending_for: std::time::Duration::ZERO,
@@ -984,7 +989,11 @@ impl Session {
     pub fn handle(&mut self, event: Event) {
         let waiting = self.pending;
         match event {
-            Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if !self.swallow_late_reply(&key) {
+                    self.on_key(key)
+                }
+            }
             Event::Mouse(mouse) => self.on_mouse(mouse),
             Event::Resize(w, h) => {
                 self.size = (w, h);
