@@ -14,16 +14,24 @@ use super::*;
 
 /// A line of the diff by its old and new line numbers: the same in both
 /// layouts.
-type Lines = (Option<usize>, Option<usize>);
+type LineNumbers = (Option<usize>, Option<usize>);
 
 #[derive(Default)]
 pub(super) struct Folds {
     /// One flag per entry of the built layout: whether the line changed.
     pub changed: Vec<bool>,
     /// The revealed lines of each diff.
-    revealed: HashMap<diffs::Key, HashSet<Lines>>,
+    revealed: HashMap<diffs::Key, HashSet<LineNumbers>>,
     /// Whether the diff cursor last moved up: a big fold opens from below.
     came_up: bool,
+}
+
+/// The diff cursor and what its index means.
+#[derive(Clone, Copy)]
+pub(super) struct CursorSpot {
+    file: usize,
+    items: usize,
+    cursor: usize,
 }
 
 impl Session {
@@ -52,10 +60,21 @@ impl Session {
         self.view = fold(&self.folds.changed, &revealed);
     }
 
-    /// Note which way the diff cursor went from `before`.
-    pub(super) fn note_cursor_move(&mut self, before: usize) {
-        if self.vp.cursor != before {
-            self.folds.came_up = self.vp.cursor < before;
+    /// Where the diff cursor is, to tell later which way it moved.
+    pub(super) fn cursor_spot(&self) -> CursorSpot {
+        CursorSpot {
+            file: self.selected,
+            items: self.view.items.len(),
+            cursor: self.vp.cursor,
+        }
+    }
+
+    /// Note which way the diff cursor went from `before`. A cursor moved by
+    /// another file or by folding does not count: the Reviewer did not walk.
+    pub(super) fn note_cursor_move(&mut self, before: CursorSpot) {
+        let now = self.cursor_spot();
+        if now.file == before.file && now.items == before.items && now.cursor != before.cursor {
+            self.folds.came_up = now.cursor < before.cursor;
         }
     }
 
@@ -79,27 +98,23 @@ impl Session {
                     .filter(|&e| !self.folds.changed[e])
                     .collect();
                 self.reveal(&all, true);
-                self.refold_on(first_entry(item));
+                self.refold_on(item.first());
             }
             ('M', item) => {
                 if let Some(key) = self.diff_key(self.selected) {
                     self.folds.revealed.remove(&key);
                 }
-                self.refold_on(first_entry(item));
+                self.refold_on(item.first());
             }
             _ => {}
         }
     }
 
-    /// A click on view item `item`: a fold opens; whether it was one.
-    pub(super) fn click_fold(&mut self, item: usize) -> bool {
-        match self.view.items.get(item) {
-            Some(&Item::Fold { from, len }) => {
-                self.vp.cursor = item;
-                self.open_fold(from, len, false);
-                true
-            }
-            _ => false,
+    /// A click on view item `item`: a fold opens.
+    pub(super) fn click_fold(&mut self, item: usize) {
+        if let Some(&Item::Fold { from, len }) = self.view.items.get(item) {
+            self.vp.cursor = item;
+            self.open_fold(from, len, false);
         }
     }
 
@@ -154,7 +169,7 @@ impl Session {
         let Some(key) = self.diff_key(self.selected) else {
             return false;
         };
-        let lines: Vec<Lines> = entries.iter().map(|&e| self.entry_lines(e)).collect();
+        let lines: Vec<LineNumbers> = entries.iter().map(|&e| self.entry_lines(e)).collect();
         let set = self.folds.revealed.entry(key).or_default();
         let mut any = false;
         for l in lines {
@@ -169,20 +184,10 @@ impl Session {
         self.visual = None;
         self.drop_mouse_selection();
         self.refold();
-        if let Some(i) = self.view.items.iter().position(|&item| match item {
-            Item::Line(l) => l == e,
-            Item::Fold { from, len } => (from..from + len).contains(&e),
-        }) {
+        if let Some(i) = self.view.items.iter().position(|item| item.covers(e)) {
             let (total, height) = (self.line_count(), self.viewport_height());
             self.vp.jump_to(i, total, height);
         }
         self.clamp_view();
-    }
-}
-
-/// The first entry an item stands for.
-fn first_entry(item: Item) -> usize {
-    match item {
-        Item::Line(e) | Item::Fold { from: e, .. } => e,
     }
 }

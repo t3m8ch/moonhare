@@ -337,3 +337,52 @@ fn z_in_the_diff_lists_the_fold_keys_of_the_diff() {
     let help = moonhare::hints::help_lines().join("\n");
     assert!(help.contains("zO ") && help.contains("Enter"), "{help}");
 }
+
+#[test]
+fn a_big_fold_still_opens_from_above_after_folding_back() {
+    let fx = big_fold();
+    let mut h = Harness::open(&fx, 160, 60);
+    // Down into the revealed lines, and fold them back: the cursor jumps up
+    // to the fold by itself, which is not the Reviewer walking up.
+    h.keys("8jzO10jzc");
+    assert!(cursor_row(&mut h).contains("⋯ 83 unchanged lines"));
+    h.keys("zo");
+    let screen = h.screen();
+    assert!(shown(&screen, 14) && !shown(&screen, 96), "{screen}");
+}
+
+#[test]
+fn walking_and_scrolling_go_through_revealed_lines() {
+    let fx = big_fold();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("8jzO");
+    assert!(cursor_row(&mut h).contains("let v014"));
+    h.keys("j");
+    assert!(cursor_row(&mut h).contains("let v015"));
+    h.keys("<C-d>");
+    assert!(cursor_row(&mut h).contains("let v028"), "half of 27 rows");
+    h.keys("<C-f>");
+    let screen = h.screen();
+    assert!(shown(&screen, 60), "{screen}");
+    h.keys("G");
+    assert!(cursor_row(&mut h).contains("⋯ 17 unchanged lines"));
+    h.keys("gg");
+    assert!(cursor_row(&mut h).contains("⋯ 6 unchanged lines"));
+}
+
+#[test]
+fn new_commits_fold_the_file_again_without_a_panic() {
+    let fx = small_folds();
+    let mut h = Harness::open(&fx, 160, 50);
+    h.keys("zR");
+    let text: String = (1..=60)
+        .map(|i| format!("let v{i:03} = {i};\n"))
+        .collect::<String>()
+        + "let tail = 0;\n";
+    fx.write("rows.rs", &text).commit("shorter");
+    h.wait(5_000).keys("R");
+    let screen = h.screen();
+    assert!(screen.contains("unchanged lines"), "{screen}");
+    h.keys("GzRzMgg");
+    h.screen();
+}

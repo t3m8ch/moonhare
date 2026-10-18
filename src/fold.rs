@@ -22,6 +22,23 @@ pub enum Item {
     Fold { from: usize, len: usize },
 }
 
+impl Item {
+    /// The first input index the item stands for.
+    pub fn first(self) -> usize {
+        match self {
+            Item::Line(e) | Item::Fold { from: e, .. } => e,
+        }
+    }
+
+    /// Whether the item shows input index `e`, or hides it.
+    pub fn covers(self, e: usize) -> bool {
+        match self {
+            Item::Line(l) => l == e,
+            Item::Fold { from, len } => (from..from + len).contains(&e),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Folded {
     pub items: Vec<Item>,

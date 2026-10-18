@@ -53,6 +53,11 @@ A sequence diagram or flowchart the Analyst draws, as Mermaid text, for a Group,
 _Russian_: диаграмма
 _Avoid_: picture, chart, graph
 
+**Fold**:
+A long stretch of unchanged lines in a diff shown as one placeholder row with its line count. The Reviewer can reveal its lines, a chunk at a time when it is long, and fold them back.
+_Russian_: свёрнутый участок
+_Avoid_: collapsed region, gap
+
 **Explanation**:
 The Analyst's answer, on demand, to "what does this hunk or file do and why". Unlike the Summary it is never built in the background.
 _Russian_: объяснение

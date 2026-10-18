@@ -920,9 +920,7 @@ impl Session {
 
     /// The source lines an item stands for (the first one of a fold).
     fn item_lines(&self, item: Item) -> (Option<usize>, Option<usize>) {
-        match item {
-            Item::Line(e) | Item::Fold { from: e, .. } => self.entry_lines(e),
-        }
+        self.entry_lines(item.first())
     }
 
     /// Rebuild the folded display model when the file or the layout changed,
@@ -1004,7 +1002,7 @@ impl Session {
     pub fn handle(&mut self, event: Event) {
         let waiting = self.pending;
         let resized = matches!(event, Event::Resize(..));
-        let cursor = self.vp.cursor;
+        let cursor = self.cursor_spot();
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
             Event::Mouse(mouse) => self.on_mouse(mouse),
