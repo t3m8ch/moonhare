@@ -4,7 +4,9 @@
 //! colour of a role (`fg`, `dim`, `added_bg`, a syntax highlight, …). Two
 //! themes are built in: [`DARK`], the long-standing look for a dark terminal,
 //! and [`LIGHT`] for a light one. Which one is drawn is a [`Choice`]: `auto`
-//! follows the terminal [`Background`], as `$COLORFGBG` names it
+//! follows the terminal [`Background`], as the terminal tells it in its
+//! reply to OSC 11 or in a DEC 2031 report ([`background_from_osc11`],
+//! [`crate::terminal_input`]) or, until it does, as `$COLORFGBG` names it
 //! ([`background_from_colorfgbg`]); dark when nothing does.
 //!
 //! Colours are 256-palette entries so that [`crate::color::to_truecolor`]
