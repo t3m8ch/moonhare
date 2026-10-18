@@ -713,25 +713,32 @@ fn table(
                 .max(1)
         })
         .collect();
-    let least: Vec<usize> = (0..columns)
+    let words: Vec<usize> = (0..columns)
         .map(|c| {
             let word = all().map(|row| longest_word(&row[c])).max().unwrap_or(0);
-            natural[c].min(word.clamp(MIN_COLUMN, MAX_WORD_COLUMN))
+            natural[c].min(word.max(1))
         })
+        .collect();
+    let least: Vec<usize> = (0..columns)
+        .map(|c| words[c].clamp(MIN_COLUMN, MAX_WORD_COLUMN).min(natural[c]))
         .collect();
     let frame = 3 * columns + 1;
     if least.iter().sum::<usize>() + frame > width {
         return cards(&head, &rows, width);
     }
+    // Squeeze the widest column, first only where the text wraps between
+    // words, then cutting words too.
     let mut widths = natural;
-    while widths.iter().sum::<usize>() + frame > width {
-        let Some(widest) = (0..columns)
-            .filter(|&c| widths[c] > least[c])
-            .max_by_key(|&c| (widths[c], std::cmp::Reverse(c)))
-        else {
-            break;
-        };
-        widths[widest] -= 1;
+    for floor in [&words, &least] {
+        while widths.iter().sum::<usize>() + frame > width {
+            let Some(widest) = (0..columns)
+                .filter(|&c| widths[c] > floor[c])
+                .max_by_key(|&c| (widths[c], std::cmp::Reverse(c)))
+            else {
+                break;
+            };
+            widths[widest] -= 1;
+        }
     }
     let align = |c: usize| aligns.get(c).copied().unwrap_or(Alignment::None);
     let laid = |row: &[Inline]| -> Vec<Vec<Line<'static>>> {
