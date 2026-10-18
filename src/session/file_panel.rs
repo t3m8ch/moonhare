@@ -37,6 +37,9 @@ pub(super) enum At {
 pub(super) enum Row {
     /// The name of Group `n` and its progress.
     Header(usize),
+    /// The dim line above the tree of the Mechanical files of Group `n`
+    /// (`None`: without Groups), so that it does not read as a repeat.
+    Mechanical(Option<usize>),
     /// A row of one of the trees. File indices are into the displayed list.
     Tree {
         tree: Tree,
@@ -49,7 +52,7 @@ impl Row {
     /// Where a cursor on this row stands; a Group header is no stop.
     pub(super) fn at(&self) -> Option<At> {
         match self {
-            Row::Header(_) => None,
+            Row::Header(_) | Row::Mechanical(_) => None,
             Row::Tree {
                 line: Line::File { index, .. },
                 ..
@@ -69,6 +72,7 @@ impl Row {
     pub(super) fn group(&self) -> Option<usize> {
         match self {
             Row::Header(n) => Some(*n),
+            Row::Mechanical(group) => *group,
             Row::Tree { tree, .. } => tree.group,
         }
     }
@@ -88,7 +92,7 @@ impl Row {
     fn tree(&self) -> Option<Tree> {
         match self {
             Row::Tree { tree, .. } => Some(*tree),
-            Row::Header(_) => None,
+            Row::Header(_) | Row::Mechanical(_) => None,
         }
     }
 }
@@ -152,7 +156,7 @@ fn motion(rows: &[Row], cursor: usize, code: KeyCode, n: usize, half: usize) -> 
     let last = stops.len().checked_sub(1)?;
     let depth = |row: &Row| match row {
         Row::Tree { line, .. } => line.depth(),
-        Row::Header(_) => 0,
+        Row::Header(_) | Row::Mechanical(_) => 0,
     };
     let parent = || {
         let (tree, d) = (rows[cursor].tree(), depth(&rows[cursor]));
@@ -257,6 +261,9 @@ impl Session {
             if let Some(g) = tree.group.filter(|&g| last_group != Some(g)) {
                 rows.push(Row::Header(g));
                 last_group = Some(g);
+            }
+            if tree.mechanical {
+                rows.push(Row::Mechanical(tree.group));
             }
             let paths: Vec<&str> = self.files[run.clone()]
                 .iter()
@@ -545,6 +552,10 @@ impl Session {
             let marker = if lit { '>' } else { ' ' };
             match row {
                 Row::Header(g) => self.render_group_row(buf, x, y, width, *g),
+                Row::Mechanical(_) => {
+                    let line = file_tree::fit_head(" ── mechanical ──", width);
+                    buf.set_stringn(x, y, line, width, Style::new().fg(DIM));
+                }
                 Row::Tree {
                     line:
                         Line::File {
@@ -559,15 +570,21 @@ impl Session {
                     if *index == self.selected {
                         style = style.add_modifier(Modifier::BOLD);
                     }
+                    // An unreviewed file still has a mark in that column, so
+                    // that a file stands level with the directories beside it.
                     let reviewed = match mark(*index) {
                         Mark::Reviewed => '✓',
                         Mark::Partial => '◐',
-                        Mark::Unreviewed => ' ',
+                        Mark::Unreviewed => '·',
                     };
                     let pad_in = " ".repeat(*indent);
                     let line =
                         format!("{marker}{pad_in}{reviewed} {} {name}", file.status.letter());
-                    buf.set_stringn(x, y, pad(&line, width), width, style);
+                    buf.set_stringn(x, y, file_tree::pad(&line, width), width, style);
+                    let mark_x = x + (1 + indent) as u16;
+                    if reviewed == '·' && (mark_x as usize) < x as usize + width {
+                        buf.set_style(Rect::new(mark_x, y, 1, 1), style.fg(DIM));
+                    }
                     let color = match file.status {
                         Status::Added => Color::Indexed(114),
                         Status::Deleted => Color::Indexed(174),
@@ -585,17 +602,23 @@ impl Session {
                             indent,
                             label,
                             files,
+                            progress,
                             ..
                         },
                     folded,
                     ..
                 } => {
-                    let done = files.iter().filter(|&&i| mark(i) == Mark::Reviewed).count();
-                    let progress = format!("{done}/{}", files.len());
                     let fold = if *folded { '▸' } else { '▾' };
                     let head = format!("{marker}{}{fold} {label}", " ".repeat(*indent));
-                    let room = width.saturating_sub(progress.len() + 2);
-                    let line = format!("{} {progress} ", pad(&fit(&head, room, false), room));
+                    let line = if *progress {
+                        let done = files.iter().filter(|&&i| mark(i) == Mark::Reviewed).count();
+                        let progress = format!("{done}/{}", files.len());
+                        let room = width.saturating_sub(progress.len() + 2);
+                        let head = file_tree::pad(&file_tree::fit_head(&head, room), room);
+                        format!("{head} {progress} ")
+                    } else {
+                        file_tree::pad(&file_tree::fit_head(&head, width), width)
+                    };
                     buf.set_stringn(x, y, &line, width, style.fg(Color::Indexed(110)));
                 }
             }

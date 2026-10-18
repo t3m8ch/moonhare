@@ -14,6 +14,8 @@ use std::collections::HashMap;
 
 /// Columns each level of the tree is indented by.
 pub const INDENT: usize = 2;
+/// Rows narrower than this indent by a single column a level.
+const NARROW: usize = 24;
 /// Columns of a directory row before its name: the fold mark and a space.
 pub const DIR_PREFIX: usize = 2;
 /// Columns of a file row before its name: the reviewed mark, a space, the
@@ -36,6 +38,9 @@ pub enum Line {
         segments: usize,
         /// The input indices of every file under the node, in tree order.
         files: Vec<usize>,
+        /// Whether the row has room for the progress of its files: a narrow
+        /// row gives it up before it cuts the name.
+        progress: bool,
     },
     /// A file: a leaf of the tree.
     File {
@@ -174,8 +179,13 @@ fn files_under(nodes: &[Node], node: usize, out: &mut Vec<usize>) {
 
 /// The indent of a row at `depth` in rows of `width` columns.
 fn indent_of(depth: usize, width: usize) -> usize {
-    // A deep tree in a narrow row keeps half of it for the names.
-    (depth * INDENT).min(width / 2)
+    // A narrow row indents by one column a level and keeps three quarters of
+    // itself for the names; a wide one keeps two thirds.
+    if width < NARROW {
+        depth.min(width / 4)
+    } else {
+        (depth * INDENT).min(width / 3)
+    }
 }
 
 /// The rows of what directory `node` holds, at `depth`, under `parent`.
@@ -211,15 +221,19 @@ fn emit(
                 }
                 let mut files = Vec::new();
                 files_under(nodes, end, &mut files);
-                let reserve = DIR_PREFIX + progress_width(files.len());
                 let mut path = parent.to_string();
                 let mut level = depth;
                 let mut rest = &segments[..];
                 while !rest.is_empty() {
                     let indent = indent_of(level, width);
-                    let room = width.saturating_sub(indent + reserve);
+                    let name_room = width.saturating_sub(indent + DIR_PREFIX);
+                    let with_progress = name_room.saturating_sub(progress_width(files.len()));
+                    // The name comes first: the progress goes when the first
+                    // segment would not fit beside it.
+                    let progress = cells(rest[0]) <= with_progress;
+                    let room = if progress { with_progress } else { name_room };
                     let mut take = 1;
-                    while take < rest.len() && rest[..=take].join("/").chars().count() <= room {
+                    while take < rest.len() && cells(&rest[..=take].join("/")) <= room {
                         take += 1;
                     }
                     let label = rest[..take].join("/");
@@ -236,6 +250,7 @@ fn emit(
                         path: path.clone(),
                         segments: take,
                         files: files.clone(),
+                        progress,
                     });
                     rest = &rest[take..];
                     level += 1;
@@ -246,29 +261,60 @@ fn emit(
     }
 }
 
-/// `s` cut to `width` columns with `…` at the end.
-fn fit_head(s: &str, width: usize) -> String {
-    if s.chars().count() <= width {
-        return s.to_string();
-    }
-    if width == 0 {
-        return String::new();
-    }
-    let head: String = s.chars().take(width - 1).collect();
-    format!("{head}…")
+/// The terminal cells `s` takes: a wide (CJK) character takes two.
+pub fn cells(s: &str) -> usize {
+    unicode_width::UnicodeWidthStr::width(s)
 }
 
-/// `s` cut to `width` columns with `…` at the start: the extension stays.
-fn fit_tail(s: &str, width: usize) -> String {
-    let n = s.chars().count();
-    if n <= width {
+/// The terminal cells of one character.
+fn char_cells(c: char) -> usize {
+    unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)
+}
+
+/// `s` cut to `width` cells with `…` at the end.
+pub fn fit_head(s: &str, width: usize) -> String {
+    if cells(s) <= width {
         return s.to_string();
     }
     if width == 0 {
         return String::new();
     }
-    let tail: String = s.chars().skip(n - (width - 1)).collect();
-    format!("…{tail}")
+    let mut out = String::new();
+    let mut used = 0;
+    for c in s.chars() {
+        if used + char_cells(c) > width - 1 {
+            break;
+        }
+        used += char_cells(c);
+        out.push(c);
+    }
+    out.push('…');
+    out
+}
+
+/// `s` cut to `width` cells with `…` at the start: the extension stays.
+pub fn fit_tail(s: &str, width: usize) -> String {
+    if cells(s) <= width {
+        return s.to_string();
+    }
+    if width == 0 {
+        return String::new();
+    }
+    let mut tail = Vec::new();
+    let mut used = 0;
+    for c in s.chars().rev() {
+        if used + char_cells(c) > width - 1 {
+            break;
+        }
+        used += char_cells(c);
+        tail.push(c);
+    }
+    std::iter::once('…').chain(tail.into_iter().rev()).collect()
+}
+
+/// `s` padded with spaces to `width` cells.
+pub fn pad(s: &str, width: usize) -> String {
+    format!("{s}{}", " ".repeat(width.saturating_sub(cells(s))))
 }
 
 #[cfg(test)]
@@ -357,8 +403,16 @@ mod tests {
     #[test]
     fn only_a_segment_too_long_for_its_row_is_cut() {
         let lines = draw(&["averyveryverylongdirectoryname/x.rs"], 20);
-        // 13 columns are left for the name: 20, less the fold mark and " 0/1 ".
-        assert_eq!(lines[0], "averyveryver…/");
+        // Not even beside the progress: the row gives the progress up, and
+        // 18 columns are left for the name: 20, less the fold mark.
+        assert_eq!(lines[0], "averyveryverylong…/");
+        assert!(matches!(
+            build(&["averyveryverylongdirectoryname/x.rs"], 20)[0],
+            Line::Dir {
+                progress: false,
+                ..
+            }
+        ));
     }
 
     #[test]
@@ -455,6 +509,45 @@ mod tests {
     fn a_file_name_too_long_keeps_its_end() {
         let lines = draw(&["a_really_long_file_name.rs"], 14);
         assert_eq!(lines, ["…e_name.rs"]);
+    }
+
+    #[test]
+    fn widths_count_terminal_cells_not_characters() {
+        // Each of these characters takes two cells: 6 cells, 3 characters.
+        let lines = build(&["日本語/ファイル.rs"], 16);
+        let Line::Dir {
+            label, progress, ..
+        } = &lines[0]
+        else {
+            panic!("{lines:?}")
+        };
+        assert_eq!(label, "日本語");
+        assert!(*progress, "6 cells fit beside 0/1: {lines:?}");
+        // 16 - 1 indent - 4 = 11 cells for a file name of 11: it fits.
+        let Line::File { name, .. } = &lines[1] else {
+            panic!("{lines:?}")
+        };
+        assert_eq!(name, "ファイル.rs");
+        let cut = build(&["日本語/ファイル.rs"], 14);
+        let Line::File { name, .. } = &cut[1] else {
+            panic!("{cut:?}")
+        };
+        assert_eq!(name, "…イル.rs");
+        assert_eq!(fit_head("日本語", 5), "日本…");
+        assert_eq!(pad("日本", 6), "日本  ");
+    }
+
+    #[test]
+    fn a_narrow_row_gives_up_the_progress_before_the_name() {
+        let lines = build(&["features/x.rs"], 12);
+        let Line::Dir {
+            label, progress, ..
+        } = &lines[0]
+        else {
+            panic!("{lines:?}")
+        };
+        assert_eq!(label, "features");
+        assert!(!progress);
     }
 
     #[test]

@@ -1902,30 +1902,17 @@ fn digits(n: usize) -> usize {
     n.max(99).to_string().len()
 }
 
+/// `s` padded with spaces to `width` cells.
 fn pad(s: &str, width: usize) -> String {
-    let n = s.chars().count();
-    if n >= width {
-        s.to_string()
-    } else {
-        format!("{s}{}", " ".repeat(width - n))
-    }
+    crate::file_tree::pad(s, width)
 }
 
-/// Fit `s` into `width` columns, cutting with `…` (from the left for paths).
+/// Fit `s` into `width` cells, cutting with `…` (from the left for paths).
 fn fit(s: &str, width: usize, keep_tail: bool) -> String {
-    let n = s.chars().count();
-    if n <= width {
-        return s.to_string();
-    }
-    if width == 0 {
-        return String::new();
-    }
     if keep_tail {
-        let tail: String = s.chars().skip(n - (width - 1)).collect();
-        format!("…{tail}")
+        crate::file_tree::fit_tail(s, width)
     } else {
-        let head: String = s.chars().take(width - 1).collect();
-        format!("{head}…")
+        crate::file_tree::fit_head(s, width)
     }
 }
 

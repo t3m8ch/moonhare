@@ -561,3 +561,131 @@ fn mechanical_files_keep_coming_last_in_a_tree_of_their_own() {
         h.screen()
     );
 }
+
+/// A branch that adds `paths`, one line each.
+fn branch_with(paths: &[&str]) -> Fixture {
+    let fx = Fixture::new();
+    fx.write("README.md", "x\n").commit("initial");
+    fx.branch("feature");
+    for path in paths {
+        fx.write(path, &format!("{path}\n"));
+    }
+    fx.commit("files");
+    fx
+}
+
+/// The column (in cells) where `needle` starts in `row`.
+fn cell_column(row: &str, needle: &str) -> usize {
+    unicode_width::UnicodeWidthStr::width(&row[..row.find(needle).unwrap()])
+}
+
+#[test]
+fn wide_characters_take_two_cells_and_the_progress_stays() {
+    let fx = branch_with(&["日本語のディレクトリ/ファイル.rs", "src/a.rs"]);
+    let mut h = Harness::open(&fx, 160, 30);
+    // A frame row has one cell a column: a wide character is followed by the
+    // cell it covers.
+    let screen = h.screen();
+    let wide = row_of(&screen, "日");
+    let src = row_of(&screen, "▾ src");
+    let at = |row: &str| row.chars().position(|c| c == '0');
+    assert!(at(&wide).is_some(), "{screen}");
+    assert_eq!(at(&wide), at(&src), "the progress lines up:\n{screen}");
+    let border = |row: &str| row.chars().skip(1).position(|c| c == '│');
+    assert_eq!(border(&wide), border(&src), "{screen}");
+}
+
+#[test]
+fn the_narrowest_sidebar_keeps_the_names_and_drops_the_progress() {
+    let fx = deep_branch();
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys(":sidebar 16<CR>");
+    let side = sidebar(&mut h, 16);
+    for name in ["src", "features", "course", "access", "api"] {
+        assert!(side.contains(&format!("▾ {name}")), "{name}:\n{side}");
+    }
+    assert!(!row_of(&side, "▾ features").contains("0/"), "{side}");
+    // The files stay apart: each keeps the end of its name.
+    for tail in ["ex.ts", "ws.ts", "el.ts"] {
+        assert!(side.contains(tail), "{tail}:\n{side}");
+    }
+}
+
+#[test]
+fn a_file_of_the_root_after_a_directory_stands_level_with_it() {
+    let fx = branch_with(&["src/a.rs", "zz.md"]);
+    let mut h = Harness::open(&fx, 160, 30);
+    let side = sidebar(&mut h, 32);
+    let dir = column(&side, "▾ src");
+    let child = column(&side, "a.rs");
+    let root = column(&side, "zz.md");
+    assert!(position(&side, "a.rs") < position(&side, "zz.md"), "{side}");
+    // `· A zz.md` starts where `▾ src` does; `a.rs` is deeper.
+    assert_eq!(root - 4, dir, "{side}");
+    assert!(child > root, "{side}");
+}
+
+#[test]
+fn the_mechanical_tree_has_a_label_that_the_cursor_skips() {
+    let fx = branch_with(&["web/app.js", "web/package-lock.json"]);
+    let mut h = Harness::open(&fx, 160, 30);
+    let side = sidebar(&mut h, 32);
+    let label = position(&side, "mechanical");
+    assert!(position(&side, "app.js") < label, "{side}");
+    assert!(label < position(&side, "package-lock.json"), "{side}");
+    // From app.js: j lands on the second web/, not on the label.
+    h.keys("<Tab><Tab>j");
+    let side = sidebar(&mut h, 32);
+    let cursor = side.lines().find(|l| l.starts_with("│>")).unwrap();
+    assert!(cursor.contains("▾ web"), "{side}");
+    assert!(
+        position(&side, "mechanical") < position(&side, cursor),
+        "{side}"
+    );
+}
+
+#[test]
+fn files_of_the_same_name_in_different_directories_open_the_right_one() {
+    let fx = branch_with(&["lib/util/mod.rs", "src/util/mod.rs"]);
+    let mut h = Harness::open(&fx, 160, 30);
+    let side = sidebar(&mut h, 32);
+    assert_eq!(side.matches("mod.rs").count(), 2, "{side}");
+    assert!(
+        side.contains("lib/util") && side.contains("src/util"),
+        "{side}"
+    );
+    let screen = h.screen();
+    let second = screen
+        .lines()
+        .enumerate()
+        .filter(|(_, l)| l.chars().take(32).collect::<String>().contains("mod.rs"))
+        .nth(1)
+        .map(|(y, l)| (cell_column(l, "mod.rs") as u16, y as u16))
+        .unwrap();
+    h.click(second.0, second.1);
+    let bar = file_bar(&mut h);
+    assert!(
+        bar.contains("src/util/mod.rs") && bar.contains("file 2/2"),
+        "{bar}"
+    );
+    h.keys("[f");
+    assert!(
+        file_bar(&mut h).contains("lib/util/mod.rs"),
+        "{}",
+        h.screen()
+    );
+}
+
+#[test]
+fn space_in_the_picker_lists_only_the_keys_that_work_there() {
+    let fx = deep_branch();
+    let mut h = Harness::open(&fx, 120, 40);
+    h.keys("<Space>f<Space>").wait(400);
+    let screen = h.screen();
+    assert!(screen.contains("which-key"), "{screen}");
+    assert!(screen.contains("описание группы"), "{screen}");
+    assert!(screen.contains("группы / дерево"), "{screen}");
+    for other in ["выбор коммита", "саммари", "промпт"] {
+        assert!(!screen.contains(other), "{other}:\n{screen}");
+    }
+}

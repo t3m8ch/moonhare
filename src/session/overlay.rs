@@ -26,6 +26,7 @@ impl Session {
             return;
         }
         let context = match (self.pending, self.window(), self.commit_anchor) {
+            (Some(' '), ..) if self.file_picker.is_some() => hints::Context::PickerSpace,
             (Some(prefix), ..) => hints::Context::Pending(prefix),
             (None, ..) if self.file_picker.is_some() => hints::Context::FilePicker,
             (None, Focus::Commits, Some(_)) => hints::Context::CommitsVisual,
@@ -85,7 +86,10 @@ impl Session {
     }
 
     pub(super) fn render_which_key(&self, buf: &mut Buffer, prefix: char) {
-        let (title, rows) = hints::which_key(prefix);
+        let (title, mut rows) = hints::which_key(prefix);
+        if prefix == ' ' && self.file_picker.is_some() {
+            rows.retain(|(key, _)| hints::PICKER_SPACE.contains(key));
+        }
         let lines: Vec<String> = rows.iter().map(|(k, l)| format!(" {k:<3} {l} ")).collect();
         let title = format!(" {title} ");
         let inner = lines

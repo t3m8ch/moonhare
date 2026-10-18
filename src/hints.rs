@@ -13,6 +13,9 @@ pub const CTRL_W: char = '\u{17}';
 /// The internal name of the `Space p` prefix (Prompt keys).
 pub const SPACE_P: char = '\u{10}';
 
+/// The `Space` keys that work while the file picker is open.
+pub const PICKER_SPACE: &[&str] = &["g", "i"];
+
 /// One key (or the last key of a chain).
 pub struct Binding {
     /// The prefix key that must come first, if any.
@@ -231,6 +234,8 @@ pub enum Context {
     CommitsVisual,
     /// A prefix key is waiting for its continuation.
     Pending(char),
+    /// `Space` waits inside the file picker: only [`PICKER_SPACE`] work.
+    PickerSpace,
 }
 
 /// The bottom hint line: keys that make sense right now, chains spelled out.
@@ -260,6 +265,13 @@ pub fn hint_line(context: Context) -> String {
                 Ctrl-w + </>: ширина сайдбара  Ctrl-w + =: сброс  Esc: отмена"
                 .into()
         }
+        Context::PickerSpace => BINDINGS
+            .iter()
+            .filter(|x| x.prefix == Some(' ') && PICKER_SPACE.contains(&x.key))
+            .map(|x| format!("Space + {}: {}", x.key, x.label))
+            .chain(["Esc: отмена".to_string()])
+            .collect::<Vec<_>>()
+            .join("  "),
         Context::Pending(prefix) => {
             let name = prefix_name(prefix);
             let mut parts: Vec<String> = BINDINGS
