@@ -45,8 +45,9 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    // Ask the terminal for its background while the session opens.
-    let mut background = Background::new(choice == Choice::Auto);
+    // Ask the terminal for its background while the session opens: `auto`
+    // follows it, and so does a later `:theme auto`.
+    let mut background = BackgroundProbe::new();
     let forge: std::sync::Arc<GitHub> = std::sync::Arc::new(GitHub::new());
     let mut terminal = None;
     let opened = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
@@ -121,10 +122,7 @@ fn main() -> ExitCode {
         session.set_language(&language);
     }
     session.set_terminal_background(detected);
-    if let Some(theme) = &theme {
-        // Parsed above already.
-        let _ = session.set_theme(theme);
-    }
+    session.set_choice(choice);
     session.set_analyst(std::sync::Arc::new(ClaudeAnalyst::new()));
 
     let mut terminal = terminal.unwrap_or_else(ratatui::init);
@@ -155,21 +153,22 @@ const BACKGROUND_TIMEOUT: Duration = Duration::from_millis(200);
 
 /// The terminal background, told by a thread that asks while the session
 /// opens.
-struct Background {
+struct BackgroundProbe {
     asking: Option<std::thread::JoinHandle<Option<theme::Background>>>,
     told: Option<theme::Background>,
 }
 
-impl Background {
-    /// Start asking unless the theme is chosen already (`ask` false).
-    fn new(ask: bool) -> Background {
-        let asking = ask.then(|| {
-            std::thread::spawn(|| {
-                let colorfgbg = std::env::var("COLORFGBG").ok();
-                theme::detect(query, colorfgbg.as_deref())
-            })
+impl BackgroundProbe {
+    /// Start asking.
+    fn new() -> BackgroundProbe {
+        let asking = std::thread::spawn(|| {
+            let colorfgbg = std::env::var("COLORFGBG").ok();
+            theme::detect(query, colorfgbg.as_deref())
         });
-        Background { asking, told: None }
+        BackgroundProbe {
+            asking: Some(asking),
+            told: None,
+        }
     }
 
     /// The background, once the thread is done; it holds the terminal in raw

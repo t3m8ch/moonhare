@@ -443,7 +443,7 @@ fn line_width(line: &Line) -> usize {
 
 /// `blocks` laid out for `width`; a blank line between blocks unless `tight`.
 fn layout(
-    t: &Theme,
+    theme: &Theme,
     blocks: &[Block],
     width: usize,
     tight: bool,
@@ -454,17 +454,22 @@ fn layout(
         if i > 0 && !tight {
             lines.push(Line::default());
         }
-        lines.extend(layout_block(t, block, width, pictures));
+        lines.extend(layout_block(theme, block, width, pictures));
     }
     lines
 }
 
-fn layout_block(t: &Theme, block: &Block, width: usize, pictures: Pictures) -> Vec<Line<'static>> {
+fn layout_block(
+    theme: &Theme,
+    block: &Block,
+    width: usize,
+    pictures: Pictures,
+) -> Vec<Line<'static>> {
     match block {
         Block::Text(inline) => wrap(inline, width),
         Block::Heading(inline) => {
             let heading = Style::new()
-                .fg(t.markdown.heading)
+                .fg(theme.markdown.heading)
                 .add_modifier(Modifier::BOLD);
             let styled: Inline = inline
                 .iter()
@@ -480,29 +485,41 @@ fn layout_block(t: &Theme, block: &Block, width: usize, pictures: Pictures) -> V
                     None => "• ".to_string(),
                 };
                 let indent = str_width(&marker);
-                let inner = layout(t, item, width.saturating_sub(indent).max(1), true, pictures);
+                let inner = layout(
+                    theme,
+                    item,
+                    width.saturating_sub(indent).max(1),
+                    true,
+                    pictures,
+                );
                 lines.extend(prefixed(
                     inner,
-                    Span::styled(marker, Style::new().fg(t.markdown.heading)),
+                    Span::styled(marker, Style::new().fg(theme.markdown.heading)),
                     Span::raw(" ".repeat(indent)),
                 ));
             }
             lines
         }
         Block::Quote(blocks) => {
-            let bar = Span::styled("│ ", Style::new().fg(t.dim));
-            let inner = layout(t, blocks, width.saturating_sub(2).max(1), false, pictures);
+            let bar = Span::styled("│ ", Style::new().fg(theme.dim));
+            let inner = layout(
+                theme,
+                blocks,
+                width.saturating_sub(2).max(1),
+                false,
+                pictures,
+            );
             prefixed(inner, bar.clone(), bar)
         }
         Block::Code { language, code } => match pictures(language, code) {
             Some(picture) => picture.iter().map(|l| Line::raw(clean(l))).collect(),
-            None => code_block(t, code, width),
+            None => code_block(theme, code, width),
         },
         Block::Rule => vec![Line::from(Span::styled(
             "─".repeat(width),
-            Style::new().fg(t.dim),
+            Style::new().fg(theme.dim),
         ))],
-        Block::Table { aligns, head, rows } => table(t, aligns, head, rows, width),
+        Block::Table { aligns, head, rows } => table(theme, aligns, head, rows, width),
     }
 }
 
@@ -529,8 +546,8 @@ fn prefixed(
 
 /// A code block: on a background, one line per line of code, cut with `…`
 /// rather than wrapped.
-fn code_block(t: &Theme, code: &str, width: usize) -> Vec<Line<'static>> {
-    let style = Style::new().fg(t.fg).bg(t.markdown.block_bg);
+fn code_block(theme: &Theme, code: &str, width: usize) -> Vec<Line<'static>> {
+    let style = Style::new().fg(theme.fg).bg(theme.markdown.block_bg);
     code.trim_end_matches('\n')
         .split('\n')
         .map(|line| {
@@ -697,7 +714,7 @@ fn bold(inline: &Inline) -> Inline {
 /// A table in a frame when its columns fit `width`, squeezed with the text
 /// wrapped inside the cells when they fit squeezed, and as cards otherwise.
 fn table(
-    t: &Theme,
+    theme: &Theme,
     aligns: &[Alignment],
     head: &[Inline],
     rows: &[Vec<Inline>],
@@ -772,14 +789,14 @@ fn table(
         let parts: Vec<String> = widths.iter().map(|w| "─".repeat(w + 2)).collect();
         Line::from(Span::styled(
             format!("{left}{}{right}", parts.join(mid)),
-            Style::new().fg(t.dim),
+            Style::new().fg(theme.dim),
         ))
     };
     let mut lines = vec![border("┌", "┬", "┐")];
     let draw_row = |cells: &[Vec<Line<'static>>], lines: &mut Vec<Line<'static>>| {
         let height = cells.iter().map(Vec::len).max().unwrap_or(1).max(1);
         for i in 0..height {
-            let mut spans = vec![Span::styled("│", Style::new().fg(t.dim))];
+            let mut spans = vec![Span::styled("│", Style::new().fg(theme.dim))];
             for (c, cell) in cells.iter().enumerate() {
                 let content = cell.get(i).cloned().unwrap_or_default();
                 let room = widths[c].saturating_sub(line_width(&content));
@@ -791,7 +808,7 @@ fn table(
                 spans.push(Span::raw(" ".repeat(before + 1)));
                 spans.extend(content.spans);
                 spans.push(Span::raw(" ".repeat(after + 1)));
-                spans.push(Span::styled("│", Style::new().fg(t.dim)));
+                spans.push(Span::styled("│", Style::new().fg(theme.dim)));
             }
             lines.push(Line::from(spans));
         }

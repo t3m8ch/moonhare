@@ -306,7 +306,7 @@ pub struct Session {
     truecolor: bool,
     /// The theme the Reviewer asked for and the terminal background `auto`
     /// follows.
-    theme: themes::Themes,
+    theme_setting: themes::ThemeSetting,
     mode: Mode,
     pending: Option<char>,
     /// How long `pending` has been waiting.
@@ -513,7 +513,7 @@ impl Session {
             sidebar_manual: None,
             sidebar_custom: None,
             truecolor: false,
-            theme: themes::Themes::default(),
+            theme_setting: themes::ThemeSetting::default(),
             mode: Mode::Normal,
             pending: None,
             pending_for: std::time::Duration::ZERO,
