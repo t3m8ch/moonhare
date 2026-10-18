@@ -153,7 +153,10 @@ const PLAIN: &[(&str, &str)] = &[
     ("Ctrl-e/y", "прокрутка без курсора"),
     ("G", "в конец файла (NG: к строке N)"),
     ("0", "горизонтальная прокрутка в начало"),
-    ("s", "переключить side-by-side / inline"),
+    (
+        "s",
+        "side-by-side / inline (запоминается); :layout auto|inline|side-by-side",
+    ),
     ("a", "срез: весь диапазон"),
     ("v", "список коммитов: выделить срез"),
     ("Enter", "список коммитов: применить срез"),
@@ -243,7 +246,16 @@ const NOTES: &[&str] = &[
     "gg/G, Home/End и колесо мыши; позиция видна на нижней рамке.",
 ];
 
-/// The `?` help: notes, then every key from [`PLAIN`] and [`BINDINGS`].
+/// Notes shown at the end of the help: where the preferences are kept.
+const PREFERENCES: &[&str] = &[
+    "Тема (:theme) и раскладка (s, :layout) запоминаются для всех репозиториев",
+    "в $XDG_STATE_HOME/moonhare/preferences (по умолчанию ~/.local/state/moonhare/;",
+    "на macOS без XDG_STATE_HOME: ~/Library/Application Support/moonhare/).",
+    "--theme и MOONHARE_THEME действуют на один запуск и не сохраняются.",
+];
+
+/// The `?` help: notes, every key from [`PLAIN`] and [`BINDINGS`], then
+/// where the preferences are kept.
 pub fn help_lines() -> Vec<String> {
     let mut lines: Vec<String> = NOTES.iter().map(|n| n.to_string()).collect();
     lines.push(String::new());
@@ -258,6 +270,8 @@ pub fn help_lines() -> Vec<String> {
         };
         lines.push(format!("{chain:<14} {}", x.label));
     }
+    lines.push(String::new());
+    lines.extend(PREFERENCES.iter().map(|n| n.to_string()));
     lines
 }
 

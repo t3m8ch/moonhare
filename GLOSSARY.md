@@ -68,6 +68,16 @@ Marks a file or Group whose changes need no close reading, such as generated fil
 _Russian_: механическое
 _Avoid_: boilerplate, trivial
 
+**Layout**:
+How a diff is drawn: side-by-side (old and new in two columns) or inline (removed above added). Chosen by the width of the window unless the Reviewer picked one.
+_Russian_: раскладка
+_Avoid_: view, mode
+
+**Preferences**:
+What the Reviewer chose once for every repository and every run: the theme and the Layout. Kept outside any clone, unlike a Review.
+_Russian_: настройки
+_Avoid_: config, settings file
+
 ### Hosting
 
 **Forge**:

@@ -304,6 +304,7 @@ mod nav;
 mod overlay;
 mod overlay_mouse;
 mod pan;
+mod preferences;
 mod prompt;
 mod reload;
 mod rounds;
@@ -390,6 +391,9 @@ pub struct Session {
     /// The theme the Reviewer asked for and the terminal background `auto`
     /// follows.
     theme_setting: themes::ThemeSetting,
+    /// The theme and layout kept between runs; in memory only until
+    /// [`Session::use_preferences`].
+    preferences: crate::preferences::Preferences,
     mode: Mode,
     pending: Option<char>,
     /// How long `pending` has been waiting.
@@ -602,6 +606,7 @@ impl Session {
             sidebar_custom: None,
             truecolor: false,
             theme_setting: themes::ThemeSetting::default(),
+            preferences: Default::default(),
             mode: Mode::Normal,
             pending: None,
             pending_for: std::time::Duration::ZERO,
@@ -1227,13 +1232,8 @@ impl Session {
         }
 
         match key.code {
-            KeyCode::Char('s') if !ctrl => {
-                // The manual choice wins over the width-based default from now on.
-                self.layout_override = Some(match self.layout() {
-                    DiffLayout::SideBySide => DiffLayout::Inline,
-                    DiffLayout::Inline => DiffLayout::SideBySide,
-                });
-            }
+            // The manual choice wins over the width-based default from now on.
+            KeyCode::Char('s') if !ctrl => self.toggle_layout(),
             KeyCode::Char('a') if !ctrl => self.show_whole_range(),
             KeyCode::Char('Y') if !ctrl => self.copy_prompt(),
             KeyCode::Char('y') if !ctrl => self.yank(false),
@@ -1382,6 +1382,9 @@ impl Session {
             }
             other if other.split_whitespace().next() == Some("theme") => {
                 self.theme_command(other["theme".len()..].trim())
+            }
+            other if other.split_whitespace().next() == Some("layout") => {
+                self.layout_command(other["layout".len()..].trim())
             }
             other if other.split_whitespace().next() == Some("set") => {
                 self.set_command(other["set".len()..].trim())

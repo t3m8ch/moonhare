@@ -1,6 +1,8 @@
 //! moonhare in a real terminal (a pty): it asks for the background without
 //! waiting for the reply, follows the reply and the colour-scheme reports of
 //! DEC mode 2031 whenever they come, and stops the reports when it quits.
+//! The preferences of every run are kept in a temporary `XDG_STATE_HOME`,
+//! never in the Reviewer's own.
 
 #![cfg(unix)]
 
@@ -48,6 +50,7 @@ struct Terminal {
     master: std::fs::File,
     output: Arc<Mutex<Vec<u8>>>,
     _stubs: tempfile::TempDir,
+    _state: Option<tempfile::TempDir>,
 }
 
 impl Terminal {
@@ -55,7 +58,21 @@ impl Terminal {
         Terminal::spawn_with(fx, &[])
     }
 
+    /// With preferences of its own, which no other run sees.
     fn spawn_with(fx: &support::Fixture, args: &[&str]) -> Terminal {
+        let state = tempfile::tempdir().unwrap();
+        let mut t = Terminal::spawn_in(fx, state.path(), args, &[]);
+        t._state = Some(state);
+        t
+    }
+
+    /// With its preferences under `state` (as `XDG_STATE_HOME`) and `env` set.
+    fn spawn_in(
+        fx: &support::Fixture,
+        state: &std::path::Path,
+        args: &[&str],
+        env: &[(&str, &str)],
+    ) -> Terminal {
         // No real `claude` or `gh` is run.
         let stubs = tempfile::tempdir().unwrap();
         for name in ["claude", "gh"] {
@@ -82,6 +99,8 @@ impl Terminal {
             .env_remove("MOONHARE_THEME")
             .env_remove("MOONHARE_TRUECOLOR")
             .env_remove("COLORTERM")
+            .env("XDG_STATE_HOME", state)
+            .envs(env.iter().copied())
             .stdin(Stdio::from(slave.try_clone().unwrap()))
             .stdout(Stdio::from(slave.try_clone().unwrap()))
             .stderr(Stdio::from(slave));
@@ -117,6 +136,7 @@ impl Terminal {
             master,
             output,
             _stubs: stubs,
+            _state: None,
         }
     }
 
@@ -190,7 +210,7 @@ const LIGHT_FG: &[u8] = b"[38;5;235;";
 #[test]
 fn the_theme_follows_the_terminal_whenever_it_replies_and_reports_stop_on_quit() {
     let fx = feature_branch();
-    let mut t = Terminal::spawn(&fx);
+    let mut t = Terminal::spawn_with(&fx, &["--theme", "auto"]);
     t.wait_for(0, b"\x1b]11;?\x1b\\");
     t.wait_for(0, b"\x1b[?2031h");
     // The first frame does not wait for a reply: dark, as nothing tells
@@ -237,4 +257,53 @@ fn a_chosen_theme_ignores_the_reply_until_theme_auto() {
     assert_eq!(find(&out[..mark], LIGHT_FG), None, "dark was chosen");
     t.send(b":q\r");
     assert!(t.wait_exit().success());
+}
+
+#[test]
+fn with_nothing_chosen_the_theme_is_dark_even_on_a_light_terminal() {
+    let fx = feature_branch();
+    let mut t = Terminal::spawn(&fx);
+    t.wait_for(0, b"add a");
+    t.wait_for(0, DARK_FG);
+    let mark = t.len();
+    t.send(b"\x1b]11;rgb:ffff/ffff/ffff\x07");
+    std::thread::sleep(Duration::from_millis(300));
+    t.send(b":q\r");
+    assert!(t.wait_exit().success());
+    let out = t.output.lock().unwrap().clone();
+    assert_eq!(find(&out[mark..], LIGHT_FG), None, "no auto-detection");
+}
+
+#[test]
+fn the_theme_command_holds_in_the_next_run_and_moonhare_theme_outranks_it() {
+    let fx = feature_branch();
+    let state = tempfile::tempdir().unwrap();
+    let file = state.path().join("moonhare/preferences");
+
+    let mut t = Terminal::spawn_in(&fx, state.path(), &[], &[]);
+    t.wait_for(0, b"add a");
+    let mark = t.len();
+    t.send(b":theme light\r");
+    t.wait_for(mark, LIGHT_FG);
+    t.send(b":q\r");
+    assert!(t.wait_exit().success());
+    let saved = std::fs::read_to_string(&file).unwrap();
+    assert!(saved.contains("theme = light"), "{saved}");
+
+    // The next run is light from its first frame.
+    let mut t = Terminal::spawn_in(&fx, state.path(), &[], &[]);
+    t.wait_for(0, b"add a");
+    t.wait_for(0, LIGHT_FG);
+    t.send(b":q\r");
+    assert!(t.wait_exit().success());
+
+    // `MOONHARE_THEME=dark` holds for its run and leaves the file alone.
+    let mut t = Terminal::spawn_in(&fx, state.path(), &[], &[("MOONHARE_THEME", "dark")]);
+    t.wait_for(0, b"add a");
+    t.wait_for(0, DARK_FG);
+    t.send(b":q\r");
+    assert!(t.wait_exit().success());
+    let out = t.output.lock().unwrap().clone();
+    assert_eq!(find(&out, LIGHT_FG), None);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), saved);
 }

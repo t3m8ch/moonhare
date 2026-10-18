@@ -176,9 +176,10 @@ fn a_resize_lays_the_table_out_again() {
 
 #[test]
 fn on_a_light_terminal_markdown_is_drawn_with_the_light_palette() {
-    use moonhare::theme::{Background, LIGHT};
+    use moonhare::theme::{Background, Choice, LIGHT};
     let source = "## Риски\n\nСм. `load()` и [документ](https://example.com).\n\n> цитата\n\n```\nlet x = 1;\n```\n";
     let mut h = session(source, 100, 30);
+    h.session().set_choice(Choice::Auto);
     h.session().set_terminal_background(Some(Background::Light));
     h.keys("<Space>s");
     let frame = h.frame();

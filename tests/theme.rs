@@ -5,7 +5,7 @@ mod support;
 
 use moonhare::session::Session;
 use moonhare::terminal_input::{self, Reply};
-use moonhare::theme::{self, Background, Theme, DARK, LIGHT};
+use moonhare::theme::{self, Background, Choice, Theme, DARK, LIGHT};
 use ratatui::style::Color;
 use support::{feature_branch, Harness};
 
@@ -202,6 +202,7 @@ fn cell(h: &mut Harness, needle: &str) -> (u16, u16) {
 
 fn open_light(fx: &support::Fixture) -> Harness {
     let mut session = Session::open(fx.path(), 160, 30).unwrap();
+    session.set_choice(Choice::Auto);
     session.set_terminal_background(Some(Background::Light));
     let mut h = Harness::from_session(session);
     h.settle();
@@ -235,8 +236,7 @@ fn on_a_light_terminal_the_screen_is_drawn_with_the_light_palette() {
     assert_eq!(frame.fg_at(x, y), LIGHT.fg);
     let (x, y) = frame.find("Commits").expect("box");
     assert!([LIGHT.dim, LIGHT.accent].contains(&frame.fg_at(x - 1, y)));
-    // Auto: nothing in the status bar names the theme.
-    assert!(!h.screen().contains("theme:"), "{}", h.screen());
+    assert!(h.screen().contains("theme:auto"), "{}", h.screen());
 }
 
 #[test]
@@ -251,13 +251,14 @@ fn the_theme_command_switches_on_the_fly_and_shows_the_choice() {
     assert_eq!(h.frame().fg_at(x, y), LIGHT.fg);
     assert!(h.screen().contains("theme:light"), "{}", h.screen());
 
+    // Dark is the default: the status bar does not name it.
     h.keys(":theme dark<CR>");
     assert_eq!(h.frame().fg_at(x, y), DARK.fg);
-    assert!(h.screen().contains("theme:dark"), "{}", h.screen());
+    assert!(!h.screen().contains("theme:"), "{}", h.screen());
 
     h.keys(":theme auto<CR>");
     assert_eq!(h.frame().fg_at(x, y), DARK.fg);
-    assert!(!h.screen().contains("theme:"), "{}", h.screen());
+    assert!(h.screen().contains("theme:auto"), "{}", h.screen());
 }
 
 #[test]
@@ -271,7 +272,7 @@ fn an_unknown_theme_is_refused_with_a_message() {
         "{screen}"
     );
     h.keys(":theme<CR>");
-    assert!(h.screen().contains("theme: dark (auto)"), "{}", h.screen());
+    assert!(h.screen().contains("theme: dark"), "{}", h.screen());
 }
 
 #[test]
@@ -294,6 +295,7 @@ fn the_light_theme_survives_truecolor() {
 fn a_background_reply_switches_the_auto_theme_whenever_it_comes() {
     let fx = feature_branch();
     let mut h = Harness::open(&fx, 160, 30);
+    h.session().set_choice(Choice::Auto);
     h.settle();
     let (x, y) = cell(&mut h, "add a");
     assert_eq!(

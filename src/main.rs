@@ -6,9 +6,10 @@ use moonhare::claude::ClaudeAnalyst;
 use moonhare::git::Target;
 use moonhare::github::GitHub;
 use moonhare::opening::Opening;
+use moonhare::preferences::Preferences;
 use moonhare::session::Session;
 use moonhare::terminal_input::{self, Input, Reply, TerminalInput};
-use moonhare::theme::{self, Background, Choice};
+use moonhare::theme::{self, Background};
 use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
 
@@ -34,13 +35,11 @@ fn main() -> ExitCode {
         usage();
         return ExitCode::FAILURE;
     };
-    let theme = theme.or_else(|| {
-        std::env::var("MOONHARE_THEME")
-            .ok()
-            .filter(|t| !t.is_empty())
-    });
-    let choice = match theme.as_deref().map(str::parse::<Choice>).transpose() {
-        Ok(choice) => choice.unwrap_or_default(),
+    // `--theme` and `MOONHARE_THEME` hold for this run only and outrank the
+    // saved choice (ADR 0008).
+    let env_theme = std::env::var("MOONHARE_THEME").ok();
+    let explicit = match theme::explicit_choice(theme.as_deref(), env_theme.as_deref()) {
+        Ok(choice) => choice,
         Err(e) => {
             eprintln!("moonhare: {e}");
             return ExitCode::FAILURE;
@@ -129,7 +128,12 @@ fn main() -> ExitCode {
         session.set_language(&language);
     }
     session.set_terminal_background(background);
-    session.set_choice(choice);
+    if let Some(dir) = moonhare::preferences::default_dir() {
+        session.use_preferences(Preferences::open(&dir));
+    }
+    if let Some(choice) = explicit {
+        session.set_choice(choice);
+    }
     session.set_analyst(std::sync::Arc::new(ClaudeAnalyst::new()));
 
     let (mut terminal, mut input) = match started.map_or_else(start_terminal, Ok) {

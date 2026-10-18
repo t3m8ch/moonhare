@@ -17,6 +17,7 @@ pub mod hints;
 pub mod markdown;
 pub mod mechanical;
 pub mod opening;
+pub mod preferences;
 pub mod prompt;
 pub mod review;
 pub mod rounds;
