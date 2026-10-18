@@ -991,6 +991,7 @@ impl Session {
 
     pub fn handle(&mut self, event: Event) {
         let waiting = self.pending;
+        let resized = matches!(event, Event::Resize(..));
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
             Event::Mouse(mouse) => self.on_mouse(mouse),
@@ -1007,6 +1008,10 @@ impl Session {
             self.mouse.text = None;
         }
         self.sync_view();
+        if resized {
+            // The same layout may now have more or fewer rows.
+            self.clamp_view();
+        }
         self.reveal_with_comments();
     }
 
@@ -1358,7 +1363,15 @@ impl Session {
     }
 
     /// Draw the whole screen into `buf`, whose area is the terminal.
-    pub fn render(&self, buf: &mut Buffer) {
+    ///
+    /// The terminal may have changed size before its resize event came (or
+    /// before the event loop started, when no event comes at all): the size
+    /// of `buf` wins, so nothing is laid out past its edges.
+    pub fn render(&mut self, buf: &mut Buffer) {
+        let size = (buf.area.width, buf.area.height);
+        if size != self.size {
+            self.handle(Event::Resize(size.0, size.1));
+        }
         self.render_screen(buf);
         if self.truecolor {
             crate::color::to_truecolor(buf);

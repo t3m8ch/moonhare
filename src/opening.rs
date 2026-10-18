@@ -116,9 +116,16 @@ impl Opening {
             self.number,
             self.clock.as_secs()
         );
+        if area.is_empty() {
+            return;
+        }
         let y = area.y + area.height / 2;
         let x = area.x + area.width.saturating_sub(text.chars().count() as u16) / 2;
         buf.set_stringn(x, y, &text, area.width as usize, Style::new());
+        // The hint goes below the text, and only if the terminal has a row there.
+        if y + 1 >= area.bottom() {
+            return;
+        }
         let hint = "q or Ctrl-c to quit";
         let x = area.x + area.width.saturating_sub(hint.len() as u16) / 2;
         buf.set_stringn(

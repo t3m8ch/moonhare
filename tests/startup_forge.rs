@@ -265,3 +265,28 @@ fn a_crashing_forge_fails_the_loading_screen_instead_of_spinning() {
     };
     assert!(!err.to_string().is_empty());
 }
+
+#[test]
+fn the_loading_screen_fits_any_terminal_size() {
+    let (opening, gate) = opening(Ok(Some(pr())));
+    for (width, height) in [
+        (1, 1),
+        (40, 1),
+        (300, 1),
+        (40, 2),
+        (300, 2),
+        (2, 3),
+        (1, 50),
+    ] {
+        let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
+        opening.render(&mut buf);
+        let screen = text(&buf);
+        assert!(
+            screen.contains("Loading") || width < 30,
+            "{width}x{height}:\n{screen}"
+        );
+    }
+    let mut buf = Buffer::empty(Rect::new(0, 0, 40, 0));
+    opening.render(&mut buf);
+    gate.open();
+}
