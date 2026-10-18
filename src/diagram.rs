@@ -26,12 +26,15 @@ pub const MAX_SOURCE: usize = 20_000;
 /// How long the renderer may take before it is given up on.
 pub const RENDER_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The name of the renderer's thread, whose panics are kept quiet.
 const RENDER_THREAD: &str = "moonhare-render";
 
 /// The cells a picture is shown in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Room {
+    /// Columns.
     pub width: usize,
+    /// Rows.
     pub height: usize,
 }
 
@@ -168,6 +171,7 @@ fn sandboxed<T: Send + 'static>(
     }
 }
 
+/// [`draw_in`], on the renderer's thread.
 fn fit(mermaid: &str, room: Room, density: Density) -> Result<Vec<String>, String> {
     let mut error = None;
     let mut fits_width = None;
@@ -279,6 +283,7 @@ pub fn render(candidate: &Candidate) -> Result<Vec<String>, String> {
     })
 }
 
+/// The width in cells of the widest of `lines`.
 fn width_of(lines: &[String]) -> usize {
     lines
         .iter()
@@ -362,6 +367,7 @@ fn wrap_labels(mermaid: &str, width: usize) -> String {
         .join("\n")
 }
 
+/// One statement of a flowchart with its labels wrapped at `width`.
 fn wrap_line(line: &str, width: usize) -> String {
     let chars: Vec<char> = line.chars().collect();
     let mut out = String::new();
@@ -474,6 +480,7 @@ fn shorten_messages(mermaid: &str, width: usize) -> String {
         .join("\n")
 }
 
+/// `text` cut to `width` characters, the last of them `…`.
 fn cut(text: &str, width: usize) -> String {
     if text.chars().count() <= width {
         return text.to_string();

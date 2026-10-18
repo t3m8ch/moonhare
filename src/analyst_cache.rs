@@ -16,7 +16,7 @@ use crate::review::digest;
 
 /// Bump when a prompt or the shape of an answer changes: older entries stop
 /// matching and are evicted in time.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 const HEADER: &str = "moonhare-analyst-cache";
 

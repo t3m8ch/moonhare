@@ -18,11 +18,14 @@ pub(super) const WHEEL_COLUMNS: usize = 2 * WHEEL_STEP;
 /// The size of a picture or of the box it is shown in: columns and rows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) struct Size {
+    /// Columns.
     pub cols: usize,
+    /// Rows.
     pub rows: usize,
 }
 
 impl Size {
+    /// The size of a picture: its widest line and its lines.
     pub(super) fn of(lines: &[String]) -> Size {
         Size {
             cols: lines.iter().map(|l| text_width(l)).max().unwrap_or(0),
@@ -30,6 +33,7 @@ impl Size {
         }
     }
 
+    /// The size of a box on screen.
     fn of_rect(rect: Rect) -> Size {
         Size {
             cols: rect.width as usize,
@@ -39,10 +43,12 @@ impl Size {
 }
 
 #[derive(Debug, Clone, Copy, Default)]
+/// Where the view of a picture is: its first column and row.
 pub(super) struct Pan {
     /// The first column shown; `None` until the Reviewer moves sideways: the
     /// view starts where the top of the picture is in sight.
     left: Option<usize>,
+    /// The first row shown.
     top: usize,
     /// `g` was typed and waits for a second one.
     g_typed: bool,
@@ -153,6 +159,7 @@ fn start(lines: &[String], view: Size) -> usize {
     }
 }
 
+/// The width of `s` in cells.
 fn text_width(s: &str) -> usize {
     unicode_width::UnicodeWidthStr::width(s)
 }

@@ -42,6 +42,7 @@ struct Pictures {
 }
 
 impl Pictures {
+    /// `mermaid` drawn for `room` at `density`, drawn now unless it was before.
     fn get(&self, mermaid: &str, room: Room, density: Density) -> Result<Rc<Vec<String>>, String> {
         let hash = {
             let mut hasher = DefaultHasher::new();
@@ -445,6 +446,7 @@ impl Session {
             .unwrap_or_default()
     }
 
+    /// The cells inside the border of the Summary overlay.
     fn summary_text_size(&self) -> Size {
         let area = self.overlay_area();
         Size {
@@ -626,6 +628,7 @@ impl Session {
         ))
     }
 
+    /// The cells the diagram overlay shows its picture in.
     fn diagram_view(&self) -> Size {
         let text = self.diagram_place().text;
         Size {
@@ -644,6 +647,7 @@ impl Session {
         }
     }
 
+    /// [`Self::diagram_view`] as the room a picture is fitted to.
     fn diagram_room(&self) -> Room {
         let view = self.diagram_view();
         Room {
@@ -692,6 +696,7 @@ impl Session {
         }
     }
 
+    /// The diagram overlay: in its box, or on the whole terminal.
     pub(super) fn render_diagram_overlay(&self, buf: &mut Buffer) {
         let title = match (&self.diagrams.summary_full, &self.diagrams.open) {
             (Some(_), _) => " Diagram: Summary ".to_string(),
