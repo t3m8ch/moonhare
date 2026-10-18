@@ -6,7 +6,7 @@ mod support;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
-use support::{feature_branch, Harness};
+use support::{feature_branch, Fixture, Harness};
 
 fn draw(h: &mut Harness, width: u16, height: u16) -> String {
     let mut buf = Buffer::empty(Rect::new(0, 0, width, height));
@@ -66,4 +66,21 @@ fn a_series_of_unannounced_resizes_with_overlays_open_does_not_panic() {
             draw(&mut h, width, height);
         }
     }
+}
+
+#[test]
+fn a_taller_terminal_shows_more_of_a_diff_scrolled_to_its_end() {
+    let fx = Fixture::new();
+    fx.write("long.txt", "start\n").commit("initial");
+    fx.branch("feature");
+    let body: String = (1..=100).map(|i| format!("row {i}\n")).collect();
+    fx.write("long.txt", &format!("start\n{body}")).commit("grow");
+    let mut h = Harness::open(&fx, 160, 30);
+    h.keys("G");
+    assert!(!h.screen().contains("row 50\n"), "{}", h.screen());
+    // Same layout, more rows: the end stays at the bottom, more shows above.
+    h.resize(160, 70);
+    let screen = h.screen();
+    assert!(screen.contains("row 50"), "{screen}");
+    assert!(screen.contains("row 100"), "{screen}");
 }

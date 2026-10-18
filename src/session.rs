@@ -985,6 +985,7 @@ impl Session {
 
     pub fn handle(&mut self, event: Event) {
         let waiting = self.pending;
+        let resized = matches!(event, Event::Resize(..));
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
             Event::Mouse(mouse) => self.on_mouse(mouse),
@@ -1001,6 +1002,10 @@ impl Session {
             self.mouse.text = None;
         }
         self.sync_view();
+        if resized {
+            // The same layout may now have more or fewer rows.
+            self.clamp_view();
+        }
         self.reveal_with_comments();
     }
 
