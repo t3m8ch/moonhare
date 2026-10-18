@@ -56,7 +56,9 @@ impl AnalystCache {
 
     /// Whether there is no answer kept at all.
     pub fn is_empty(&self) -> bool {
-        std::fs::read_dir(&self.dir).map_or(true, |mut e| e.next().is_none())
+        std::fs::read_dir(&self.dir).map_or(true, |entries| {
+            !entries.flatten().any(|e| e.path().is_file())
+        })
     }
 
     /// Forget every answer of this Review (`:analyze all`). Nothing outside

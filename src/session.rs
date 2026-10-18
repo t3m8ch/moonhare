@@ -200,16 +200,16 @@ enum Scope {
     Commits { lo: usize, hi: usize },
 }
 
-/// Which pane the motion keys act on.
 /// What a pending `y` / `n` would delete.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Confirm {
     /// `:comments clear`: every Comment.
     ClearComments,
     /// `:analyze all`: every answer of the Analyst cached for this Review.
-    ForgetAnalyst,
+    ForgetAnalystCache,
 }
 
+/// Which pane the motion keys act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Diff,
@@ -1056,7 +1056,7 @@ impl Session {
         if let Some(confirm) = self.confirm.take() {
             match confirm {
                 Confirm::ClearComments => self.confirm_clear_key(key),
-                Confirm::ForgetAnalyst => self.confirm_forget_key(key),
+                Confirm::ForgetAnalystCache => self.confirm_forget_key(key),
             }
             return;
         }

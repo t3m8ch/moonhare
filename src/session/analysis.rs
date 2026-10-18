@@ -165,7 +165,7 @@ impl Session {
                 if self.analyst_cache.is_empty() {
                     self.forget_analyst();
                 } else {
-                    self.confirm = Some(Confirm::ForgetAnalyst);
+                    self.confirm = Some(Confirm::ForgetAnalystCache);
                     self.message =
                         Some("Forget every cached Analyst answer of this Review? y / n".into());
                 }
@@ -205,7 +205,8 @@ impl Session {
 
     /// `:analyze all`: forget every answer of this Review, on disk and in
     /// memory, and build the Summary and the Groups at once; Explanations
-    /// and Diagrams are asked for again when next opened.
+    /// and Diagrams are asked for again when next opened. An answer already
+    /// on its way is a fresh one and is still kept when it comes.
     fn forget_analyst(&mut self) {
         if let Err(e) = self.analyst_cache.clear() {
             self.message = Some(e);
@@ -213,7 +214,11 @@ impl Session {
         }
         self.forget_diagrams();
         self.reanalyze();
-        self.message = Some("The Analyst's cache is forgotten: asking again".into());
+        self.message = Some(if self.analysis.analyst.is_some() {
+            "The Analyst's cache is forgotten: asking again".into()
+        } else {
+            "The Analyst's cache is forgotten (no Analyst is configured)".into()
+        });
     }
 
     /// Set the reasoning effort of the requests to come: one of

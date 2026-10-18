@@ -201,6 +201,7 @@ impl Session {
     /// on screen until the new one comes.
     fn refresh_explanation(&mut self) {
         let Some(analyst) = self.analysis.analyst.clone() else {
+            self.message = Some("No Analyst is configured: nothing to explain with".into());
             return;
         };
         let Some(overlay) = &self.explain.overlay else {
@@ -209,7 +210,9 @@ impl Session {
         if matches!(overlay.state, State::Waiting) || overlay.refreshing {
             return;
         }
-        let (request, cache_key) = (overlay.request.clone(), overlay.cache_key.clone());
+        let (mut request, cache_key) = (overlay.request.clone(), overlay.cache_key.clone());
+        // Effort and model as they are now, like any new request.
+        request.settings = self.analysis.settings.clone();
         self.explain.error = None;
         let id = self.ask_explanation(analyst, &request, &cache_key);
         if let Some(overlay) = &mut self.explain.overlay {
@@ -369,6 +372,12 @@ impl Session {
                     super::analysis::spinner(self.clock()),
                     self.work_seconds("Explanation")
                 ),
+                width,
+            );
+            lines.push(Line::default());
+        } else if let (Some(error), State::Done(_)) = (&self.explain.error, &overlay.state) {
+            lines = plain_lines(
+                &format!("Analyst: {error} (the previous explanation is kept)"),
                 width,
             );
             lines.push(Line::default());

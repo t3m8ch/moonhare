@@ -422,6 +422,7 @@ fn a_failed_refresh_of_an_explanation_keeps_the_old_one() {
     let screen = h.screen();
     assert!(screen.contains("explanation first"), "{screen}");
     assert!(screen.contains("⚠ Analyst"), "{screen}");
+    assert!(screen.contains("previous explanation is kept"), "{screen}");
 }
 
 #[test]
