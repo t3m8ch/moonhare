@@ -4,7 +4,7 @@ The theme `:theme` chose and the Layout `s` or `:layout` chose hold in every rep
 
 ## Format
 
-One `key = value` per line (`theme = light|dark|auto`, `layout = auto|inline|side-by-side`). It is read once at start-up and read anew before each save, so a value saved by another moonhare in between is kept; lines and keys moonhare does not know are kept as they are. A file that is not UTF-8, holds NUL or is larger than 64 KiB counts as empty, and an unknown value is ignored. A save goes to a temporary file in the same directory, which is renamed over the old one. A failed save is a message in the status line; the choice still holds for the run.
+One `key = value` per line (`theme = light|dark|auto`, `layout = auto|inline|side-by-side`). It is read once at start-up and read anew before each save, so a value another moonhare saved earlier is kept; lines and keys moonhare does not know are kept as they are. A file that is not UTF-8, holds NUL or is larger than 64 KiB counts as empty at start-up, and an unknown value is ignored; such a file, or one that cannot be read, is never overwritten: the save fails. A save goes to a temporary file in the same directory, which is renamed over the old one; when the file is a symbolic link (as dotfile managers such as stow make), the link is followed and the temporary file is made beside its target, so the link stays. A failed save is a message in the status line; the choice still holds for the run.
 
 ## Priority
 
@@ -20,5 +20,5 @@ One `key = value` per line (`theme = light|dark|auto`, `layout = auto|inline|sid
 ## Consequences
 
 - Session tests never touch the Reviewer's file: a `Session` saves nothing until `use_preferences` gives it a directory, and the pty tests set `XDG_STATE_HOME` to a temporary one.
-- Two moonhare processes saving the same key at once: the last rename wins, and both values are valid.
+- There is no lock. Two moonhare processes saving at nearly the same moment can lose one of the two saves, even of different keys: each reads the file, then renames its own copy over it, and a save that falls between the other's read and rename is gone. The window is the time of one small write, and the Reviewer only loses that one choice, which `:theme` or `s` makes again.
 - The status line names the theme only when it is not the default (`theme:light`, `theme:auto`).

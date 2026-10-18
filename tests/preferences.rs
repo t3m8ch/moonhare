@@ -249,3 +249,54 @@ fn the_help_says_where_preferences_are_kept() {
     assert!(help.contains(".local/state/moonhare"), "{help}");
     assert!(help.contains(":layout"), "{help}");
 }
+
+#[test]
+fn a_damaged_file_is_not_overwritten_and_the_choice_holds_for_the_run() {
+    let fx = feature_branch();
+    for damaged in [
+        b"\xff\xfe theme = light\n".to_vec(),
+        format!("theme = dark\n{}", "x".repeat(70 * 1024)).into_bytes(),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(file(dir.path()), &damaged).unwrap();
+        let mut h = open(&fx, dir.path(), 160);
+        h.keys(":theme light<CR>");
+        assert_eq!(h.session().theme().name, "light", "it applies anyway");
+        let line = status(&mut h);
+        assert!(line.contains("Cannot save preferences"), "{line}");
+        h.keys("s");
+        assert!(status(&mut h).contains("Cannot save preferences"));
+        assert_eq!(std::fs::read(file(dir.path())).unwrap(), damaged);
+    }
+}
+
+#[test]
+fn a_symlinked_file_is_written_through_to_its_target() {
+    let dir = tempfile::tempdir().unwrap();
+    let dotfiles = tempfile::tempdir().unwrap();
+    let target = dotfiles.path().join("moonhare-preferences");
+    std::fs::write(&target, "future = yes\n").unwrap();
+    std::os::unix::fs::symlink(&target, file(dir.path())).unwrap();
+
+    Preferences::open(dir.path()).set("theme", "light").unwrap();
+    let link = std::fs::symlink_metadata(file(dir.path())).unwrap();
+    assert!(link.file_type().is_symlink(), "the link stays a link");
+    let text = std::fs::read_to_string(&target).unwrap();
+    assert!(
+        text.contains("future = yes") && text.contains("theme = light"),
+        "{text}"
+    );
+    // A relative link that points nowhere yet: the file is made where it points.
+    let dir = tempfile::tempdir().unwrap();
+    std::fs::create_dir(dir.path().join("real")).unwrap();
+    std::os::unix::fs::symlink("real/prefs", file(dir.path())).unwrap();
+    Preferences::open(dir.path())
+        .set("layout", "inline")
+        .unwrap();
+    let text = std::fs::read_to_string(dir.path().join("real/prefs")).unwrap();
+    assert_eq!(text, "layout = inline\n");
+    assert!(std::fs::symlink_metadata(file(dir.path()))
+        .unwrap()
+        .file_type()
+        .is_symlink());
+}
