@@ -724,7 +724,6 @@ impl Session {
 
     /// `y` deletes every Comment, anything else keeps them.
     pub(super) fn confirm_clear_key(&mut self, key: KeyEvent) {
-        self.confirm_clear = false;
         if key.code == KeyCode::Char('y') {
             match self.comments.clear() {
                 Ok(()) => self.message = Some("All Comments deleted".into()),

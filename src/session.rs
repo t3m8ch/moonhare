@@ -200,6 +200,15 @@ enum Scope {
     Commits { lo: usize, hi: usize },
 }
 
+/// What a pending `y` / `n` would delete.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Confirm {
+    /// `:comments clear`: every Comment.
+    ClearComments,
+    /// `:analyze all`: every answer of the Analyst cached for this Review.
+    ForgetAnalystCache,
+}
+
 /// Which pane the motion keys act on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
@@ -280,8 +289,8 @@ pub struct Session {
     editor: Option<comments::Editor>,
     /// VISUAL mode in the diff: the view item the selection started on.
     visual: Option<usize>,
-    /// `:comments clear` waits for `y` / `n`.
-    confirm_clear: bool,
+    /// A command that deletes for good waits for `y` / `n`.
+    confirm: Option<Confirm>,
     /// Ids of the Comments hidden in the other files of the Scope, with the
     /// Scope ends and Comments revision they were worked out for.
     hidden_cache: std::cell::RefCell<Option<HiddenCache>>,
@@ -498,7 +507,7 @@ impl Session {
             comments: crate::comments::Comments::open(&review_dir),
             editor: None,
             visual: None,
-            confirm_clear: false,
+            confirm: None,
             hidden_cache: Default::default(),
             file_picker: None,
             picker_scroll: file_panel::TreeScroll::default(),
@@ -1051,8 +1060,11 @@ impl Session {
             self.editor_key(key);
             return;
         }
-        if self.confirm_clear {
-            self.confirm_clear_key(key);
+        if let Some(confirm) = self.confirm.take() {
+            match confirm {
+                Confirm::ClearComments => self.confirm_clear_key(key),
+                Confirm::ForgetAnalystCache => self.confirm_forget_key(key),
+            }
             return;
         }
         if self.help.is_some() {
@@ -1290,7 +1302,7 @@ impl Session {
                 self.sidebar_command(other["sidebar".len()..].trim())
             }
             "comments clear" => {
-                self.confirm_clear = true;
+                self.confirm = Some(Confirm::ClearComments);
                 self.message = Some("Delete all Comments for good? y / n".into());
             }
             other if other.split_whitespace().next() == Some("theme") => {
@@ -1317,7 +1329,7 @@ impl Session {
             return;
         }
         // A draft under its lines takes no mouse; the popup of one does.
-        if (self.editor.is_some() && self.editor_popup().is_none()) || self.confirm_clear {
+        if (self.editor.is_some() && self.editor_popup().is_none()) || self.confirm.is_some() {
             return;
         }
         if self.overlay_mouse(mouse) {

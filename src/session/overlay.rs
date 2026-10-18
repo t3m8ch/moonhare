@@ -38,6 +38,8 @@ impl Session {
             return;
         }
         let context = match (self.pending, self.window(), self.commit_anchor) {
+            _ if self.diagram_open() => hints::Context::Diagram,
+            _ if self.explain_open() => hints::Context::Explanation,
             (Some(' '), ..) if self.file_picker.is_some() => hints::Context::PickerSpace,
             (Some(prefix), ..) => hints::Context::Pending(prefix),
             (None, ..) if self.file_picker.is_some() => hints::Context::FilePicker,
