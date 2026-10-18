@@ -7,8 +7,9 @@ use moonhare::git::Target;
 use moonhare::github::GitHub;
 use moonhare::opening::Opening;
 use moonhare::session::Session;
-use moonhare::theme::{self, Choice};
-use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
+use moonhare::terminal_input::{self, Input, Reply, TerminalInput};
+use moonhare::theme::{self, Background, Choice};
+use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
 
 fn main() -> ExitCode {
@@ -45,23 +46,35 @@ fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
+    // `auto` follows the background `$COLORFGBG` names (dark without it)
+    // until the terminal tells its own.
+    let colorfgbg = std::env::var("COLORFGBG").ok();
+    let mut background = colorfgbg
+        .as_deref()
+        .and_then(theme::background_from_colorfgbg);
     let forge: std::sync::Arc<GitHub> = std::sync::Arc::new(GitHub::new());
-    let mut terminal = None;
+    let mut started = None;
     let opened = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["--pr", n] => match n.trim_start_matches('#').parse::<u64>() {
             Ok(n) => match Opening::pull_request(&cwd, forge, n, width, height) {
                 Ok(opening) => {
                     // The Forge may take a while: show a loading screen that
                     // can be left, not an empty terminal.
-                    let mut t = ratatui::init();
+                    let (mut t, mut input) = match start_terminal() {
+                        Ok(started) => started,
+                        Err(e) => {
+                            eprintln!("moonhare: {e}");
+                            return ExitCode::FAILURE;
+                        }
+                    };
                     // The Forge thread catches its panics; ratatui's hook must not see them.
                     moonhare::session::silence_worker_panics();
-                    let result = wait_for_opening(&mut t, opening);
-                    terminal = Some(t);
+                    let result = wait_for_opening(&mut t, &mut input, &mut background, opening);
+                    started = Some((t, input));
                     match result {
                         Ok(Some(session)) => Ok(session),
                         Ok(None) => {
-                            ratatui::restore();
+                            restore();
                             return ExitCode::SUCCESS;
                         }
                         Err(e) => Err(moonhare::session::Error(e.to_string())),
@@ -85,8 +98,8 @@ fn main() -> ExitCode {
     let mut session = match opened {
         Ok(s) => s,
         Err(e) => {
-            if terminal.is_some() {
-                ratatui::restore();
+            if started.is_some() {
+                restore();
             }
             eprintln!("moonhare: {e}");
             return ExitCode::FAILURE;
@@ -105,8 +118,8 @@ fn main() -> ExitCode {
     .flatten()
     {
         if let Err(e) = result {
-            if terminal.is_some() {
-                ratatui::restore();
+            if started.is_some() {
+                restore();
             }
             eprintln!("moonhare: {e}");
             return ExitCode::FAILURE;
@@ -115,29 +128,22 @@ fn main() -> ExitCode {
     if let Some(language) = language {
         session.set_language(&language);
     }
-    // `auto` follows the background `$COLORFGBG` names; dark without it.
-    let colorfgbg = std::env::var("COLORFGBG").ok();
-    session.set_terminal_background(
-        colorfgbg
-            .as_deref()
-            .and_then(theme::background_from_colorfgbg),
-    );
+    session.set_terminal_background(background);
     session.set_choice(choice);
     session.set_analyst(std::sync::Arc::new(ClaudeAnalyst::new()));
 
-    let mut terminal = terminal.unwrap_or_else(ratatui::init);
-    // ratatui's hook restores the screen; the mouse capture is ours to release.
-    let hook = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(io::stdout(), DisableMouseCapture);
-        hook(info);
-    }));
+    let (mut terminal, mut input) = match started.map_or_else(start_terminal, Ok) {
+        Ok(started) => started,
+        Err(e) => {
+            eprintln!("moonhare: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
     // The diff workers catch their panics; the hooks above must not see them.
     moonhare::session::silence_worker_panics();
     let _ = execute!(io::stdout(), EnableMouseCapture);
-    let result = run(&mut terminal, &mut session);
-    let _ = execute!(io::stdout(), DisableMouseCapture);
-    ratatui::restore();
+    let result = run(&mut terminal, &mut input, &mut session);
+    restore();
 
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -146,6 +152,45 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// Enter the full screen and read the terminal. Ask it for its background
+/// and to report when its colour scheme changes: the replies come as input,
+/// whenever they do, and the first frame does not wait for them.
+fn start_terminal() -> io::Result<(ratatui::DefaultTerminal, TerminalInput)> {
+    let terminal = ratatui::init();
+    // ratatui's hook restores the screen; the rest is ours to undo.
+    let hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        undo_terminal_modes();
+        hook(info);
+    }));
+    let input = match TerminalInput::start() {
+        Ok(input) => input,
+        Err(e) => {
+            restore();
+            return Err(e);
+        }
+    };
+    let mut out = io::stdout();
+    let _ = out.write_all(terminal_input::QUERY_BACKGROUND.as_bytes());
+    let _ = out.write_all(terminal_input::REPORT_THEME.as_bytes());
+    let _ = out.flush();
+    Ok((terminal, input))
+}
+
+/// Release the mouse and stop the reports of the colour scheme.
+fn undo_terminal_modes() {
+    let mut out = io::stdout();
+    let _ = execute!(out, DisableMouseCapture);
+    let _ = out.write_all(terminal_input::STOP_THEME_REPORTS.as_bytes());
+    let _ = out.flush();
+}
+
+/// Leave the terminal as it was found.
+fn restore() {
+    undo_terminal_modes();
+    ratatui::restore();
 }
 
 /// Remove `--flag <value>` from `args` and return the value. `Err` when the
@@ -166,6 +211,8 @@ fn take_flag_value(args: &mut Vec<String>, flag: &str) -> Result<Option<String>,
 /// Reviewer left meanwhile.
 fn wait_for_opening(
     terminal: &mut ratatui::DefaultTerminal,
+    input: &mut TerminalInput,
+    background: &mut Option<Background>,
     mut opening: Opening,
 ) -> Result<Option<Session>, moonhare::session::Error> {
     let step = Duration::from_millis(100);
@@ -178,10 +225,11 @@ fn wait_for_opening(
         }
         draw(terminal, &opening);
         let started = Instant::now();
-        if event::poll(step).unwrap_or(false) {
-            if let Ok(ev) = event::read() {
-                opening.handle(ev);
-            }
+        match input.next(step) {
+            Ok(Some(Input::Event(ev))) => opening.handle(ev),
+            Ok(Some(Input::Reply(Reply::Background(b)))) => *background = Some(b),
+            Ok(_) => {}
+            Err(_) => std::thread::sleep(step),
         }
         opening.elapse(started.elapsed());
         if opening.cancelled() {
@@ -195,7 +243,11 @@ const ANALYST_POLL: Duration = Duration::from_millis(200);
 /// How often to look for a diff the selected file waits for.
 const DIFF_POLL: Duration = Duration::from_millis(40);
 
-fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Result<()> {
+fn run(
+    terminal: &mut ratatui::DefaultTerminal,
+    input: &mut TerminalInput,
+    session: &mut Session,
+) -> io::Result<()> {
     let mut redraw = true;
     let mut last = Instant::now();
     let mut captured = true;
@@ -223,13 +275,21 @@ fn run(terminal: &mut ratatui::DefaultTerminal, session: &mut Session) -> io::Re
         } else {
             wake
         };
-        redraw = if event::poll(wake)? {
+        redraw = match input.next(wake)? {
             // Typing must not starve the watch on the branch: the time spent
             // here counts too, before the event, which comes at that time.
-            session.input(last.elapsed(), event::read()?);
-            true
-        } else {
-            session.elapse(wake.max(last.elapsed()))
+            Some(Input::Event(event)) => {
+                session.input(last.elapsed(), event);
+                true
+            }
+            // A reply is no key: time passed without input, and the theme
+            // may follow the background it tells.
+            Some(Input::Reply(reply)) => {
+                session.elapse(last.elapsed());
+                session.terminal_reply(&reply);
+                true
+            }
+            None => session.elapse(wake.max(last.elapsed())),
         };
         last = Instant::now();
         let busy = session.analyst_busy() || session.forge_busy() || session.diff_pending();

@@ -548,7 +548,8 @@ impl Session {
         Ok(session)
     }
 
-    /// Sequences the terminal must be sent (clipboard copies), oldest first.
+    /// Sequences the terminal must be sent (clipboard copies, queries),
+    /// oldest first.
     pub fn take_terminal_output(&mut self) -> Vec<String> {
         std::mem::take(&mut self.terminal_out)
     }
