@@ -170,8 +170,13 @@ fn paint_order(mut tokens: Vec<Token>) -> Vec<Token> {
 
 struct Loaded {
     diff: FileDiff,
+    /// For colouring only: tokens in [`paint_order`] drop empty ones.
     old_tokens: LineTokens,
     new_tokens: LineTokens,
+    /// Lines with a changed token, as the engine gave them (empty ones too):
+    /// what decides that a line is part of the change.
+    old_has_change: Vec<bool>,
+    new_has_change: Vec<bool>,
     /// Width in cells of the widest line on either side.
     max_width: usize,
 }
@@ -185,6 +190,13 @@ impl Loaded {
             }
             by_line.into_iter().map(paint_order).collect()
         };
+        let has_change = |side: Side, lines: usize| -> Vec<bool> {
+            let mut changed = vec![false; lines];
+            for t in diff.tokens(side).iter().filter(|t| t.changed) {
+                changed[t.line as usize] = true;
+            }
+            changed
+        };
         let width = |line: &String| line.chars().map(copy::cell_width).sum::<usize>();
         let max_width = (diff.old_lines.iter().chain(&diff.new_lines))
             .map(width)
@@ -194,6 +206,8 @@ impl Loaded {
             max_width,
             old_tokens: group(Side::Old, diff.old_lines.len()),
             new_tokens: group(Side::New, diff.new_lines.len()),
+            old_has_change: has_change(Side::Old, diff.old_lines.len()),
+            new_has_change: has_change(Side::New, diff.new_lines.len()),
             diff,
         }
     }
@@ -221,8 +235,11 @@ impl Loaded {
             Side::Old => Side::New,
             Side::New => Side::Old,
         };
-        self.tokens(side)[line].iter().any(|t| t.changed)
-            || self.lines(side)[line] != self.lines(other_side)[other]
+        let has_change = match side {
+            Side::Old => &self.old_has_change,
+            Side::New => &self.new_has_change,
+        };
+        has_change[line] || self.lines(side)[line] != self.lines(other_side)[other]
     }
 }
 
@@ -2222,5 +2239,20 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn a_line_whose_only_change_is_an_empty_token_still_counts_as_changed() {
+        // Same text on both sides; the engine marks an empty piece as novel.
+        let line = || vec!["let x = 1;".to_string()];
+        let diff = FileDiff::for_test(
+            line(),
+            line(),
+            vec![token(4, 4, Highlight::Normal, true)],
+            vec![token(4, 4, Highlight::Normal, true)],
+        );
+        let loaded = Loaded::new(diff);
+        assert!(loaded.line_changed(Side::Old, 0, Some(0)));
+        assert!(loaded.line_changed(Side::New, 0, Some(0)));
     }
 }
