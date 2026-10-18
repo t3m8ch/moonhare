@@ -1342,11 +1342,19 @@ impl Session {
                 let area = self.files_area();
                 // Row 0 of the sidebar is its border.
                 if mouse.row > area.y {
-                    let at = self.sidebar_offset() + (mouse.row - area.y - 1) as usize;
-                    if ((mouse.row - area.y - 1) as usize) < self.sidebar_capacity() {
-                        if let Some(row) = self.sidebar_rows().get(at) {
-                            self.click_sidebar_row(&row.clone());
+                    let line = (mouse.row - area.y - 1) as usize;
+                    let rows = self.sidebar_rows();
+                    let view = file_panel::View::new(
+                        &rows,
+                        self.sidebar_offset(),
+                        self.sidebar_capacity(),
+                    );
+                    match view.line(line) {
+                        Some(file_panel::Shown::Row(n)) => self.click_sidebar_row(&rows[n]),
+                        Some(file_panel::Shown::Pinned(pin)) => {
+                            self.click_sidebar_pin(&rows[pin.row()])
                         }
+                        None => {}
                     }
                 }
             }

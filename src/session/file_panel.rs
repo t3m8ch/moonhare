@@ -7,6 +7,7 @@ use std::ops::Range;
 
 use super::*;
 use crate::file_tree::{self, Line};
+use crate::hints::Z_TREE;
 
 /// One tree of the panel: the files of a Group (`None`: of the whole list
 /// when there are no Groups), the ordinary ones or the Mechanical ones, which
@@ -115,6 +116,8 @@ enum Motion {
     Fold(usize, bool),
     /// Open file `n`.
     Open(usize),
+    /// `zM` / `zR`: fold (or unfold) every directory.
+    FoldAll(bool),
 }
 
 /// The row a cursor at `at` stands on: the row itself, or when a resize or a
@@ -147,6 +150,38 @@ fn cursor_row(rows: &[Row], at: &At, open_file: usize) -> Option<usize> {
         .or_else(|| rows.iter().position(|r| r.at().is_some()))
 }
 
+/// The depth of `row` in its tree; 0 for the rows outside the trees.
+fn depth(row: &Row) -> usize {
+    match row {
+        Row::Tree { line, .. } => line.depth(),
+        Row::Header(_) | Row::Mechanical(_) => 0,
+    }
+}
+
+/// The directory row that holds row `cursor`.
+fn parent(rows: &[Row], cursor: usize) -> Option<usize> {
+    let (tree, d) = (rows[cursor].tree(), depth(&rows[cursor]));
+    rows[..cursor]
+        .iter()
+        .rposition(|r| r.folded().is_some() && r.tree() == tree && depth(r) < d)
+}
+
+/// What `z` and `c` do in the tree with the cursor on row `cursor`: `zM` and
+/// `zR` fold and unfold everything, `za`, `zc` and `zo` toggle, fold and
+/// unfold the directory under the cursor (or, on a file, the one it is in).
+fn z_motion(rows: &[Row], cursor: usize, c: char) -> Option<Motion> {
+    let folded = rows[cursor].folded();
+    Some(match (c, folded) {
+        ('M', _) => Motion::FoldAll(true),
+        ('R', _) => Motion::FoldAll(false),
+        ('a', Some(folded)) => Motion::Fold(cursor, !folded),
+        ('c', Some(_)) => Motion::Fold(cursor, true),
+        ('o', Some(_)) => Motion::Fold(cursor, false),
+        ('a' | 'c', None) => Motion::Fold(parent(rows, cursor)?, true),
+        _ => return None,
+    })
+}
+
 /// What `code` does in the tree with the cursor on row `cursor`.
 fn motion(rows: &[Row], cursor: usize, code: KeyCode, n: usize, half: usize) -> Option<Motion> {
     let stops: Vec<usize> = (0..rows.len())
@@ -154,16 +189,7 @@ fn motion(rows: &[Row], cursor: usize, code: KeyCode, n: usize, half: usize) -> 
         .collect();
     let here = stops.iter().position(|&s| s >= cursor).unwrap_or(0);
     let last = stops.len().checked_sub(1)?;
-    let depth = |row: &Row| match row {
-        Row::Tree { line, .. } => line.depth(),
-        Row::Header(_) | Row::Mechanical(_) => 0,
-    };
-    let parent = || {
-        let (tree, d) = (rows[cursor].tree(), depth(&rows[cursor]));
-        rows[..cursor]
-            .iter()
-            .rposition(|r| r.folded().is_some() && r.tree() == tree && depth(r) < d)
-    };
+    let parent = || parent(rows, cursor);
     Some(match (code, &rows[cursor]) {
         (KeyCode::Char('j') | KeyCode::Down, _) => Motion::Go(stops[(here + n).min(last)]),
         (KeyCode::Char('k') | KeyCode::Up, _) => Motion::Go(stops[here.saturating_sub(n)]),
@@ -203,6 +229,124 @@ fn half_page(code: KeyCode) -> KeyCode {
 /// The first row shown in a box of `capacity` rows with the cursor on `at`.
 pub(super) fn offset_for(at: usize, capacity: usize) -> usize {
     (at + 1).saturating_sub(capacity.max(1))
+}
+
+/// The rows above row `r` that it is under, outermost first: the header of
+/// its Group, then the directories of its tree.
+fn ancestors(rows: &[Row], r: usize) -> Vec<usize> {
+    let (tree, mut depth) = match &rows[r] {
+        Row::Tree { tree, line, .. } => (Some(*tree), line.depth()),
+        Row::Mechanical(_) => (None, 0),
+        Row::Header(_) => return Vec::new(),
+    };
+    let mut out = Vec::new();
+    for i in (0..r).rev() {
+        match &rows[i] {
+            Row::Header(_) => {
+                out.push(i);
+                break;
+            }
+            Row::Tree {
+                tree: t,
+                line: line @ Line::Dir { .. },
+                ..
+            } if Some(*t) == tree && line.depth() < depth => {
+                out.push(i);
+                depth = line.depth();
+            }
+            _ => {}
+        }
+    }
+    out.reverse();
+    out
+}
+
+/// A row pinned at the top of a box of the tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Pin {
+    /// Row `n` of the tree: a Group header or a directory.
+    Row(usize),
+    /// `…` for the rows too many to pin; row `n` is the nearest of them.
+    More(usize),
+}
+
+impl Pin {
+    /// The row of the tree the pin stands for.
+    pub(super) fn row(self) -> usize {
+        match self {
+            Pin::Row(n) | Pin::More(n) => n,
+        }
+    }
+}
+
+/// What a line of a box of the tree shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Shown {
+    Pinned(Pin),
+    /// Row `n` of the tree in its place.
+    Row(usize),
+}
+
+/// A box of `capacity` lines of the tree scrolled to `offset`: the rows the
+/// first visible row is under stay pinned at the top, as long as they are
+/// scrolled out, and the rows go on below them. The next directory pushes
+/// the pinned one out rather than slide under it. At most a third of the box
+/// is pinned: the outer rows give way to a `…`.
+pub(super) struct View {
+    pub(super) pins: Vec<Pin>,
+    offset: usize,
+    capacity: usize,
+    len: usize,
+}
+
+impl View {
+    pub(super) fn new(rows: &[Row], offset: usize, capacity: usize) -> View {
+        let max = capacity / 3;
+        let mut chain: Vec<usize> = Vec::new();
+        loop {
+            // The pins cover the first lines: the row under them is the one
+            // they must lead to.
+            let r = offset + chain.len().min(max);
+            if max == 0 || r >= rows.len() {
+                break;
+            }
+            let up = ancestors(rows, r);
+            if up.len() > chain.len() && up[..chain.len()] == chain[..] {
+                chain.push(up[chain.len()]);
+            } else {
+                break;
+            }
+        }
+        let pins = if chain.len() <= max {
+            chain.into_iter().map(Pin::Row).collect()
+        } else if max == 1 {
+            chain.last().map(|&n| Pin::Row(n)).into_iter().collect()
+        } else {
+            let first = chain.len() - max;
+            std::iter::once(Pin::More(chain[first]))
+                .chain(chain[first + 1..].iter().map(|&n| Pin::Row(n)))
+                .collect()
+        };
+        View {
+            pins,
+            offset,
+            capacity,
+            len: rows.len(),
+        }
+    }
+
+    /// What line `line` of the box shows.
+    pub(super) fn line(&self, line: usize) -> Option<Shown> {
+        if line >= self.capacity {
+            return None;
+        }
+        if let Some(&pin) = self.pins.get(line) {
+            return Some(Shown::Pinned(pin));
+        }
+        Some(self.offset + line)
+            .filter(|&n| n < self.len)
+            .map(Shown::Row)
+    }
 }
 
 impl Session {
@@ -371,6 +515,28 @@ impl Session {
         }
     }
 
+    /// A click on a row pinned at the top of the sidebar: the cursor goes to
+    /// the directory, a Group header opens its first file.
+    pub(super) fn click_sidebar_pin(&mut self, row: &Row) {
+        match row {
+            Row::Header(n) => self.open_group(*n),
+            _ => {
+                if let Some(at) = row.at() {
+                    self.put_sidebar(at);
+                }
+            }
+        }
+    }
+
+    /// A click on a row pinned at the top of the picker: the cursor goes to
+    /// the directory, a Group header opens its first file.
+    pub(super) fn click_picker_pin(&mut self, row: &Row) {
+        match row.at() {
+            Some(at) => self.file_picker = Some(at),
+            None => self.click_picker_row(row),
+        }
+    }
+
     /// Open the first file of Group `n`.
     fn open_group(&mut self, n: usize) {
         if let Some(i) =
@@ -391,7 +557,22 @@ impl Session {
         let last = self.files.len().saturating_sub(1);
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         let half = (self.sidebar_capacity() / 2).max(1);
-        let found = if self.pending == Some('g') && key.code == KeyCode::Char('g') && !ctrl {
+        let found = if self.pending == Some(Z_TREE) {
+            self.pending = None;
+            self.count = None;
+            let found = match key.code {
+                KeyCode::Char(c) if !ctrl => z_motion(&rows, cursor, c),
+                _ => None,
+            };
+            // Whatever follows `z` ends it: the key is not the diff's.
+            if found.is_none() {
+                return true;
+            }
+            found
+        } else if key.code == KeyCode::Char('z') && !ctrl && self.pending.is_none() {
+            self.pending = Some(Z_TREE);
+            return true;
+        } else if self.pending == Some('g') && key.code == KeyCode::Char('g') && !ctrl {
             self.pending = None;
             match self.count.take() {
                 Some(n) => {
@@ -440,8 +621,40 @@ impl Session {
                 self.select(i);
                 self.focus = Focus::Diff;
             }
+            Motion::FoldAll(folded) => {
+                self.fold_all(folded);
+                let rows = self.sidebar_rows();
+                self.panel.dir = match cursor_row(&rows, &At::File(self.selected), self.selected)
+                    .and_then(|r| rows[r].at())
+                {
+                    Some(At::Dir(dir)) => Some(dir),
+                    _ => None,
+                };
+            }
         }
         true
+    }
+
+    /// `zM` / `zR`: fold every directory of every tree, or unfold them all.
+    fn fold_all(&mut self, folded: bool) {
+        if !folded {
+            self.panel.folded.clear();
+            return;
+        }
+        let keys: Vec<DirKey> = self
+            .files
+            .iter()
+            .flat_map(|file| {
+                let tree = self.tree_of(file);
+                file_tree::ancestors(&file.path)
+                    .into_iter()
+                    .map(move |path| DirKey {
+                        tree,
+                        path: path.to_string(),
+                    })
+            })
+            .collect();
+        self.panel.folded.extend(keys);
     }
 
     /// Keys of the open file picker: the keys of the file panel, with `Enter`
@@ -458,7 +671,12 @@ impl Session {
         };
         let found = match (self.pending.take(), key.code) {
             (Some('g'), KeyCode::Char('g')) => motion(&rows, cursor, KeyCode::Home, 1, half),
+            (Some(Z_TREE), KeyCode::Char(c)) if !ctrl => z_motion(&rows, cursor, c),
             (Some(_), _) => return,
+            (None, KeyCode::Char('z')) if !ctrl => {
+                self.pending = Some(Z_TREE);
+                return;
+            }
             (None, KeyCode::Char(c @ (' ' | 'g'))) if !ctrl => {
                 self.pending = Some(c);
                 return;
@@ -483,6 +701,13 @@ impl Session {
             Some(Motion::Open(i)) => {
                 self.file_picker = None;
                 self.select(i);
+            }
+            Some(Motion::FoldAll(folded)) => {
+                self.fold_all(folded);
+                let rows = self.picker_rows();
+                self.file_picker = cursor_row(&rows, &At::File(self.selected), self.selected)
+                    .and_then(|r| rows[r].at())
+                    .or(Some(at));
             }
             None => {}
         }
@@ -542,9 +767,33 @@ impl Session {
         // The mark of a file is looked up once, however many rows count it.
         let mut marks: Vec<Option<Mark>> = vec![None; self.files.len()];
         let mut mark = |i: usize| *marks[i].get_or_insert_with(|| self.mark_of(i));
-        for (n, row) in rows.iter().enumerate().skip(offset).take(capacity) {
-            let y = y + (n - offset) as u16;
-            let lit = cursor == Some(n);
+        let view = View::new(rows, offset, capacity);
+        for line in 0..capacity {
+            let y = y + line as u16;
+            match view.line(line) {
+                None => break,
+                Some(Shown::Pinned(Pin::More(_))) => {
+                    let more = file_tree::fit_head(" …", width);
+                    buf.set_stringn(x, y, more, width, Style::new().fg(self.theme().dim));
+                }
+                Some(Shown::Pinned(Pin::Row(n)) | Shown::Row(n)) => {
+                    self.render_tree_row(buf, (x, y, width), &rows[n], cursor == Some(n), &mut mark)
+                }
+            }
+        }
+    }
+
+    /// Draw one row of the tree in `width` columns at `x`, `y`, lit when the
+    /// cursor is on it.
+    fn render_tree_row(
+        &self,
+        buf: &mut Buffer,
+        (x, y, width): (u16, u16, usize),
+        row: &Row,
+        lit: bool,
+        mark: &mut dyn FnMut(usize) -> Mark,
+    ) {
+        {
             let mut style = Style::new().fg(self.theme().fg);
             if lit {
                 style = style

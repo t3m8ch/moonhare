@@ -303,7 +303,7 @@ fn hint_line_labels_a_pending_chain() {
 #[test]
 fn question_mark_shows_help_with_all_keys_and_zellij_caveat() {
     let fx = feature_branch();
-    let mut h = Harness::open(&fx, 100, 90);
+    let mut h = Harness::open(&fx, 100, 100);
     h.keys("?");
     let screen = h.screen();
     for expected in [

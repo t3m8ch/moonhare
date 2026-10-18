@@ -63,9 +63,14 @@ impl Session {
                 let row = (mouse.row as usize).checked_sub(area.y as usize + 1);
                 let inside =
                     (area.x + 1..(area.x + area.width).saturating_sub(1)).contains(&mouse.column);
-                if let Some(row) = row.filter(|&r| r < self.picker_capacity() && inside) {
-                    if let Some(row) = rows.get(offset + row) {
-                        self.click_picker_row(row);
+                if let Some(line) = row.filter(|_| inside) {
+                    let view = file_panel::View::new(&rows, offset, self.picker_capacity());
+                    match view.line(line) {
+                        Some(file_panel::Shown::Row(n)) => self.click_picker_row(&rows[n]),
+                        Some(file_panel::Shown::Pinned(pin)) => {
+                            self.click_picker_pin(&rows[pin.row()])
+                        }
+                        None => {}
                     }
                 }
             }
