@@ -466,18 +466,17 @@ impl Session {
             let area = self.overlay_area();
             let (total, rows) = (self.summary_view().1.len(), scroll::text_rows(area));
             let mut scroll = self.analysis.scroll;
+            let plain = !key.modifiers.contains(KeyModifiers::CONTROL);
             if scroll.key(key, total, rows) {
                 self.analysis.scroll = scroll;
             } else if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
                 self.analysis.overlay = false;
-            } else if key.code == KeyCode::Char('y') {
+            } else if key.code == KeyCode::Char('y') && plain {
                 let source = self.summary_source().unwrap_or_default();
                 self.copy_to_clipboard(&source, "the Summary");
-            } else if key.code == KeyCode::Char('f')
-                && !key.modifiers.contains(KeyModifiers::CONTROL)
-            {
+            } else if key.code == KeyCode::Char('f') && plain {
                 self.open_summary_diagram();
-            } else if key.code == KeyCode::Char('o') {
+            } else if key.code == KeyCode::Char('o') && plain {
                 self.open_summary_diagram_outside();
             } else {
                 self.summary_diagram_key(key);

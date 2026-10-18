@@ -492,20 +492,102 @@ fn big_steps_move_by_half_a_window_and_a_page() {
     assert_eq!(position(&h.screen(), "строки").0, 1);
 }
 
+/// The status line of `screen`: `o` says there what came of it (and the
+/// viewer in tests is nowhere, so it never opens anything).
+fn status(screen: &str) -> &str {
+    screen.lines().rev().nth(1).unwrap()
+}
+
+/// Whether `status` says what `o` came to.
+fn said_outside(status: &str) -> bool {
+    ["SVG", "Cannot open the diagram", "Opened in the viewer"]
+        .iter()
+        .any(|said| status.contains(said))
+}
+
+/// Let whatever `o` started finish and say so.
+fn settle_outside(h: &mut Harness) {
+    while h.session().drawing_busy() {
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    h.wait(10);
+}
+
 #[test]
-fn ctrl_with_r_or_o_neither_asks_again_nor_opens_outside() {
+fn ctrl_with_r_o_or_the_density_keys_does_nothing_of_theirs() {
     let fx = feature_branch();
     let analyst = FakeAnalyst::drawing(&big_tree());
     let mut h = review_with(&fx, &analyst);
     open_big(&mut h);
-    h.keys("<C-r><C-o>");
+    h.keys("0gg");
+    let before = h.screen();
+    h.keys("<C-r><C-+><C--><C-o>");
     h.session().wait_for_analyst();
+    settle_outside(&mut h);
     assert_eq!(analyst.requests().len(), 1);
-    // No word of an SVG on the status line, the diagram still open.
     let screen = h.screen();
-    let status = screen.lines().rev().nth(1).unwrap();
-    assert!(!status.contains("SVG"), "{screen}");
-    assert!(screen.contains("Diagram:"), "{screen}");
+    assert!(!said_outside(status(&screen)), "{screen}");
+    assert_eq!(
+        position(&screen, "колонки"),
+        position(&before, "колонки"),
+        "{screen}"
+    );
+    // Plain `o` does say so: the check above would catch it.
+    h.keys("o");
+    settle_outside(&mut h);
+    assert!(said_outside(status(&h.screen())), "{}", h.screen());
+}
+
+#[test]
+fn ctrl_with_o_or_y_in_the_summary_neither_opens_nor_copies() {
+    let fx = feature_branch();
+    let analyst = with_summary_diagram(Some(FLOW));
+    let mut h = review_with(&fx, &analyst);
+    h.session().wait_for_analyst();
+    h.keys("<Space>s");
+    h.copied();
+    h.keys("<C-y><C-o>");
+    settle_outside(&mut h);
+    let screen = h.screen();
+    assert!(!said_outside(status(&screen)), "{screen}");
+    assert!(h.copied().is_empty());
+    h.keys("o");
+    settle_outside(&mut h);
+    assert!(said_outside(status(&h.screen())), "{}", h.screen());
+}
+
+#[test]
+fn a_slow_diagram_holds_up_neither_the_frame_nor_the_keys() {
+    let fx = feature_branch();
+    let analyst = FakeAnalyst::drawing(&big_tree());
+    let mut session = Session::open(fx.path(), 100, 30).expect("session opens");
+    session.set_analyst(analyst.clone());
+    session.set_diagram_renderer(Arc::new(|source: &str, _| {
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        moonhare::diagram::draw(source).map(|lines| lines.join("\n"))
+    }));
+    let mut h = Harness::from_session(session);
+    h.keys_now(":diagram<CR>");
+    h.session().wait_for_analyst();
+
+    let started = std::time::Instant::now();
+    let first = h.screen_now();
+    h.keys_now("jjl+-=");
+    let then = h.screen_now();
+    assert!(
+        started.elapsed() < std::time::Duration::from_millis(1000),
+        "{:?}",
+        started.elapsed()
+    );
+    assert!(first.contains("Drawing the diagram"), "{first}");
+    assert!(then.contains("drawing…"), "{then}");
+    assert!(h.session().drawing_busy());
+
+    // It shows once it is drawn, from its top: the keys typed meanwhile
+    // moved over no picture.
+    let screen = h.screen();
+    assert!(screen.contains("TheRootOfEverything"), "{screen}");
+    assert!(!screen.contains("drawing…"), "{screen}");
 }
 
 #[test]

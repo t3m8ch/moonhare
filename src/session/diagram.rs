@@ -1,14 +1,17 @@
 //! Diagrams inside the session: `:diagram`, its background request, cache and
 //! overlay.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
+use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
+use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
 use super::analysis::Pending;
 use super::pan::{self, Pan, Size};
@@ -16,7 +19,7 @@ use super::*;
 
 use crate::analyst::{Analyst, DiagramRequest, DiagramSubject};
 use crate::analyst_cache::AnalystCache;
-use crate::diagram::{Density, Room};
+use crate::diagram::{Density, Drawings, Renderer, Room};
 
 /// What a diagram is cached under: head of the Range, language, subject.
 type Key = (String, String, DiagramSubject);
@@ -31,47 +34,241 @@ type PictureKey = (u64, Room, Density);
 /// Pictures drawn so far are kept, up to this many.
 const PICTURES: usize = 64;
 
-/// Mermaid texts drawn as pictures, once for each room and density: a frame
-/// draws nothing it drew before.
-#[derive(Default)]
+/// Pictures waiting to be laid out, at most this many: the latest asked for
+/// goes first and the oldest are dropped, so dragging the edge of the
+/// terminal does not line up a picture for every size it passed.
+const QUEUED: usize = 4;
+
+/// A picture as a frame shows it.
+enum Picture {
+    Ready(Rc<Vec<String>>),
+    /// Being laid out in the background; meanwhile, the last picture of the
+    /// same text, at another size or density, if there is one.
+    Drawing(Option<Rc<Vec<String>>>),
+    /// Why it could not be drawn, for this room and density only.
+    Failed(String),
+}
+
+/// A picture laid out on the renderer's thread.
+type Laid = (PictureKey, Result<Vec<String>, String>);
+
+/// A picture laid out and kept, or why it could not be.
+type Kept = Result<Rc<Vec<String>>, String>;
+
+/// Mermaid texts drawn as pictures, once for each room and density. A frame
+/// never waits for one: a picture whose layouts are all drawn already is
+/// laid out there and then (a resize, another density), any other is laid
+/// out in the background, one at a time, and shown when it comes.
 struct Pictures {
-    /// The pictures drawn so far.
-    drawn: RefCell<HashMap<PictureKey, Rc<Vec<String>>>>,
-    /// Why a text could not be drawn: it is not tried again for another room,
-    /// so a text that takes too long costs that time once.
-    failed: RefCell<HashMap<u64, String>>,
+    drawings: Drawings,
+    /// The pictures laid out so far, or why they could not be.
+    drawn: RefCell<HashMap<PictureKey, Kept>>,
+    /// The last picture laid out of each text.
+    latest: RefCell<HashMap<u64, Rc<Vec<String>>>>,
+    /// The pictures to lay out next, the latest asked for first.
+    queue: RefCell<VecDeque<(PictureKey, String)>>,
+    /// The picture being laid out now.
+    running: Cell<Option<PictureKey>>,
+    sender: Sender<Laid>,
+    receiver: Receiver<Laid>,
+}
+
+impl Default for Pictures {
+    fn default() -> Self {
+        let (sender, receiver) = channel();
+        Pictures {
+            drawings: Drawings::default(),
+            drawn: RefCell::default(),
+            latest: RefCell::default(),
+            queue: RefCell::default(),
+            running: Cell::new(None),
+            sender,
+            receiver,
+        }
+    }
 }
 
 impl Pictures {
-    /// `mermaid` drawn for `room` at `density`, drawn now unless it was before.
-    fn get(&self, mermaid: &str, room: Room, density: Density) -> Result<Rc<Vec<String>>, String> {
+    /// `mermaid` drawn for `room` at `density`, or asked for.
+    fn get(&self, mermaid: &str, room: Room, density: Density) -> Picture {
         let hash = {
             let mut hasher = DefaultHasher::new();
             mermaid.hash(&mut hasher);
             hasher.finish()
         };
-        if let Some(e) = self.failed.borrow().get(&hash) {
-            return Err(e.clone());
-        }
         let key = (hash, room, density);
-        if let Some(lines) = self.drawn.borrow().get(&key) {
-            return Ok(lines.clone());
+        if let Some(done) = self.drawn.borrow().get(&key) {
+            return match done {
+                Ok(lines) => Picture::Ready(lines.clone()),
+                Err(e) => Picture::Failed(e.clone()),
+            };
         }
-        match crate::diagram::draw_in(mermaid, room, density) {
+        if let Some(done) = self.drawings.fit_now(mermaid, room, density) {
+            return self.keep(key, done);
+        }
+        let asked = self.running.get() == Some(key)
+            || self.queue.borrow().iter().any(|(queued, _)| *queued == key);
+        if !asked {
+            let mut queue = self.queue.borrow_mut();
+            queue.push_front((key, mermaid.to_string()));
+            queue.truncate(QUEUED);
+        }
+        self.start();
+        Picture::Drawing(self.latest.borrow().get(&hash).cloned())
+    }
+
+    /// Keep what `key` was laid out as.
+    fn keep(&self, key: PictureKey, done: Result<Vec<String>, String>) -> Picture {
+        let mut drawn = self.drawn.borrow_mut();
+        if drawn.len() >= PICTURES {
+            drawn.clear();
+        }
+        let done = done.map(Rc::new);
+        drawn.insert(key, done.clone());
+        match done {
             Ok(lines) => {
-                let lines = Rc::new(lines);
-                let mut drawn = self.drawn.borrow_mut();
-                if drawn.len() >= PICTURES {
-                    drawn.clear();
-                }
-                drawn.insert(key, lines.clone());
-                Ok(lines)
+                self.latest.borrow_mut().insert(key.0, lines.clone());
+                Picture::Ready(lines)
             }
-            Err(e) => {
-                self.failed.borrow_mut().insert(hash, e.clone());
-                Err(e)
+            Err(e) => Picture::Failed(e),
+        }
+    }
+
+    /// Start laying out the next picture, unless one is being laid out.
+    fn start(&self) {
+        if self.running.get().is_some() {
+            return;
+        }
+        let Some((key, mermaid)) = self.queue.borrow_mut().pop_front() else {
+            return;
+        };
+        self.running.set(Some(key));
+        let sender = self.sender.clone();
+        let (_, room, density) = key;
+        self.drawings
+            .fit_later(mermaid, room, density, move |done| {
+                let _ = sender.send((key, done));
+            });
+    }
+
+    /// Keep a picture that was laid out and start the next.
+    fn take(&self, (key, done): Laid) {
+        self.keep(key, done);
+        if self.running.get() == Some(key) {
+            self.running.set(None);
+        }
+        self.start();
+    }
+
+    /// Collect the pictures laid out; returns whether any came.
+    fn tick(&self) -> bool {
+        let mut came = false;
+        while let Ok(laid) = self.receiver.try_recv() {
+            self.take(laid);
+            came = true;
+        }
+        came
+    }
+
+    fn busy(&self) -> bool {
+        self.running.get().is_some() || !self.queue.borrow().is_empty()
+    }
+
+    /// Block until every picture asked for is laid out.
+    fn wait(&self) {
+        while self.running.get().is_some() {
+            match self.receiver.recv() {
+                Ok(laid) => self.take(laid),
+                Err(_) => break,
             }
         }
+    }
+
+    /// Draw with `renderer` from now on, forgetting what was drawn.
+    fn set_renderer(&mut self, renderer: Renderer) {
+        self.wait();
+        *self = Pictures {
+            drawings: Drawings::with(renderer),
+            ..Pictures::default()
+        };
+    }
+}
+
+/// The SVG files `o` wrote, removed in time: the viewer reads one after `o`
+/// returns, so a file goes at the next `o` once it is a minute old, and
+/// with the session.
+#[derive(Default, Clone)]
+struct Svgs(Arc<Mutex<Vec<(PathBuf, SystemTime)>>>);
+
+/// How long an SVG is kept for its viewer at least.
+const SVG_KEPT: Duration = Duration::from_secs(60);
+
+/// SVGs of earlier sessions that are older than this are removed too.
+const SVG_LEFT_OVER: Duration = Duration::from_secs(24 * 60 * 60);
+
+/// The prefix and suffix of the name of an SVG `o` writes.
+const SVG_NAME: (&str, &str) = ("moonhare-diagram-", ".svg");
+
+impl Svgs {
+    /// Remember `path`, written now.
+    fn add(&self, path: PathBuf) {
+        let mut svgs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        svgs.push((path, SystemTime::now()));
+    }
+
+    /// Remove the files older than [`SVG_KEPT`], and the ones earlier
+    /// sessions left in the temporary directory for over a day.
+    fn sweep(&self) {
+        let now = SystemTime::now();
+        let old = |at: SystemTime, age: Duration| now.duration_since(at).is_ok_and(|d| d > age);
+        let mut svgs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        svgs.retain(|(path, at)| {
+            let keep = !old(*at, SVG_KEPT);
+            if !keep {
+                let _ = std::fs::remove_file(path);
+            }
+            keep
+        });
+        let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if !(name.starts_with(SVG_NAME.0) && name.ends_with(SVG_NAME.1)) {
+                continue;
+            }
+            let modified = entry.metadata().and_then(|m| m.modified());
+            if modified.is_ok_and(|at| old(at, SVG_LEFT_OVER)) {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
+}
+
+impl Svgs {
+    /// Remove every file: the session ends.
+    fn remove_all(&self) {
+        let mut svgs = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        for (path, _) in svgs.drain(..) {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+impl Drop for Diagrams {
+    fn drop(&mut self) {
+        self.svgs.remove_all();
+    }
+}
+
+/// The program that shows a file: `open` on macOS, `xdg-open` elsewhere,
+/// found on `PATH`.
+pub fn system_viewer() -> OsString {
+    if cfg!(target_os = "macos") {
+        "open".into()
+    } else {
+        "xdg-open".into()
     }
 }
 
@@ -85,8 +282,14 @@ pub(super) struct Diagrams {
     from_cache: HashSet<Key>,
     sender: Sender<Answer>,
     receiver: Receiver<Answer>,
-    /// What went wrong with a viewer started by `o`, once it exited.
+    /// What `o` has to say, from its thread: the SVG opened, or why not.
     viewer: (Sender<String>, Receiver<String>),
+    /// The program `o` hands the SVG to.
+    viewer_program: OsString,
+    /// How many `o` are drawing their SVG now.
+    svgs_drawing: Arc<AtomicUsize>,
+    /// The SVG files `o` wrote.
+    svgs: Svgs,
     /// The overlay is open on this diagram.
     open: Option<Key>,
     /// The diagram of the Summary is shown on the whole terminal: its
@@ -117,6 +320,9 @@ impl Default for Diagrams {
             sender,
             receiver,
             viewer: channel(),
+            viewer_program: system_viewer(),
+            svgs_drawing: Arc::default(),
+            svgs: Svgs::default(),
             open: None,
             summary_full: None,
             full: false,
@@ -168,58 +374,71 @@ impl Session {
     }
 
     /// Draw `mermaid` as SVG into a temporary file and hand it to the system
-    /// viewer (`open` on macOS, `xdg-open` elsewhere), which shows it as a
-    /// picture, at any zoom.
+    /// viewer ([`system_viewer`]), which shows it as a picture, at any zoom.
+    /// The work is done on a thread of its own: what came of it is said
+    /// when it is done.
     fn open_outside(&mut self, mermaid: &str) {
-        let svg = match crate::diagram::svg(mermaid) {
-            Ok(svg) => svg,
-            Err(e) => {
-                self.message = Some(format!("Cannot draw the diagram as SVG: {e}"));
-                return;
-            }
-        };
-        let path = match write_svg(&svg) {
-            Ok(path) => path,
-            Err(e) => {
-                self.message = Some(format!("Cannot write the SVG of the diagram: {e}"));
-                return;
-            }
-        };
-        let viewer = if cfg!(target_os = "macos") {
-            "open"
-        } else {
-            "xdg-open"
-        };
-        let child = std::process::Command::new(viewer)
-            .arg(&path)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-        let mut child = match child {
-            Ok(child) => child,
-            Err(e) => {
-                let why = match e.kind() {
-                    std::io::ErrorKind::NotFound => format!("{viewer} is not installed"),
-                    _ => format!("{viewer}: {e}"),
-                };
-                self.message = Some(format!(
-                    "Cannot open the diagram: {why}; the SVG is {}",
-                    path.display()
-                ));
-                return;
-            }
-        };
-        self.message = Some(format!("Opened in the viewer: {}", path.display()));
+        self.diagrams.svgs.sweep();
+        self.message = Some("Drawing the diagram as SVG…".into());
+        let mermaid = mermaid.to_string();
+        let viewer = self.diagrams.viewer_program.clone();
         let sender = self.diagrams.viewer.0.clone();
-        std::thread::spawn(move || {
-            let failure = match child.wait() {
-                Ok(status) if status.success() => return,
-                Ok(status) => format!("{viewer} failed, {status}"),
-                Err(e) => format!("{viewer} failed: {e}"),
-            };
-            let _ = sender.send(format!("{failure}; the SVG is {}", path.display()));
-        });
+        let svgs = self.diagrams.svgs.clone();
+        let drawing = self.diagrams.svgs_drawing.clone();
+        drawing.fetch_add(1, Ordering::SeqCst);
+        let spawned = std::thread::Builder::new()
+            .name("moonhare-svg".into())
+            .spawn(move || {
+                let said = show_outside(&mermaid, &viewer, &svgs);
+                drawing.fetch_sub(1, Ordering::SeqCst);
+                let _ = sender.send(said.message);
+                if let Some(mut child) = said.child {
+                    let name = viewer.to_string_lossy().into_owned();
+                    let failure = match child.wait() {
+                        Ok(status) if status.success() => return,
+                        Ok(status) => format!("{name} failed, {status}"),
+                        Err(e) => format!("{name} failed: {e}"),
+                    };
+                    let _ = sender.send(format!("{failure}; the SVG is {}", said.path));
+                }
+            });
+        if let Err(e) = spawned {
+            self.diagrams.svgs_drawing.fetch_sub(1, Ordering::SeqCst);
+            self.message = Some(format!("Cannot draw the diagram as SVG: {e}"));
+        }
+    }
+
+    /// Draw with `viewer` instead of the system viewer (for tests, which
+    /// never start a real one).
+    pub fn set_viewer(&mut self, viewer: impl Into<OsString>) {
+        self.diagrams.viewer_program = viewer.into();
+    }
+
+    /// Draw pictures of diagrams with `renderer` instead of `mmdflux` (for
+    /// tests that need a slow one).
+    pub fn set_diagram_renderer(&mut self, renderer: Renderer) {
+        self.diagrams.pictures.set_renderer(renderer);
+    }
+
+    /// Whether a picture of a diagram or an SVG for `o` is being drawn.
+    pub fn drawing_busy(&self) -> bool {
+        self.diagrams.pictures.busy() || self.diagrams.svgs_drawing.load(Ordering::SeqCst) > 0
+    }
+
+    /// Whether a picture of a diagram is being drawn.
+    pub fn pictures_busy(&self) -> bool {
+        self.diagrams.pictures.busy()
+    }
+
+    /// Block until the pictures of diagrams asked for are drawn.
+    pub fn wait_for_pictures(&mut self) {
+        self.diagrams.pictures.wait();
+    }
+
+    /// Whether a frame may show a diagram now: the diagram overlay or the
+    /// Summary is open.
+    pub fn shows_diagrams(&self) -> bool {
+        self.diagram_open() || self.summary_open()
     }
 
     /// The Mermaid text of the diagram the overlay shows, if it came.
@@ -380,8 +599,9 @@ impl Session {
         while let Ok(answer) = self.diagrams.receiver.try_recv() {
             self.take_diagram(answer);
         }
-        while let Ok(failure) = self.diagrams.viewer.1.try_recv() {
-            self.message = Some(failure);
+        self.diagrams.pictures.tick();
+        while let Ok(said) = self.diagrams.viewer.1.try_recv() {
+            self.message = Some(said);
         }
     }
 
@@ -397,7 +617,7 @@ impl Session {
 
     /// Keys for the diagrams inside the Summary overlay: they move sideways.
     pub(super) fn summary_diagram_key(&mut self, key: KeyEvent) {
-        if let Some(to) = self.density_key(key.code, self.diagrams.inline_density) {
+        if let Some(to) = self.density_key(key, self.diagrams.inline_density) {
             let to = match to {
                 Some(Density::Minimap) => {
                     self.message = Some(NO_INLINE_MINIMAP.into());
@@ -410,10 +630,10 @@ impl Session {
             };
             let from = self.widest_summary_drawing();
             self.diagrams.inline_density = to;
-            let to_lines = self.widest_summary_drawing();
-            let view = self.summary_text_size();
-            let left = pan::recentre(&self.diagrams.inline, (&from, view), (&to_lines, view));
-            self.diagrams.inline = Pan::at(left.left(&to_lines, view), 0);
+            if !from.is_empty() {
+                let view = self.summary_text_size();
+                self.diagrams.inline = pan::recentre(&self.diagrams.inline, &from, view);
+            }
             return;
         }
         let sideways = matches!(
@@ -442,8 +662,10 @@ impl Session {
         };
         (summary.diagram.iter().cloned())
             .chain(crate::markdown::fenced_blocks(&summary.text, "mermaid"))
-            .filter_map(|mermaid| self.summary_picture(&mermaid).ok())
-            .map(|lines| lines.to_vec())
+            .filter_map(|mermaid| match self.summary_picture(&mermaid) {
+                Picture::Ready(lines) | Picture::Drawing(Some(lines)) => Some(lines.to_vec()),
+                _ => None,
+            })
             .max_by_key(|lines| Size::of(lines).cols)
             .unwrap_or_default()
     }
@@ -464,7 +686,7 @@ impl Session {
     }
 
     /// The picture of a Mermaid text of the Summary, fitted to its overlay.
-    fn summary_picture(&self, mermaid: &str) -> Result<Rc<Vec<String>>, String> {
+    fn summary_picture(&self, mermaid: &str) -> Picture {
         let view = self.summary_text_size();
         let room = Room {
             width: view.cols,
@@ -474,9 +696,13 @@ impl Session {
     }
 
     /// The density `+`, `-` or `=` asks for, from `now`: `None` when the key
-    /// is not one of them, `Some(None)` past the last step.
-    fn density_key(&self, code: KeyCode, now: Density) -> Option<Option<Density>> {
-        match code {
+    /// is not one of them (with Ctrl, none is), `Some(None)` past the last
+    /// step.
+    fn density_key(&self, key: KeyEvent, now: Density) -> Option<Option<Density>> {
+        if key.modifiers.contains(KeyModifiers::CONTROL) {
+            return None;
+        }
+        match key.code {
             KeyCode::Char('+') => Some(now.roomier()),
             KeyCode::Char('-') => Some(now.denser()),
             KeyCode::Char('=') => Some(Some(Density::Fit)),
@@ -499,7 +725,7 @@ impl Session {
     /// reason it is missing and the source.
     pub(super) fn drawing_lines(&self, mermaid: &str) -> Vec<String> {
         match self.summary_picture(mermaid) {
-            Ok(lines) => {
+            Picture::Ready(lines) | Picture::Drawing(Some(lines)) => {
                 let view = self.summary_text_size();
                 let left = self.diagrams.inline.left(&lines, view);
                 lines
@@ -507,7 +733,8 @@ impl Session {
                     .map(|l| pan::slice(l, left, view.cols))
                     .collect()
             }
-            Err(e) => failure_lines(&e, mermaid),
+            Picture::Drawing(None) => vec![self.drawing_note()],
+            Picture::Failed(e) => failure_lines(&e, mermaid),
         }
     }
 
@@ -558,10 +785,17 @@ impl Session {
                 self.diagrams.density = Density::Fit;
             }
             code => {
-                if let Some(to) = self.density_key(code, self.diagrams.density) {
+                if let Some(to) = self.density_key(key, self.diagrams.density) {
                     if let Some(to) = self.density_or_say(to) {
                         self.change_density(to);
                     }
+                    return true;
+                }
+                // Nothing to move over while the first picture is drawn.
+                if matches!(
+                    self.open_state(self.diagrams.density),
+                    Some(Picture::Drawing(None))
+                ) {
                     return true;
                 }
                 let lines = self.open_lines();
@@ -593,19 +827,23 @@ impl Session {
     /// Change what decides the room of the picture (full screen or not),
     /// keeping the centre of the view on the picture laid out again.
     fn change_room(&mut self, change: impl FnOnce(&mut Diagrams)) {
-        let (old, old_view) = (self.open_lines(), self.diagram_view());
+        let (old, old_view) = (
+            self.open_picture(self.diagrams.density),
+            self.diagram_view(),
+        );
         change(&mut self.diagrams);
-        let (new, new_view) = (self.open_lines(), self.diagram_view());
-        self.diagrams.view = pan::recentre(&self.diagrams.view, (&old, old_view), (&new, new_view));
+        if let Some(old) = old {
+            self.diagrams.view = pan::recentre(&self.diagrams.view, &old, old_view);
+        }
     }
 
     /// Lay the open picture out at `to`, keeping the centre of the view.
     fn change_density(&mut self, to: Density) {
         let from = self.diagrams.density;
         if drawn_as(from) != drawn_as(to) {
-            let (old, new) = (self.open_lines_at(from), self.open_lines_at(to));
-            let view = self.diagram_view();
-            self.diagrams.view = pan::recentre(&self.diagrams.view, (&old, view), (&new, view));
+            if let Some(old) = self.open_picture(from) {
+                self.diagrams.view = pan::recentre(&self.diagrams.view, &old, self.diagram_view());
+            }
         }
         self.diagrams.density = to;
     }
@@ -720,6 +958,14 @@ impl Session {
             }
             (None, None) => return,
         };
+        let title = if self.diagrams.pictures.busy() {
+            format!(
+                "{title}{} drawing… ",
+                super::analysis::spinner(self.clock())
+            )
+        } else {
+            title
+        };
         let place = self.diagram_place();
         if self.diagrams.full {
             let (width, height) = self.size;
@@ -791,6 +1037,44 @@ impl Session {
         }
     }
 
+    /// The lines of the picture of `mermaid` in the overlay at `density`:
+    /// the picture, the one shown before while it is drawn, or why it could
+    /// not be drawn.
+    fn picture_lines(&self, mermaid: &str, density: Density) -> Vec<String> {
+        match (self.diagrams.pictures).get(mermaid, self.diagram_room(), density) {
+            Picture::Ready(lines) | Picture::Drawing(Some(lines)) => lines.to_vec(),
+            Picture::Drawing(None) => vec![self.drawing_note()],
+            Picture::Failed(e) => failure_lines(&e, mermaid),
+        }
+    }
+
+    /// The picture the overlay shows at `density`, if it shows one (and not
+    /// a note that it is being drawn or why it could not be).
+    fn open_picture(&self, density: Density) -> Option<Rc<Vec<String>>> {
+        match self.open_state(density)? {
+            Picture::Ready(lines) | Picture::Drawing(Some(lines)) => Some(lines),
+            _ => None,
+        }
+    }
+
+    /// The picture of the diagram the overlay is open on, at `density`, if
+    /// its Mermaid text came.
+    fn open_state(&self, density: Density) -> Option<Picture> {
+        let mermaid = match &self.diagrams.summary_full {
+            Some(mermaid) => mermaid,
+            None => self.diagrams.cache.get(self.diagrams.open.as_ref()?)?,
+        };
+        Some((self.diagrams.pictures).get(mermaid, self.diagram_room(), drawn_as(density)))
+    }
+
+    /// What is shown while a picture is drawn and none was before.
+    fn drawing_note(&self) -> String {
+        format!(
+            "{} Drawing the diagram…",
+            super::analysis::spinner(self.clock())
+        )
+    }
+
     /// The lines the open overlay shows; in the minimap, those it is made of.
     pub(super) fn open_lines(&self) -> Vec<String> {
         self.open_lines_at(self.diagrams.density)
@@ -800,10 +1084,7 @@ impl Session {
     fn open_lines_at(&self, density: Density) -> Vec<String> {
         let density = drawn_as(density);
         if let Some(mermaid) = &self.diagrams.summary_full {
-            return match (self.diagrams.pictures).get(mermaid, self.diagram_room(), density) {
-                Ok(lines) => lines.to_vec(),
-                Err(e) => failure_lines(&e, mermaid),
-            };
+            return self.picture_lines(mermaid, density);
         }
         let Some(key) = &self.diagrams.open else {
             return Vec::new();
@@ -823,12 +1104,7 @@ impl Session {
             })
         };
         let picture = match self.diagrams.cache.get(key) {
-            Some(mermaid) => {
-                match (self.diagrams.pictures).get(mermaid, self.diagram_room(), density) {
-                    Ok(lines) => lines.to_vec(),
-                    Err(e) => failure_lines(&e, mermaid),
-                }
-            }
+            Some(mermaid) => self.picture_lines(mermaid, density),
             None => {
                 return match self.diagrams.errors.get(key) {
                     Some(e) => vec![format!("Analyst: {}", crate::diagram::sanitize(e))],
@@ -843,13 +1119,63 @@ impl Session {
     }
 }
 
-/// Write `svg` to a temporary file that outlives the session: the viewer
-/// reads it after `o` returns.
+/// What `o` came to on its thread: what to say, and the viewer started on
+/// the file, if it was.
+struct Shown {
+    message: String,
+    child: Option<std::process::Child>,
+    path: String,
+}
+
+/// Draw `mermaid` as SVG, write it and start `viewer` on it.
+fn show_outside(mermaid: &str, viewer: &OsString, svgs: &Svgs) -> Shown {
+    let failed = |message: String| Shown {
+        message,
+        child: None,
+        path: String::new(),
+    };
+    let svg = match crate::diagram::svg(mermaid) {
+        Ok(svg) => svg,
+        Err(e) => return failed(format!("Cannot draw the diagram as SVG: {e}")),
+    };
+    let path = match write_svg(&svg) {
+        Ok(path) => path,
+        Err(e) => return failed(format!("Cannot write the SVG of the diagram: {e}")),
+    };
+    svgs.add(path.clone());
+    let shown = path.display().to_string();
+    let name = viewer.to_string_lossy().into_owned();
+    let child = std::process::Command::new(viewer)
+        .arg(&path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn();
+    match child {
+        Ok(child) => Shown {
+            message: format!("Opened in the viewer: {shown}"),
+            child: Some(child),
+            path: shown,
+        },
+        Err(e) => {
+            let why = match e.kind() {
+                std::io::ErrorKind::NotFound => format!("{name} is not installed"),
+                _ => format!("{name}: {e}"),
+            };
+            failed(format!(
+                "Cannot open the diagram: {why}; the SVG is {shown}"
+            ))
+        }
+    }
+}
+
+/// Write `svg` to a temporary file that outlives `o`: the viewer reads it
+/// after `o` returns ([`Svgs`] removes it in time).
 fn write_svg(svg: &str) -> std::io::Result<std::path::PathBuf> {
     use std::io::Write;
     let mut file = tempfile::Builder::new()
-        .prefix("moonhare-diagram-")
-        .suffix(".svg")
+        .prefix(SVG_NAME.0)
+        .suffix(SVG_NAME.1)
         .tempfile()?;
     file.write_all(svg.as_bytes())?;
     let (_, path) = file.keep().map_err(|e| e.error)?;

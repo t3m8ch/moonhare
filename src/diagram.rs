@@ -1,9 +1,12 @@
 //! Drawing Mermaid text as box-drawing characters. `mmdflux` does the work;
 //! nothing here uses images or graphics protocols of the terminal.
 //!
-//! The text comes from an LLM, so it is untrusted: it is refused when long,
-//! rendered on a thread of its own that is given up on after a while, and a
-//! crash of the renderer costs the picture, not the session.
+//! The text comes from an LLM that read code under review, so it is
+//! untrusted: it is refused when long, drawn without the statements that
+//! style or script it ([`without_styling`]), rendered on threads of their own
+//! that are given up on after a while, and a crash of the renderer costs the
+//! picture, not the session. An SVG with anything active in it is not opened
+//! ([`check_svg`]).
 //!
 //! A diagram is fitted to the room it is shown in ([`draw_in`]): `mmdflux`
 //! decides the width from the graph alone, so several layouts are tried, from
@@ -11,11 +14,17 @@
 //! fits is shown. The layouts are made by rewriting the Mermaid text that is
 //! drawn (a flowchart turned top-down, long labels wrapped, long messages of a
 //! sequence diagram shortened) and by closing up the gaps of the picture; the
-//! Mermaid source the Reviewer copies is never changed.
+//! Mermaid source the Reviewer copies is never changed. The layouts drawn are
+//! kept ([`Drawings`]), so a resize or another density lays a diagram out
+//! again without drawing it again; the session lays pictures out in the
+//! background and a frame never waits for one.
 
+use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, HashSet};
+use std::hash::{Hash, Hasher};
 use std::sync::mpsc::channel;
-use std::sync::Once;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, Once};
+use std::time::{Duration, Instant};
 
 use mmdflux::{render_diagram, OutputFormat, RenderConfig};
 use unicode_width::UnicodeWidthChar;
@@ -108,13 +117,23 @@ impl Candidate {
     }
 }
 
+/// What draws one Mermaid text as text: `mmdflux`, or a stand-in in tests.
+/// The flag asks for the labels of edges whole, not wrapped.
+pub type Renderer = Arc<dyn Fn(&str, bool) -> Result<String, String> + Send + Sync>;
+
+/// `mmdflux`, drawing as text.
+fn mmdflux_text(source: &str, whole_labels: bool) -> Result<String, String> {
+    let mut config = RenderConfig::default();
+    if whole_labels {
+        config.layout.edge_label_max_width = None;
+    }
+    render_diagram(source, OutputFormat::Text, &config).map_err(|e| e.to_string())
+}
+
 /// The diagram as lines of text, as `mmdflux` draws it, or why it could not
 /// be drawn.
 pub fn draw(mermaid: &str) -> Result<Vec<String>, String> {
-    draw_with(mermaid, |text| {
-        render_diagram(text, OutputFormat::Text, &RenderConfig::default())
-            .map_err(|e| e.to_string())
-    })
+    draw_with(mermaid, |text| mmdflux_text(text, false))
 }
 
 /// [`draw`] with another renderer.
@@ -122,7 +141,7 @@ pub fn draw_with(
     mermaid: &str,
     render: impl FnOnce(&str) -> Result<String, String> + Send + 'static,
 ) -> Result<Vec<String>, String> {
-    sandboxed(mermaid, move |text| {
+    sandboxed(&without_styling(mermaid), RENDER_TIMEOUT, move |text| {
         render(&text).map(|text| text.lines().map(|l| sanitize(l.trim_end())).collect())
     })
 }
@@ -131,31 +150,32 @@ pub fn draw_with(
 /// first of the [`candidates`] that fits the width and the height, else the
 /// shortest that fits the width, else the narrowest; [`Density::Compact`]
 /// takes the narrowest of its own. [`Density::Minimap`] is
-/// drawn as [`Density::Fit`]; [`minimap`] makes dots of that.
+/// drawn as [`Density::Fit`]; [`minimap`] makes dots of that. Here and now,
+/// within [`RENDER_TIMEOUT`]: see [`Drawings`] for drawing in the background.
 pub fn draw_in(mermaid: &str, room: Room, density: Density) -> Result<Vec<String>, String> {
-    sandboxed(mermaid, move |text| fit(&text, room, density))
+    Drawings::default().fit(mermaid, room, density, RENDER_TIMEOUT)
 }
 
-/// The diagram as SVG, for a viewer outside the terminal.
+/// The diagram as SVG, for a viewer outside the terminal: drawn without the
+/// statements that style or script it ([`without_styling`]), and refused
+/// when the picture has anything active in it all the same ([`check_svg`]).
 pub fn svg(mermaid: &str) -> Result<String, String> {
-    sandboxed(mermaid, |text| {
+    let svg = sandboxed(&without_styling(mermaid), RENDER_TIMEOUT, |text| {
         render_diagram(&text, OutputFormat::Svg, &RenderConfig::default())
             .map_err(|e| sanitize(&e.to_string()))
-    })
+    })?;
+    check_svg(&svg)?;
+    Ok(svg)
 }
 
 /// Run `work` on the Mermaid text on a thread of its own, given up on after
-/// [`RENDER_TIMEOUT`]; a text over [`MAX_SOURCE`] is refused.
+/// `budget`; a text over [`MAX_SOURCE`] is refused.
 fn sandboxed<T: Send + 'static>(
     mermaid: &str,
+    budget: Duration,
     work: impl FnOnce(String) -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
-    if mermaid.len() > MAX_SOURCE {
-        return Err(format!(
-            "the source is too long to draw ({} bytes, the limit is {MAX_SOURCE})",
-            mermaid.len()
-        ));
-    }
+    too_long(mermaid)?;
     silence_renderer_panics();
     let text = mermaid.to_string();
     let (sender, receiver) = channel();
@@ -166,31 +186,251 @@ fn sandboxed<T: Send + 'static>(
             let _ = sender.send(done);
         })
         .map_err(|e| format!("cannot start the renderer: {e}"))?;
-    match receiver.recv_timeout(RENDER_TIMEOUT) {
+    match receiver.recv_timeout(budget) {
         Ok(Ok(Ok(done))) => Ok(done),
         Ok(Ok(Err(e))) => Err(sanitize(&e)),
-        Ok(Err(_)) => Err("the renderer crashed on this diagram".into()),
-        Err(_) => Err("the diagram took too long to draw".into()),
+        Ok(Err(_)) => Err(CRASHED.into()),
+        Err(_) => Err(TOO_SLOW.into()),
     }
 }
 
-/// [`draw_in`], on the renderer's thread.
-fn fit(mermaid: &str, room: Room, density: Density) -> Result<Vec<String>, String> {
+/// What a renderer that panicked costs.
+const CRASHED: &str = "the renderer crashed on this diagram";
+
+/// What a diagram that took too long to draw shows.
+const TOO_SLOW: &str = "the diagram took too long to draw";
+
+/// A text over [`MAX_SOURCE`] is not drawn.
+fn too_long(mermaid: &str) -> Result<(), String> {
+    if mermaid.len() > MAX_SOURCE {
+        return Err(format!(
+            "the source is too long to draw ({} bytes, the limit is {MAX_SOURCE})",
+            mermaid.len()
+        ));
+    }
+    Ok(())
+}
+
+/// Layouts drawn are kept, up to this many, for every room and density.
+const DRAWINGS: usize = 256;
+
+/// What a layout is kept under: its Mermaid text (hashed) and whether its
+/// labels are whole.
+type DrawingKey = (u64, bool);
+
+/// The drawing of one layout, as far as [`Drawings`] got.
+enum Got {
+    Lines(Arc<Vec<String>>),
+    Failed(String),
+    /// Not drawn in time (or still being drawn for an earlier request).
+    Skipped,
+    /// Not drawn yet, and not to be drawn now.
+    Missing,
+}
+
+/// The layouts of diagrams drawn so far, by the text `mmdflux` was given,
+/// shared by every room and density: a resize or another density lays a
+/// diagram out again from layouts already drawn. A layout is drawn on a
+/// thread of its own; one that takes too long is given up on, but is kept
+/// when it is done all the same, and is not drawn twice at once.
+#[derive(Clone)]
+pub struct Drawings {
+    renderer: Renderer,
+    shared: Arc<Mutex<Shared>>,
+}
+
+/// What [`Drawings`] keep between threads.
+#[derive(Default)]
+struct Shared {
+    /// Layouts drawn, or why they could not be.
+    drawn: HashMap<DrawingKey, Result<Arc<Vec<String>>, String>>,
+    /// Layouts being drawn now.
+    drawing: HashSet<DrawingKey>,
+}
+
+impl Default for Drawings {
+    fn default() -> Self {
+        Drawings::with(Arc::new(mmdflux_text))
+    }
+}
+
+impl Drawings {
+    /// Drawings made by `renderer` instead of `mmdflux`.
+    pub fn with(renderer: Renderer) -> Drawings {
+        Drawings {
+            renderer,
+            shared: Arc::default(),
+        }
+    }
+
+    /// The diagram laid out for `room` at `density`, if every layout that
+    /// takes is drawn already: what a frame can show without waiting.
+    pub fn fit_now(
+        &self,
+        mermaid: &str,
+        room: Room,
+        density: Density,
+    ) -> Option<Result<Vec<String>, String>> {
+        choose(mermaid, room, density, |candidate| {
+            match self.kept(candidate) {
+                Some(Ok(lines)) => Got::Lines(lines),
+                Some(Err(e)) => Got::Failed(e),
+                None => Got::Missing,
+            }
+        })
+    }
+
+    /// The diagram laid out for `room` at `density` (see [`draw_in`]),
+    /// drawing the layouts missing within `budget`. The layouts not drawn
+    /// in time are passed over: the best of those drawn is taken, and only
+    /// when none is there is the diagram too slow to draw.
+    pub fn fit(
+        &self,
+        mermaid: &str,
+        room: Room,
+        density: Density,
+        budget: Duration,
+    ) -> Result<Vec<String>, String> {
+        let deadline = Instant::now() + budget;
+        choose(mermaid, room, density, |candidate| {
+            let left = deadline.saturating_duration_since(Instant::now());
+            self.draw(candidate, left)
+        })
+        .unwrap_or_else(|| Err(TOO_SLOW.into()))
+    }
+
+    /// [`Self::fit`] within [`RENDER_TIMEOUT`] on a thread of its own; `done`
+    /// gets the picture there.
+    pub fn fit_later(
+        &self,
+        mermaid: String,
+        room: Room,
+        density: Density,
+        done: impl FnOnce(Result<Vec<String>, String>) + Send + 'static,
+    ) {
+        silence_renderer_panics();
+        let drawings = self.clone();
+        // `done` is called once: on the thread, or here if it cannot start.
+        let slot = Arc::new(Mutex::new(Some(done)));
+        let on_thread = slot.clone();
+        let spawned = std::thread::Builder::new()
+            .name(RENDER_THREAD.into())
+            .spawn(move || {
+                let picture = drawings.fit(&mermaid, room, density, RENDER_TIMEOUT);
+                let done = on_thread.lock().unwrap_or_else(|e| e.into_inner()).take();
+                if let Some(done) = done {
+                    done(picture);
+                }
+            });
+        if let Err(e) = spawned {
+            let done = slot.lock().unwrap_or_else(|e| e.into_inner()).take();
+            if let Some(done) = done {
+                done(Err(format!("cannot start the renderer: {e}")));
+            }
+        }
+    }
+
+    /// The layout of `candidate` drawn before, or why it could not be.
+    fn kept(&self, candidate: &Candidate) -> Option<Result<Arc<Vec<String>>, String>> {
+        let shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+        shared.drawn.get(&drawing_key(candidate)).cloned()
+    }
+
+    /// The layout of `candidate`, drawn unless it was before, waiting for it
+    /// no longer than `budget`.
+    fn draw(&self, candidate: &Candidate, budget: Duration) -> Got {
+        let key = drawing_key(candidate);
+        {
+            let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+            match shared.drawn.get(&key) {
+                Some(Ok(lines)) => return Got::Lines(lines.clone()),
+                Some(Err(e)) => return Got::Failed(e.clone()),
+                None => {}
+            }
+            if budget.is_zero() || !shared.drawing.insert(key) {
+                return Got::Skipped;
+            }
+        }
+        silence_renderer_panics();
+        let (sender, receiver) = channel();
+        let (renderer, shared) = (self.renderer.clone(), self.shared.clone());
+        let (source, whole) = (candidate.source.clone(), candidate.whole_labels);
+        let spawned = std::thread::Builder::new()
+            .name(RENDER_THREAD.into())
+            .spawn(move || {
+                let done = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    renderer(&source, whole)
+                }));
+                let done = match done {
+                    Ok(Ok(text)) => Ok(Arc::new(
+                        text.lines().map(|l| sanitize(l.trim_end())).collect(),
+                    )),
+                    Ok(Err(e)) => Err(sanitize(&e)),
+                    Err(_) => Err(CRASHED.to_string()),
+                };
+                let mut kept = shared.lock().unwrap_or_else(|e| e.into_inner());
+                kept.drawing.remove(&key);
+                if kept.drawn.len() >= DRAWINGS {
+                    kept.drawn.clear();
+                }
+                kept.drawn.insert(key, done.clone());
+                drop(kept);
+                let _ = sender.send(done);
+            });
+        if let Err(e) = spawned {
+            let mut shared = self.shared.lock().unwrap_or_else(|e| e.into_inner());
+            shared.drawing.remove(&key);
+            return Got::Failed(format!("cannot start the renderer: {e}"));
+        }
+        match receiver.recv_timeout(budget) {
+            Ok(Ok(lines)) => Got::Lines(lines),
+            Ok(Err(e)) => Got::Failed(e),
+            Err(_) => Got::Skipped,
+        }
+    }
+}
+
+/// What the drawing of `candidate` is kept under.
+fn drawing_key(candidate: &Candidate) -> DrawingKey {
+    let mut hasher = DefaultHasher::new();
+    candidate.source.hash(&mut hasher);
+    (hasher.finish(), candidate.whole_labels)
+}
+
+/// The layout of `mermaid` for `room` at `density` (see [`draw_in`]) from
+/// the drawings `get` gives; `None` as soon as one is [`Got::Missing`].
+fn choose(
+    mermaid: &str,
+    room: Room,
+    density: Density,
+    mut get: impl FnMut(&Candidate) -> Got,
+) -> Option<Result<Vec<String>, String>> {
+    if let Err(e) = too_long(mermaid) {
+        return Some(Err(e));
+    }
+    let mermaid = without_styling(mermaid);
     let mut error = None;
+    let mut skipped = false;
     let mut fits_width = None;
     let mut narrowest: Option<(usize, usize, Vec<String>)> = None;
-    for candidate in candidates(mermaid, density) {
-        let lines = match render(&candidate) {
-            Ok(lines) => lines,
-            Err(e) => {
+    for candidate in candidates(&mermaid, density) {
+        let drawn = match get(&candidate) {
+            Got::Lines(lines) => lines,
+            Got::Failed(e) => {
                 error.get_or_insert(e);
                 continue;
             }
+            Got::Skipped => {
+                skipped = true;
+                continue;
+            }
+            Got::Missing => return None,
         };
+        let lines = with_gaps(&drawn, candidate.gaps);
         let (width, height) = (width_of(&lines), lines.len());
         if density != Density::Compact && width <= room.width {
             if height <= room.height {
-                return Ok(lines);
+                return Some(Ok(lines));
             }
             if fits_width
                 .as_ref()
@@ -206,9 +446,15 @@ fn fit(mermaid: &str, room: Room, density: Density) -> Result<Vec<String>, Strin
             narrowest = Some((width, height, lines));
         }
     }
-    fits_width
-        .or(narrowest.map(|(.., lines)| lines))
-        .ok_or_else(|| error.unwrap_or_else(|| "nothing to draw".into()))
+    Some(
+        fits_width
+            .or(narrowest.map(|(.., lines)| lines))
+            .ok_or_else(|| match (error, skipped) {
+                (Some(e), _) => e,
+                (None, true) => TOO_SLOW.to_string(),
+                (None, false) => "nothing to draw".into(),
+            }),
+    )
 }
 
 /// The layouts tried for `mermaid` at `density`, the diagram as written first.
@@ -272,18 +518,18 @@ pub fn candidates(mermaid: &str, density: Density) -> Vec<Candidate> {
 
 /// Draw one layout, here and now: no thread, no time limit.
 pub fn render(candidate: &Candidate) -> Result<Vec<String>, String> {
-    let mut config = RenderConfig::default();
-    if candidate.whole_labels {
-        config.layout.edge_label_max_width = None;
-    }
-    let text = render_diagram(&candidate.source, OutputFormat::Text, &config)
-        .map_err(|e| e.to_string())?;
+    let text = mmdflux_text(&candidate.source, candidate.whole_labels)?;
     let lines: Vec<String> = text.lines().map(|l| sanitize(l.trim_end())).collect();
-    Ok(match candidate.gaps {
-        Gaps::AsDrawn => lines,
-        Gaps::Squeeze(keep) => regap(&lines, Some(keep.max(1))),
-        Gaps::Stretch => regap(&lines, None),
-    })
+    Ok(with_gaps(&lines, candidate.gaps))
+}
+
+/// `lines` with their gaps as `gaps` says.
+fn with_gaps(lines: &[String], gaps: Gaps) -> Vec<String> {
+    match gaps {
+        Gaps::AsDrawn => lines.to_vec(),
+        Gaps::Squeeze(keep) => regap(lines, Some(keep.max(1))),
+        Gaps::Stretch => regap(lines, None),
+    }
 }
 
 /// The width in cells of the widest of `lines`.
@@ -699,6 +945,137 @@ pub fn sanitize(text: &str) -> String {
             c => c,
         })
         .collect()
+}
+
+/// Statements that only style a diagram or make it do something: they mean
+/// nothing to a picture in the terminal, and `mmdflux` writes their values
+/// into the SVG as they are, so a value can open an attribute or a tag of
+/// its own (`style A fill:#f00"/><script>…`). The Mermaid text comes from
+/// the Analyst, which read code under review: it is not trusted.
+const STYLING: &[&str] = &[
+    "style",
+    "classDef",
+    "class",
+    "linkStyle",
+    "click",
+    "callback",
+];
+
+/// `mermaid` without its styling: the statements of [`STYLING`], front
+/// matter (`---` … `---`, where a theme is configured) and directives
+/// (`%%{init: …}%%`). The rest is left as it is.
+pub fn without_styling(mermaid: &str) -> String {
+    let mut out = Vec::new();
+    let mut lines = mermaid.lines().peekable();
+    // Front matter only opens the text.
+    while lines.peek().is_some_and(|l| l.trim().is_empty()) {
+        lines.next();
+    }
+    if lines.peek().is_some_and(|l| l.trim() == "---") {
+        lines.next();
+        for line in lines.by_ref() {
+            if line.trim() == "---" {
+                break;
+            }
+        }
+    }
+    let mut in_directive = false;
+    for line in lines {
+        let trimmed = line.trim();
+        if in_directive || trimmed.starts_with("%%{") {
+            in_directive = !trimmed.ends_with("}%%");
+            continue;
+        }
+        // Statements of a flowchart may share a line, `;` between them.
+        let mut kept = Vec::new();
+        for statement in line.split(';') {
+            let word = statement.split_whitespace().next().unwrap_or("");
+            if STYLING.contains(&word) {
+                break;
+            }
+            kept.push(statement);
+        }
+        let kept = kept.join(";");
+        if kept.trim().is_empty() && !trimmed.is_empty() {
+            continue;
+        }
+        out.push(kept);
+    }
+    out.join("\n")
+}
+
+/// `Ok` when `svg` has nothing in it that runs or reaches out: no script,
+/// no handler of events (`on…=`), no links (`href`, `src`), no `url(…)`
+/// but to a part of itself (`url(#arrowhead)`), no foreign content and no
+/// declarations (`<!…>`, `<?…?>`). Only the tags are looked at: the text in
+/// between is escaped by `mmdflux`.
+pub fn check_svg(svg: &str) -> Result<(), String> {
+    const TAGS: &[&str] = &[
+        "script",
+        "foreignobject",
+        "iframe",
+        "object",
+        "embed",
+        "style",
+        "a",
+        "image",
+        "use",
+        "animate",
+        "set",
+        "handler",
+        "listener",
+    ];
+    const NAMES: &[&str] = &["href", "src", "xlink:href", "action", "formaction"];
+    const VALUES: &[&str] = &[
+        "javascript:",
+        "data:",
+        "expression(",
+        "@import",
+        "vbscript:",
+    ];
+    let refuse = |why: &str| Err(format!("the SVG has {why} in it: it is not opened"));
+    let lower = svg.to_ascii_lowercase();
+    let mut rest = lower.as_str();
+    while let Some(at) = rest.find('<') {
+        let after = &rest[at + 1..];
+        let end = after.find('>').unwrap_or(after.len());
+        let tag = &after[..end];
+        rest = &after[end..];
+        if tag.starts_with('!') || tag.starts_with('?') {
+            return refuse("a declaration");
+        }
+        let name = tag
+            .trim_start_matches('/')
+            .split(|c: char| c.is_whitespace() || c == '/')
+            .next()
+            .unwrap_or("");
+        if TAGS.contains(&name) {
+            return refuse(&format!("a <{name}>"));
+        }
+        // Attribute names: a word right before `=`.
+        for (i, _) in tag.match_indices('=') {
+            let before = tag[..i].trim_end();
+            let start = before
+                .rfind(|c: char| !(c.is_ascii_alphanumeric() || c == ':' || c == '-' || c == '_'))
+                .map_or(0, |p| p + 1);
+            let attribute = &before[start..];
+            if attribute.starts_with("on") || NAMES.contains(&attribute) {
+                return refuse(&format!("an attribute {attribute}"));
+            }
+        }
+        if let Some(value) = VALUES.iter().find(|v| tag.contains(*v)) {
+            return refuse(value);
+        }
+        let mut urls = tag.match_indices("url(");
+        if urls.any(|(i, _)| {
+            !tag[i + 4..]
+                .trim_start_matches(['\'', '"', ' '])
+                .starts_with('#')
+        }) {
+            return refuse("a url(…) outside of it");
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

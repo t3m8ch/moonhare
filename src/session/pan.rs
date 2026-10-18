@@ -50,6 +50,10 @@ pub(super) struct Pan {
     left: Option<usize>,
     /// The first row shown.
     top: usize,
+    /// The centre of the view in shares of the picture's width and height,
+    /// for a picture laid out anew ([`recentre`]): whatever picture comes,
+    /// the view is centred there until the Reviewer moves.
+    centre: Option<(f64, f64)>,
     /// `g` was typed and waits for a second one.
     g_typed: bool,
 }
@@ -60,19 +64,29 @@ impl Pan {
         Pan {
             left: Some(left),
             top,
+            centre: None,
             g_typed: false,
         }
     }
 
     /// The first column shown of `lines` in a box of `view`.
     pub(super) fn left(&self, lines: &[String], view: Size) -> usize {
-        let last = Size::of(lines).cols.saturating_sub(view.cols);
-        self.left.unwrap_or_else(|| start(lines, view)).min(last)
+        let size = Size::of(lines);
+        let last = size.cols.saturating_sub(view.cols);
+        match self.centre {
+            Some((x, _)) => around(x, size.cols, view.cols),
+            None => self.left.unwrap_or_else(|| start(lines, view)),
+        }
+        .min(last)
     }
 
     /// The first row shown of `lines` in a box of `view`.
     pub(super) fn top(&self, lines: &[String], view: Size) -> usize {
-        self.top.min(lines.len().saturating_sub(view.rows))
+        let top = match self.centre {
+            Some((_, y)) => around(y, lines.len(), view.rows),
+            None => self.top,
+        };
+        top.min(lines.len().saturating_sub(view.rows))
     }
 
     /// A moving key; returns whether it was one.
@@ -112,6 +126,7 @@ impl Pan {
         };
         self.left = Some(left.min(last_col));
         self.top = top.min(last_row);
+        self.centre = None;
         true
     }
 
@@ -127,6 +142,8 @@ impl Pan {
                 at.saturating_sub(by)
             }
         };
+        self.centre = None;
+        self.top = top;
         if sideways {
             self.left = Some(step(
                 left,
@@ -288,30 +305,27 @@ fn position(left: usize, top: usize, view: Size, size: Size) -> String {
     )
 }
 
-/// The view of `to` (in a box of its size) whose centre is where the centre
-/// of `pan`'s view of `from` is, in shares of the pictures' sizes: a picture
-/// laid out again keeps the place the Reviewer was looking at in sight.
-pub(super) fn recentre(pan: &Pan, from: (&[String], Size), to: (&[String], Size)) -> Pan {
-    let ((from, from_view), (to, to_view)) = (from, to);
-    let (old, new) = (Size::of(from), Size::of(to));
-    let along = |first: usize, shown: usize, old: usize, wanted: usize, new: usize| {
-        let centre = (first as f64 + shown.min(old) as f64 / 2.0) / old.max(1) as f64;
-        (centre * new as f64 - wanted as f64 / 2.0).max(0.0).round() as usize
+/// The view whose centre is where the centre of `pan`'s view of `from` (in
+/// a box of `view`) is, in shares of the picture's size: a picture laid out
+/// again, even one still being drawn, keeps the place the Reviewer was
+/// looking at in sight.
+pub(super) fn recentre(pan: &Pan, from: &[String], view: Size) -> Pan {
+    let size = Size::of(from);
+    let share = |first: usize, shown: usize, all: usize| {
+        (first as f64 + shown.min(all) as f64 / 2.0) / all.max(1) as f64
     };
-    Pan::at(
-        along(
-            pan.left(from, from_view),
-            from_view.cols,
-            old.cols,
-            to_view.cols,
-            new.cols,
-        ),
-        along(
-            pan.top(from, from_view),
-            from_view.rows,
-            old.rows,
-            to_view.rows,
-            new.rows,
-        ),
-    )
+    Pan {
+        left: None,
+        top: 0,
+        centre: Some((
+            share(pan.left(from, view), view.cols, size.cols),
+            share(pan.top(from, view), view.rows, size.rows),
+        )),
+        g_typed: false,
+    }
+}
+
+/// The first of `all` cells whose middle `shown` are around the share `at`.
+fn around(at: f64, all: usize, shown: usize) -> usize {
+    (at * all as f64 - shown as f64 / 2.0).max(0.0).round() as usize
 }

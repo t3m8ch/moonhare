@@ -94,7 +94,22 @@ fn o_writes_the_diagram_as_svg_and_hands_it_to_the_system_viewer() {
     let mut session = Session::open(fx.path(), 100, 30).expect("session opens");
     session.set_analyst(Arc::new(Drawing));
     let mut h = Harness::from_session(session);
+    // The system viewer, found on `PATH`: the fake above.
+    h.session().set_viewer(moonhare::session::system_viewer());
     h.session().wait_for_analyst();
+
+    // SVGs of an earlier session: one left over for days, one fresh.
+    let left_over = tmp.join("moonhare-diagram-left-over.svg");
+    let fresh = tmp.join("moonhare-diagram-fresh.svg");
+    for file in [&left_over, &fresh] {
+        std::fs::write(file, "<svg/>").unwrap();
+    }
+    std::fs::File::options()
+        .write(true)
+        .open(&left_over)
+        .unwrap()
+        .set_modified(std::time::SystemTime::now() - Duration::from_secs(3 * 24 * 60 * 60))
+        .unwrap();
 
     // The diagram overlay.
     h.keys(":diagram<CR>");
@@ -107,7 +122,10 @@ fn o_writes_the_diagram_as_svg_and_hands_it_to_the_system_viewer() {
     assert_eq!(svg.extension().unwrap(), "svg");
     let text = std::fs::read_to_string(svg).unwrap();
     assert!(text.contains("<svg") && text.contains("Collect"), "{text}");
-    assert!(h.screen().contains("Opened"), "{}", h.screen());
+    let screen = wait_for_screen(&mut h, "Opened");
+    assert!(screen.contains("Opened"), "{screen}");
+    assert!(!left_over.exists() && fresh.exists());
+    let first = svg.to_path_buf();
 
     // The diagram of the Summary, from the Summary.
     h.keys("q<Space>so");
@@ -126,4 +144,10 @@ fn o_writes_the_diagram_as_svg_and_hands_it_to_the_system_viewer() {
         screen.contains("xdg-open failed") || screen.contains("open failed"),
         "{screen}"
     );
+
+    // The session takes the SVGs it wrote with it.
+    assert!(first.exists());
+    drop(h);
+    assert!(!first.exists(), "{first:?}");
+    assert!(fresh.exists());
 }
