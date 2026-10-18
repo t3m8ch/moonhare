@@ -13,9 +13,11 @@
 //! never send. Bytes that may be such a start (`ESC`, `ESC ]`, `ESC ] 1`, …)
 //! are held until the next byte decides, or for [`ESC_GAP`] at most, after
 //! which they are keys as crossterm reads them. Once a start is certain the
-//! reply is read up to its end, however long the pieces take to come (up to
-//! [`REPLY_GAP`] between pieces), and is dropped rather than typed if it
-//! never ends.
+//! reply is read up to its end (BEL, ST or 8-bit ST; the final byte of the
+//! CSI), however its pieces come, for `REPLY_GAP` from its start at most. A
+//! byte no such reply holds (a typed `j`, Enter, Ctrl-C) cuts it off and is
+//! read anew; a reply cut off, too long or never ending is dropped, never
+//! typed.
 
 #[allow(clippy::all)]
 mod keys;
@@ -42,9 +44,9 @@ pub const STOP_THEME_REPORTS: &str = "\x1b[?2031l";
 /// How long bytes that may start a reply wait for the next one; a lone Esc
 /// is late by this much.
 pub const ESC_GAP: Duration = Duration::from_millis(25);
-/// How long a reply that has surely begun may wait for its next piece.
+/// How long a reply that has surely begun may take, from its start.
 const REPLY_GAP: Duration = Duration::from_secs(1);
-/// Longer than any reply moonhare asks for: dropped when reached.
+/// Longer than any reply moonhare asks for: dropped whole, up to its end.
 const REPLY_MAX: usize = 128;
 
 const ESC: u8 = 0x1b;
@@ -70,81 +72,56 @@ pub enum Input {
 }
 
 /// What the bytes held so far are.
+#[derive(Default)]
 enum Held {
-    /// The start of a reply; `sure` once no key could start so.
-    Start { sure: bool },
-    /// A whole reply, of its first `len` bytes.
-    Reply(Reply, usize),
-    /// Not a reply: keys.
+    #[default]
+    Nothing,
+    /// Bytes that may start a reply (`ESC`, `ESC ]`, `ESC ] 1`, `ESC ] 11`,
+    /// `ESC [`), each with whether more bytes followed it in its read, which
+    /// crossterm reads Esc by.
+    Maybe(Vec<(u8, bool)>),
+    /// Surely the background, after `ESC ] 11 ;`: its body so far (up to
+    /// [`REPLY_MAX`] bytes) and its length; with whether more bytes followed
+    /// an Esc that may begin its ST.
+    Osc {
+        body: Vec<u8>,
+        len: usize,
+        esc: Option<bool>,
+    },
+    /// Surely a report, after `ESC [ ?`: its parameters so far and their
+    /// length.
+    Csi { body: Vec<u8>, len: usize },
+}
+
+/// What bytes that may start a reply are.
+enum Start {
+    Maybe,
+    Osc,
+    Csi,
     Keys,
 }
 
-fn classify(held: &[u8]) -> Held {
-    debug_assert_eq!(held.first(), Some(&ESC));
-    match held.get(1) {
-        None => Held::Start { sure: false },
-        Some(b']') => osc(held),
-        Some(b'[') => csi(held),
-        Some(_) => Held::Keys,
+fn start(held: &[(u8, bool)]) -> Start {
+    let bytes: Vec<u8> = held.iter().map(|(b, _)| *b).collect();
+    match bytes.get(1) {
+        None => Start::Maybe,
+        Some(b']') if bytes == OSC_BACKGROUND => Start::Osc,
+        Some(b']') if OSC_BACKGROUND.starts_with(&bytes) => Start::Maybe,
+        Some(b'[') if bytes.len() == 2 => Start::Maybe,
+        Some(b'[') if bytes[2] == b'?' => Start::Csi,
+        _ => Start::Keys,
     }
 }
 
-fn osc(held: &[u8]) -> Held {
-    let start = OSC_BACKGROUND.len();
-    if held.len() <= start {
-        return if OSC_BACKGROUND.starts_with(held) {
-            Held::Start {
-                sure: held.len() == start,
-            }
-        } else {
-            Held::Keys
-        };
-    }
-    if !held.starts_with(OSC_BACKGROUND) {
-        return Held::Keys;
-    }
-    let body = |end: usize| {
-        std::str::from_utf8(&held[start..end])
-            .ok()
-            .and_then(theme::background_from_osc11)
-            .map_or(Reply::Other, Reply::Background)
-    };
-    let n = held.len();
-    match held[n - 1] {
-        BEL => Held::Reply(body(n - 1), n),
-        b'\\' if held[n - 2] == ESC => Held::Reply(body(n - 2), n),
-        // An Esc that does not end the reply starts something else: the reply
-        // was cut off.
-        _ if held[n - 2] == ESC => Held::Reply(Reply::Other, n - 2),
-        _ if n >= REPLY_MAX => Held::Reply(Reply::Other, n),
-        _ => Held::Start { sure: true },
-    }
+/// A byte the body of a background reply may hold: `rgb:`/`rgba:` and hex
+/// channels, or `#` for a form not known. ASCII only, so an 8-bit ST is
+/// never part of a UTF-8 character here.
+fn osc_body(b: u8) -> bool {
+    b.is_ascii_hexdigit() || matches!(b, b'r' | b'g' | b'a' | b':' | b'/' | b'#')
 }
 
-fn csi(held: &[u8]) -> Held {
-    match held.get(2) {
-        None => return Held::Start { sure: false },
-        Some(b'?') => {}
-        Some(_) => return Held::Keys,
-    }
-    let n = held.len();
-    match held[n - 1] {
-        _ if n == 3 => Held::Start { sure: true },
-        0x20..=0x3f if n < REPLY_MAX => Held::Start { sure: true },
-        b'n' => Held::Reply(
-            match &held[3..n - 1] {
-                b"997;1" => Reply::Background(Background::Dark),
-                b"997;2" => Reply::Background(Background::Light),
-                _ => Reply::Other,
-            },
-            n,
-        ),
-        0x40..=0x7e => Held::Reply(Reply::Other, n),
-        // A control byte or an Esc cuts the reply off and is read anew.
-        0x00..=0x1f => Held::Reply(Reply::Other, n - 1),
-        _ => Held::Reply(Reply::Other, n),
-    }
-}
+/// The 8-bit String Terminator.
+const ST: u8 = 0x9c;
 
 /// Turns the bytes read from the terminal into [`Input`]: replies apart,
 /// everything else as crossterm reads it.
@@ -152,27 +129,39 @@ fn csi(held: &[u8]) -> Held {
 pub struct Decoder {
     /// Bytes of a key sequence crossterm's parser waits to complete.
     keys: Vec<u8>,
-    /// Bytes that start (or may start) a reply, each with whether more bytes
-    /// followed it in its read, which crossterm reads Esc by.
-    held: Vec<(u8, bool)>,
-    /// When the last held byte was read.
-    held_at: Option<Instant>,
+    held: Held,
+    /// When the bytes held began, and when the last of them was read.
+    held_since: Option<Instant>,
+    held_last: Option<Instant>,
+    /// When the read being taken in was made.
+    now: Option<Instant>,
     out: VecDeque<Input>,
 }
 
 impl Decoder {
     /// Take in what one read of the terminal gave, at `now`.
     pub fn feed(&mut self, bytes: &[u8], now: Instant) {
+        self.now = Some(now);
         for (i, &b) in bytes.iter().enumerate() {
             self.step(b, i + 1 < bytes.len());
         }
-        self.held_at = (!self.held.is_empty()).then_some(now);
+        if matches!(self.held, Held::Nothing) {
+            self.held_since = None;
+            self.held_last = None;
+        } else {
+            self.held_last = Some(now);
+        }
     }
 
     /// When held bytes have waited long enough; `None` when none are held.
+    /// Bytes that may start a reply wait [`ESC_GAP`] for the next one; a reply
+    /// that surely began has [`REPLY_GAP`] from its start to end.
     pub fn deadline(&self) -> Option<Instant> {
-        let at = self.held_at?;
-        Some(at + if sure(&self.held) { REPLY_GAP } else { ESC_GAP })
+        match self.held {
+            Held::Nothing => None,
+            Held::Maybe(_) => Some(self.held_last? + ESC_GAP),
+            Held::Osc { .. } | Held::Csi { .. } => Some(self.held_since? + REPLY_GAP),
+        }
     }
 
     /// Time has come to `now` without input: held bytes past their
@@ -181,19 +170,99 @@ impl Decoder {
         if self.deadline().is_none_or(|due| due > now) {
             return;
         }
-        let held = std::mem::take(&mut self.held);
-        self.held_at = None;
-        if !sure(&held) {
+        if let Held::Maybe(held) = self.release() {
             for (b, more) in held {
                 self.key(b, more);
             }
         }
     }
 
+    /// Stop holding; what was held.
+    fn release(&mut self) -> Held {
+        self.held_since = None;
+        self.held_last = None;
+        std::mem::take(&mut self.held)
+    }
+
+    fn hold(&mut self, held: Held) {
+        if matches!(self.held, Held::Nothing) {
+            self.held_since = self.now;
+        }
+        self.held = held;
+    }
+
+    /// A reply ended (or was cut off, as `reply` `Other`).
+    fn reply(&mut self, reply: Reply) {
+        self.release();
+        self.out.push_back(Input::Reply(reply));
+    }
+
     fn step(&mut self, b: u8, more: bool) {
-        if !self.held.is_empty() {
-            self.held.push((b, more));
-            return self.decide();
+        match &mut self.held {
+            Held::Nothing => {}
+            Held::Maybe(held) => {
+                held.push((b, more));
+                return self.decide();
+            }
+            Held::Osc { body, len, esc } => {
+                match (*esc, b) {
+                    (Some(_), b'\\') | (None, BEL | ST) => {
+                        let reply = if *len > REPLY_MAX {
+                            Reply::Other
+                        } else {
+                            std::str::from_utf8(body)
+                                .ok()
+                                .and_then(theme::background_from_osc11)
+                                .map_or(Reply::Other, Reply::Background)
+                        };
+                        self.reply(reply);
+                    }
+                    (None, ESC) => *esc = Some(more),
+                    (None, b) if osc_body(b) => {
+                        *len += 1;
+                        if body.len() < REPLY_MAX {
+                            body.push(b);
+                        }
+                    }
+                    // Anything else cuts the reply off and is read anew: an
+                    // Esc that does not end it starts something else.
+                    (Some(esc_more), b) => {
+                        self.reply(Reply::Other);
+                        self.step(ESC, esc_more);
+                        self.step(b, more);
+                    }
+                    (None, b) => {
+                        self.reply(Reply::Other);
+                        self.step(b, more);
+                    }
+                }
+                return;
+            }
+            Held::Csi { body, len } => {
+                match b {
+                    0x20..=0x3f => {
+                        *len += 1;
+                        if body.len() < REPLY_MAX {
+                            body.push(b);
+                        }
+                    }
+                    0x40..=0x7e => {
+                        let reply = match (b, &body[..]) {
+                            (b'n', b"997;1") => Reply::Background(Background::Dark),
+                            (b'n', b"997;2") => Reply::Background(Background::Light),
+                            _ => Reply::Other,
+                        };
+                        self.reply(reply);
+                    }
+                    // A control byte (Ctrl-C, Enter, an Esc) cuts the report
+                    // off and is read anew.
+                    _ => {
+                        self.reply(Reply::Other);
+                        self.step(b, more);
+                    }
+                }
+                return;
+            }
         }
         if b == ESC {
             // An Esc crossterm still waits on is a key of its own: this one
@@ -206,30 +275,49 @@ impl Decoder {
             // Inside a pending key sequence (a paste) an Esc is the
             // sequence's.
             if self.keys.is_empty() {
-                self.held.push((b, more));
-                return;
+                return self.hold(Held::Maybe(vec![(b, more)]));
             }
+        }
+        // `ESC [` timed out into crossterm's parser, and a report goes on:
+        // crossterm would wait for its end for ever.
+        if b == b'?' && self.keys == b"\x1b[" {
+            self.keys.clear();
+            return self.hold(Held::Csi {
+                body: Vec::new(),
+                len: 0,
+            });
         }
         self.key(b, more);
     }
 
-    /// The held bytes grew by one: see whether they are a reply yet.
+    /// The bytes that may start a reply grew by one: see what they are.
     fn decide(&mut self) {
-        match classify(&bytes(&self.held)) {
-            Held::Start { .. } => {}
-            Held::Reply(reply, len) => {
-                let rest = self.held.split_off(len);
-                self.held.clear();
-                self.out.push_back(Input::Reply(reply));
-                for (b, more) in rest {
-                    self.step(b, more);
+        let Held::Maybe(held) = &self.held else {
+            return;
+        };
+        match start(held) {
+            Start::Maybe => {}
+            Start::Osc => {
+                self.held = Held::Osc {
+                    body: Vec::new(),
+                    len: 0,
+                    esc: None,
                 }
             }
-            Held::Keys => {
+            Start::Csi => {
+                self.held = Held::Csi {
+                    body: Vec::new(),
+                    len: 0,
+                }
+            }
+            Start::Keys => {
+                let Held::Maybe(mut held) = self.release() else {
+                    unreachable!()
+                };
                 // Everything but the last byte could start a reply, and so
                 // holds no other Esc; the last byte may begin anew.
-                let (last, more) = self.held.pop().expect("held bytes");
-                for (b, m) in std::mem::take(&mut self.held) {
+                let (last, more) = held.pop().expect("held bytes");
+                for (b, m) in held {
                     self.key(b, m);
                 }
                 self.step(last, more);
@@ -260,15 +348,6 @@ impl Iterator for Decoder {
     fn next(&mut self) -> Option<Input> {
         self.out.pop_front()
     }
-}
-
-/// Whether `held` is surely the start of a reply.
-fn sure(held: &[(u8, bool)]) -> bool {
-    !held.is_empty() && matches!(classify(&bytes(held)), Held::Start { sure: true })
-}
-
-fn bytes(held: &[(u8, bool)]) -> Vec<u8> {
-    held.iter().map(|(b, _)| *b).collect()
 }
 
 enum Chunk {

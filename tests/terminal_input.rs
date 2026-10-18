@@ -162,7 +162,7 @@ fn other_replies_are_dropped_not_typed() {
         &b"\x1b[?62;22c"[..],
         b"\x1b[?2031;2$y",
         b"\x1b]11;#ffffff\x07",
-        b"\x1b]11;rgb:zz/zz/zz\x1b\\",
+        b"\x1b]11;rgb:ff/ff\x1b\\",
     ] {
         let out = decode(&cat(&[b"j", bytes, b"k"]));
         assert_eq!(
@@ -196,6 +196,111 @@ fn esc_just_before_a_reply_is_still_esc() {
     assert_eq!(
         decode(&cat(&[b"\x1b", LIGHT_ST])),
         vec![code(KeyCode::Esc), background(Background::Light)]
+    );
+}
+
+#[test]
+fn a_mode_report_cut_right_after_esc_bracket_is_a_reply_and_typing_goes_on() {
+    // `ESC [` timed out and went to crossterm's parser, which would wait for
+    // the end of `CSI ?` for ever and take every key after it.
+    let out = decode_at(
+        &[
+            (0, b"\x1b["),
+            (100, b"?997;2n"),
+            (150, b"jj"),
+            (160, b":q\r"),
+        ],
+        1_000,
+    );
+    assert_eq!(
+        out,
+        vec![
+            background(Background::Light),
+            key('j'),
+            key('j'),
+            key(':'),
+            key('q'),
+            code(KeyCode::Enter)
+        ]
+    );
+}
+
+#[test]
+fn a_reply_cut_off_gives_back_the_keys_typed_after_it() {
+    for (typed, want) in [
+        (
+            &b"j:q\r"[..],
+            vec![key('j'), key(':'), key('q'), code(KeyCode::Enter)],
+        ),
+        (
+            b"\x03",
+            vec![Input::Event(Event::Key(KeyEvent::new(
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+            )))],
+        ),
+        (b"\r", vec![code(KeyCode::Enter)]),
+    ] {
+        let out = decode_at(&[(0, b"\x1b]11;rgb:ff"), (300, typed)], 5_000);
+        let mut expected = vec![Input::Reply(Reply::Other)];
+        expected.extend(want);
+        assert_eq!(out, expected, "{typed:?}");
+    }
+    // A mode report cut off by Ctrl-C.
+    assert_eq!(
+        decode_at(&[(0, b"\x1b[?997;"), (300, b"\x03")], 5_000),
+        vec![
+            Input::Reply(Reply::Other),
+            Input::Event(Event::Key(KeyEvent::new(
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL
+            )))
+        ]
+    );
+}
+
+#[test]
+fn a_reply_waits_one_second_from_its_start_not_from_each_piece() {
+    let out = decode_at(
+        &[
+            (0, b"\x1b]11;rgb:"),
+            (600, b"ff"),
+            (1_200, b"ff/"),
+            (1_300, b"j"),
+        ],
+        5_000,
+    );
+    // Dropped at 1 s; what comes later is typed.
+    assert_eq!(out, vec![key('f'), key('f'), key('/'), key('j')]);
+}
+
+#[test]
+fn an_overlong_reply_is_dropped_whole() {
+    let mut csi = b"\x1b[?".to_vec();
+    csi.extend(std::iter::repeat_n(b'1', 10_000));
+    csi.extend(b"nj");
+    assert_eq!(decode(&csi), vec![Input::Reply(Reply::Other), key('j')]);
+    let mut osc = b"\x1b]11;rgb:".to_vec();
+    osc.extend(std::iter::repeat_n(b'f', 10_000));
+    osc.extend(b"\x07j");
+    assert_eq!(decode(&osc), vec![Input::Reply(Reply::Other), key('j')]);
+    // Even in pieces.
+    let cuts: Vec<usize> = (1..osc.len() / 100).map(|i| i * 100).collect();
+    assert_eq!(
+        decode_cut(&osc, &cuts, 1),
+        vec![Input::Reply(Reply::Other), key('j')]
+    );
+}
+
+#[test]
+fn an_eight_bit_st_ends_a_reply_and_utf8_keys_stay_keys() {
+    // `ќ` is D1 9C in UTF-8: 0x9c is no ST outside a reply.
+    let mut bytes = "ќ".as_bytes().to_vec();
+    bytes.extend(b"\x1b]11;rgb:ffff/ffff/ffff\x9c");
+    bytes.extend("ќj".as_bytes());
+    assert_eq!(
+        decode(&bytes),
+        vec![key('ќ'), background(Background::Light), key('ќ'), key('j')]
     );
 }
 
