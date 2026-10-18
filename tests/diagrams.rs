@@ -873,9 +873,10 @@ fn f_in_a_summary_without_a_diagram_says_so() {
 
 #[test]
 fn markers_and_the_frame_of_the_minimap_take_the_colours_of_either_theme() {
-    use moonhare::theme::{Background, Theme, DARK, LIGHT};
+    use moonhare::theme::{Background, Choice, Theme, DARK, LIGHT};
     for (background, theme) in [(Background::Dark, &DARK), (Background::Light, &LIGHT)] {
         let (_fx, mut h) = big();
+        h.session().set_choice(Choice::Auto);
         h.session().set_terminal_background(Some(background));
         h.keys("0gg");
         let frame = h.frame();

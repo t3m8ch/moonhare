@@ -1,5 +1,6 @@
-//! The theme of the session: `--theme`, `:theme` and the terminal background,
-//! which the terminal tells in its replies whenever they come.
+//! The theme of the session: `--theme`, `:theme` (saved, see
+//! [`super::preferences`]) and the terminal background, which the terminal
+//! tells in its replies whenever they come.
 
 use super::*;
 use crate::terminal_input::{Reply, QUERY_BACKGROUND};
@@ -47,8 +48,9 @@ impl Session {
         }
     }
 
-    /// `:theme [light|dark|auto]`: switch, or show the theme drawn. `auto`
-    /// asks the terminal for its background anew.
+    /// `:theme [light|dark|auto]`: switch, or show the theme drawn. The
+    /// choice is saved for later runs. `auto` asks the terminal for its
+    /// background anew.
     pub(super) fn theme_command(&mut self, arg: &str) {
         if arg.is_empty() {
             let how = match self.theme_setting.choice {
@@ -59,18 +61,21 @@ impl Session {
             return;
         }
         match self.set_theme(arg) {
-            Ok(()) if self.theme_setting.choice == Choice::Auto => {
-                self.terminal_out.push(QUERY_BACKGROUND.to_string());
+            Ok(()) => {
+                let choice = self.theme_setting.choice;
+                if choice == Choice::Auto {
+                    self.terminal_out.push(QUERY_BACKGROUND.to_string());
+                }
+                self.save_theme(choice);
             }
-            Ok(()) => {}
             Err(e) => self.message = Some(e),
         }
     }
 
-    /// `  theme:light` while the Reviewer chose one; nothing under `auto`.
+    /// `  theme:light` or `  theme:auto`; nothing under the default, dark.
     pub(super) fn theme_status(&self) -> String {
         match self.theme_setting.choice {
-            Choice::Auto => String::new(),
+            Choice::Dark => String::new(),
             choice => format!("  theme:{choice}"),
         }
     }
