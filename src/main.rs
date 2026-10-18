@@ -7,6 +7,7 @@ use moonhare::git::Target;
 use moonhare::github::GitHub;
 use moonhare::opening::Opening;
 use moonhare::session::Session;
+use moonhare::theme::{self, Choice};
 use ratatui::crossterm::event::{self, DisableMouseCapture, EnableMouseCapture};
 use ratatui::crossterm::execute;
 
@@ -21,22 +22,38 @@ fn main() -> ExitCode {
     let (width, height) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let usage = || {
-        eprintln!("usage: moonhare [--lang <code>] [--effort <low|medium|high|xhigh|max>] [--model <name>] [<branch> | <base>..<head> | --pr <number>]")
+        eprintln!("usage: moonhare [--lang <code>] [--effort <low|medium|high|xhigh|max>] [--model <name>] [--theme <light|dark|auto>] [<branch> | <base>..<head> | --pr <number>]")
     };
-    let (Ok(language), Ok(effort), Ok(model)) = (
+    let (Ok(language), Ok(effort), Ok(model), Ok(theme)) = (
         take_flag_value(&mut args, "--lang"),
         take_flag_value(&mut args, "--effort"),
         take_flag_value(&mut args, "--model"),
+        take_flag_value(&mut args, "--theme"),
     ) else {
         usage();
         return ExitCode::FAILURE;
     };
+    let theme = theme.or_else(|| {
+        std::env::var("MOONHARE_THEME")
+            .ok()
+            .filter(|t| !t.is_empty())
+    });
+    let choice = match theme.as_deref().map(str::parse::<Choice>).transpose() {
+        Ok(choice) => choice.unwrap_or_default(),
+        Err(e) => {
+            eprintln!("moonhare: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Ask the terminal for its background while the session opens.
+    let mut background = Background::new(choice == Choice::Auto);
     let forge: std::sync::Arc<GitHub> = std::sync::Arc::new(GitHub::new());
     let mut terminal = None;
     let opened = match args.iter().map(String::as_str).collect::<Vec<_>>()[..] {
         ["--pr", n] => match n.trim_start_matches('#').parse::<u64>() {
             Ok(n) => match Opening::pull_request(&cwd, forge, n, width, height) {
                 Ok(opening) => {
+                    background.wait();
                     // The Forge may take a while: show a loading screen that
                     // can be left, not an empty terminal.
                     let mut t = ratatui::init();
@@ -64,10 +81,12 @@ fn main() -> ExitCode {
             Session::open_target_with_forge(&cwd, &target, forge, width, height)
         }
         _ => {
+            background.wait();
             usage();
             return ExitCode::FAILURE;
         }
     };
+    let detected = background.wait();
     let mut session = match opened {
         Ok(s) => s,
         Err(e) => {
@@ -101,6 +120,11 @@ fn main() -> ExitCode {
     if let Some(language) = language {
         session.set_language(&language);
     }
+    session.set_terminal_background(detected);
+    if let Some(theme) = &theme {
+        // Parsed above already.
+        let _ = session.set_theme(theme);
+    }
     session.set_analyst(std::sync::Arc::new(ClaudeAnalyst::new()));
 
     let mut terminal = terminal.unwrap_or_else(ratatui::init);
@@ -124,6 +148,52 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// How long the terminal may take to tell its background.
+const BACKGROUND_TIMEOUT: Duration = Duration::from_millis(200);
+
+/// The terminal background, told by a thread that asks while the session
+/// opens.
+struct Background {
+    asking: Option<std::thread::JoinHandle<Option<theme::Background>>>,
+    told: Option<theme::Background>,
+}
+
+impl Background {
+    /// Start asking unless the theme is chosen already (`ask` false).
+    fn new(ask: bool) -> Background {
+        let asking = ask.then(|| {
+            std::thread::spawn(|| {
+                let colorfgbg = std::env::var("COLORFGBG").ok();
+                theme::detect(query, colorfgbg.as_deref())
+            })
+        });
+        Background { asking, told: None }
+    }
+
+    /// The background, once the thread is done; it holds the terminal in raw
+    /// mode while it asks, so wait before drawing or printing.
+    fn wait(&mut self) -> Option<theme::Background> {
+        if let Some(asking) = self.asking.take() {
+            self.told = asking.join().ok().flatten();
+        }
+        self.told
+    }
+}
+
+#[cfg(unix)]
+fn query() -> Option<theme::Background> {
+    use std::io::IsTerminal;
+    if !io::stdout().is_terminal() {
+        return None;
+    }
+    theme::query_background(BACKGROUND_TIMEOUT)
+}
+
+#[cfg(not(unix))]
+fn query() -> Option<theme::Background> {
+    None
 }
 
 /// Remove `--flag <value>` from `args` and return the value. `Err` when the
