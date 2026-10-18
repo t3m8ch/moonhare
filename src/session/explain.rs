@@ -200,8 +200,8 @@ impl Session {
     /// `r` in the overlay: ask again whatever is cached, keeping the answer
     /// on screen until the new one comes.
     fn refresh_explanation(&mut self) {
-        let Some(analyst) = self.analysis.analyst.clone() else {
-            self.message = Some("No Analyst is configured: nothing to explain with".into());
+        let Some(analyst) = self.analyst_handle() else {
+            self.message = Some(super::diagram::NO_ANALYST_TO_REFRESH.into());
             return;
         };
         let Some(overlay) = &self.explain.overlay else {

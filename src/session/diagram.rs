@@ -159,7 +159,7 @@ impl Session {
             return;
         };
         let Some(analyst) = self.analyst_handle() else {
-            self.message = Some("No Analyst is configured: there are no diagrams.".into());
+            self.message = Some(NO_ANALYST_TO_REFRESH.into());
             return;
         };
         self.ask_diagram(analyst, key, true);
@@ -343,7 +343,10 @@ impl Session {
             DiagramSubject::File { path } | DiagramSubject::Fragment { path, .. } => path,
             DiagramSubject::Group { name, .. } => name,
         };
-        let cached = if self.diagram_from_cache() {
+        let cached = if self.diagrams.pending.contains(key) && self.diagrams.cache.contains_key(key)
+        {
+            " updating"
+        } else if self.diagram_from_cache() {
             " cached"
         } else {
             ""
@@ -403,6 +406,9 @@ impl Session {
         }
     }
 }
+
+/// What `r` says in an Explanation or a Diagram with no Analyst.
+pub(super) const NO_ANALYST_TO_REFRESH: &str = "No Analyst is configured: nothing to ask again";
 
 /// What is shown instead of a picture that could not be drawn.
 fn failure_lines(error: &str, mermaid: &str) -> Vec<String> {

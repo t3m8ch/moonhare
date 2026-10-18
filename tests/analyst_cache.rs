@@ -393,6 +393,7 @@ fn r_in_the_explanation_asks_once_more_and_overwrites_the_entry() {
     let during = h.screen();
     assert!(during.contains("explanation first"), "{during}");
     assert!(during.contains("updating"), "{during}");
+    assert!(!during.contains("cached"), "{during}");
     h.session().wait_for_analyst();
     assert_eq!(fake.calls(), 4, "exactly one new request");
     let screen = h.screen();
@@ -442,6 +443,7 @@ fn r_in_the_diagram_asks_once_more_and_overwrites_the_entry() {
     let during = h.screen();
     assert!(during.contains("Wfirst"), "{during}");
     assert!(during.contains("updating"), "{during}");
+    assert!(!during.contains("cached"), "{during}");
     h.session().wait_for_analyst();
     assert_eq!(fake.calls(), 4, "exactly one new request");
     let screen = h.screen();
