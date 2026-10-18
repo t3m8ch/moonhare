@@ -1,57 +1,30 @@
 //! Contract of the GitHub adapter, checked against a fake `gh` executable.
 
+mod support;
+
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::Path;
 
 use moonhare::forge::{Forge, ForgeError, PullRequest};
 use moonhare::github::GitHub;
+use support::fake_gh::FakeGh;
+use support::Fixture;
 
-/// A stand-in `gh`: logs its arguments, prints canned stdout and stderr and
-/// exits with a canned status.
-struct FakeGh {
-    dir: tempfile::TempDir,
+/// A repository whose `origin` is on GitHub.
+fn on_github() -> Fixture {
+    with_remote("https://github.com/owner/repo.git")
 }
 
-impl FakeGh {
-    fn replying(stdout: &str) -> Self {
-        Self::with(stdout, "", 0)
-    }
+fn with_remote(url: &str) -> Fixture {
+    let fx = Fixture::new();
+    fx.git(&["remote", "add", "origin", url]);
+    fx
+}
 
-    fn with(stdout: &str, stderr: &str, status: i32) -> Self {
-        let dir = tempfile::tempdir().unwrap();
-        fs::write(dir.path().join("stdout"), stdout).unwrap();
-        fs::write(dir.path().join("stderr"), stderr).unwrap();
-        let script = format!(
-            "#!/bin/sh\n[ \"$1\" = --probe ] && exit 0\nd='{}'\nfor a in \"$@\"; do printf '%s\\n' \"$a\" >> \"$d/args\"; done\n\
-             printf '<<end>>\\n' >> \"$d/args\"\ncat \"$d/stdout\"\ncat \"$d/stderr\" >&2\nexit {status}\n",
-            dir.path().display()
-        );
-        let path = dir.path().join("gh");
-        fs::write(&path, script).unwrap();
-        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
-        // Another test thread may fork while the script is still open for
-        // writing, which makes exec fail with ETXTBSY. Run it once to be sure
-        // it is settled.
-        let probe = || std::process::Command::new(&path).arg("--probe").status();
-        while probe().is_err() {
-            std::thread::sleep(std::time::Duration::from_millis(5));
-        }
-        FakeGh { dir }
-    }
-
-    fn program(&self) -> PathBuf {
-        self.dir.path().join("gh")
-    }
-
-    /// One entry per invocation, arguments joined by spaces.
-    fn calls(&self) -> Vec<String> {
-        let log = fs::read_to_string(self.dir.path().join("args")).unwrap_or_default();
-        log.split("<<end>>\n")
-            .filter(|c| !c.is_empty())
-            .map(|c| c.lines().collect::<Vec<_>>().join(" "))
-            .collect()
-    }
+/// The adapter for the repository at `repo`, run through `program`.
+fn github(program: impl AsRef<Path>, repo: &Fixture) -> GitHub {
+    GitHub::with_program(program.as_ref()).in_dir(repo.path())
 }
 
 const PR_JSON: &str =
@@ -60,7 +33,8 @@ const PR_JSON: &str =
 #[test]
 fn finds_the_pull_request_of_a_branch_with_title_description_and_base() {
     let gh = FakeGh::replying(PR_JSON);
-    let forge = GitHub::with_program(gh.program());
+    let repo = on_github();
+    let forge = github(gh.program(), &repo);
 
     let pr = forge.pull_request_for_branch("feature").unwrap();
 
@@ -83,7 +57,8 @@ fn finds_the_pull_request_of_a_branch_with_title_description_and_base() {
 fn a_branch_name_with_a_leading_dash_is_not_taken_for_a_flag() {
     let gh = FakeGh::replying(PR_JSON);
 
-    GitHub::with_program(gh.program())
+    let repo = on_github();
+    github(gh.program(), &repo)
         .pull_request_for_branch("--web")
         .unwrap();
 
@@ -96,13 +71,15 @@ fn a_branch_name_with_a_leading_dash_is_not_taken_for_a_flag() {
 #[test]
 fn a_branch_without_a_pull_request_is_not_an_error() {
     let gh = FakeGh::with("", "no pull requests found for branch \"feature\"\n", 1);
-    let forge = GitHub::with_program(gh.program());
+    let repo = on_github();
+    let forge = github(gh.program(), &repo);
 
     assert_eq!(forge.pull_request_for_branch("feature"), Ok(None));
 }
 #[test]
 fn a_missing_gh_is_reported_as_unavailable_with_a_clear_message() {
-    let forge = GitHub::with_program("/nonexistent/dir/gh");
+    let repo = on_github();
+    let forge = github("/nonexistent/dir/gh", &repo);
 
     let err = forge.pull_request_for_branch("feature").unwrap_err();
 
@@ -117,7 +94,8 @@ fn an_unreachable_network_is_reported_as_such() {
         "error connecting to api.github.com\ncheck your internet connection or https://githubstatus.com\n",
         1,
     );
-    let forge = GitHub::with_program(gh.program());
+    let repo = on_github();
+    let forge = github(gh.program(), &repo);
 
     let err = forge.pull_request_for_branch("feature").unwrap_err();
 
@@ -127,7 +105,8 @@ fn an_unreachable_network_is_reported_as_such() {
 #[test]
 fn looks_up_a_pull_request_by_number_and_reports_an_unknown_one() {
     let gh = FakeGh::replying(PR_JSON);
-    let pr = GitHub::with_program(gh.program()).pull_request(42).unwrap();
+    let repo = on_github();
+    let pr = github(gh.program(), &repo).pull_request(42).unwrap();
     assert_eq!(pr.title, "Add retry");
     assert_eq!(
         gh.calls(),
@@ -139,9 +118,7 @@ fn looks_up_a_pull_request_by_number_and_reports_an_unknown_one() {
         "GraphQL: Could not resolve to a PullRequest with the number of 999.\n",
         1,
     );
-    let err = GitHub::with_program(gh.program())
-        .pull_request(999)
-        .unwrap_err();
+    let err = github(gh.program(), &repo).pull_request(999).unwrap_err();
     assert!(matches!(err, ForgeError::NotFound(_)), "{err:?}");
     assert!(err.to_string().contains("999"), "{err}");
 }
@@ -167,7 +144,8 @@ fn a_gh_that_hangs_is_killed_and_reported_as_a_network_error() {
     {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    let forge = GitHub::with_program(&path).with_timeout(std::time::Duration::from_millis(500));
+    let repo = on_github();
+    let forge = github(&path, &repo).with_timeout(std::time::Duration::from_millis(500));
     let started = std::time::Instant::now();
 
     let err = forge.pull_request_for_branch("feature").unwrap_err();
@@ -182,4 +160,99 @@ fn a_gh_that_hangs_is_killed_and_reported_as_a_network_error() {
         .status
         .success();
     assert!(!alive, "gh (pid {pid}) is still running");
+}
+
+#[test]
+fn gh_is_not_run_in_a_repository_without_remotes() {
+    let gh = FakeGh::replying(PR_JSON);
+    let repo = Fixture::new();
+
+    let err = github(gh.program(), &repo)
+        .pull_request_for_branch("feature")
+        .unwrap_err();
+
+    assert!(matches!(err, ForgeError::Unavailable(_)), "{err:?}");
+    assert!(err.to_string().contains("no git remote"), "{err}");
+    assert_eq!(gh.calls(), Vec::<String>::new());
+}
+
+#[test]
+fn gh_is_not_run_when_no_remote_is_on_github() {
+    for url in [
+        "https://gitlab.com/owner/repo.git",
+        "git@gitlab.com:owner/repo.git",
+        "ssh://git@git.example.org:2222/owner/repo.git",
+        "/srv/git/repo.git",
+        "../repo",
+        "file:///srv/git/repo.git",
+    ] {
+        let gh = FakeGh::replying(PR_JSON);
+        let repo = with_remote(url);
+
+        let err = github(gh.program(), &repo)
+            .pull_request_for_branch("feature")
+            .unwrap_err();
+
+        assert!(matches!(err, ForgeError::Unavailable(_)), "{url}: {err:?}");
+        assert!(err.to_string().contains("GitHub"), "{url}: {err}");
+        assert_eq!(gh.calls(), Vec::<String>::new(), "{url}");
+    }
+}
+
+#[test]
+fn gh_is_run_for_every_spelling_of_a_github_remote() {
+    for url in [
+        "https://github.com/owner/repo.git",
+        "https://user@github.com/owner/repo",
+        "git@github.com:owner/repo.git",
+        "ssh://git@github.com/owner/repo.git",
+        "ssh://git@ssh.github.com:443/owner/repo.git",
+    ] {
+        let gh = FakeGh::replying(PR_JSON);
+        let repo = with_remote(url);
+        // A second remote elsewhere does not hide the GitHub one.
+        repo.git(&["remote", "add", "mirror", "https://gitlab.com/o/r.git"]);
+
+        let pr = github(gh.program(), &repo)
+            .pull_request_for_branch("feature")
+            .unwrap();
+
+        assert_eq!(pr.map(|p| p.number), Some(42), "{url}");
+        assert_eq!(gh.calls().len(), 1, "{url}");
+    }
+}
+
+#[test]
+fn gh_without_a_forge_to_ask_is_unavailable_not_failed() {
+    for stderr in [
+        "no git remotes found\n",
+        "none of the git remotes configured for this repository point to a known GitHub host. \
+         To tell gh about a new GitHub host, please use `gh auth login`\n",
+        "You are not logged into any GitHub hosts. To log in, run: gh auth login\n",
+        "To get started with GitHub CLI, please run:  gh auth login\n\
+         Alternatively, populate the GH_TOKEN environment variable with a GitHub API authentication token.\n",
+    ] {
+        let gh = FakeGh::with("", stderr, 1);
+        let repo = on_github();
+
+        let err = github(gh.program(), &repo)
+            .pull_request_for_branch("feature")
+            .unwrap_err();
+
+        assert!(matches!(err, ForgeError::Unavailable(_)), "{stderr}: {err:?}");
+    }
+}
+
+#[test]
+fn a_pull_request_number_without_github_is_a_clear_error() {
+    let gh = FakeGh::replying(PR_JSON);
+    let repo = Fixture::new();
+
+    let err = github(gh.program(), &repo).pull_request(5).unwrap_err();
+
+    assert!(matches!(err, ForgeError::Unavailable(_)), "{err:?}");
+    let text = err.to_string();
+    assert!(text.contains("#5"), "{text}");
+    assert!(text.contains("GitHub"), "{text}");
+    assert_eq!(gh.calls(), Vec::<String>::new());
 }

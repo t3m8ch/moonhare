@@ -8,6 +8,8 @@ use crate::forge::{Forge, ForgeError, PullRequest};
 
 pub struct GitHub {
     program: PathBuf,
+    /// The clone `gh` is asked about; the current directory when `None`.
+    dir: Option<PathBuf>,
     /// How long `gh pr view` may take before the Forge counts as unreachable.
     timeout: Duration,
 }
@@ -23,8 +25,15 @@ impl GitHub {
     pub fn with_program(program: impl Into<PathBuf>) -> GitHub {
         GitHub {
             program: program.into(),
+            dir: None,
             timeout: DEFAULT_TIMEOUT,
         }
+    }
+
+    /// Ask about the clone at `dir` instead of the current directory.
+    pub fn in_dir(mut self, dir: impl Into<PathBuf>) -> GitHub {
+        self.dir = Some(dir.into());
+        self
     }
 
     /// Give up on `gh pr view` after `timeout`.
@@ -96,14 +105,105 @@ impl GitHub {
     }
 
     fn view(&self, selector: &str) -> Result<PullRequest, ForgeError> {
-        let out = self.run_with_timeout(
-            Command::new(&self.program).args(["pr", "view", "--json", PR_FIELDS, "--", selector]),
-        )?;
+        self.check_github_remote()?;
+        let mut command = Command::new(&self.program);
+        command.args(["pr", "view", "--json", PR_FIELDS, "--", selector]);
+        if let Some(dir) = &self.dir {
+            command.current_dir(dir);
+        }
+        let out = self.run_with_timeout(&mut command)?;
         if !out.status.success() {
             return Err(classify(&String::from_utf8_lossy(&out.stderr)));
         }
         parse_pull_request(&out.stdout)
     }
+}
+
+impl GitHub {
+    /// Whether some remote of the clone is on GitHub. Without one there is
+    /// nothing to ask, and `gh` is not even started.
+    fn check_github_remote(&self) -> Result<(), ForgeError> {
+        let mut command = Command::new("git");
+        command.args(["remote", "-v"]);
+        if let Some(dir) = &self.dir {
+            command.current_dir(dir);
+        }
+        // If git itself cannot say, let `gh` find out.
+        let Ok(out) = command.output() else {
+            return Ok(());
+        };
+        if !out.status.success() {
+            return Ok(());
+        }
+        let listing = String::from_utf8_lossy(&out.stdout);
+        let urls: Vec<&str> = listing
+            .lines()
+            .filter_map(|line| line.split_whitespace().nth(1))
+            .collect();
+        if urls.is_empty() {
+            return Err(ForgeError::Unavailable(
+                "the repository has no git remote, so no GitHub pull request is looked up".into(),
+            ));
+        }
+        let known = known_hosts();
+        if urls
+            .iter()
+            .filter_map(|url| remote_host(url))
+            .any(|host| is_github_host(&host, &known))
+        {
+            Ok(())
+        } else {
+            Err(ForgeError::Unavailable(
+                "no git remote points to GitHub, so no pull request is looked up".into(),
+            ))
+        }
+    }
+}
+
+/// The host of a remote URL, if it names one: `https://host/…`,
+/// `ssh://user@host:port/…` or the scp-like `user@host:path`. A path on disk
+/// has none.
+fn remote_host(url: &str) -> Option<String> {
+    let authority = match url.split_once("://") {
+        Some((_, rest)) => rest.split('/').next().unwrap_or_default(),
+        None => {
+            let (before, _) = url.split_once(':')?;
+            if before.contains('/') {
+                return None;
+            }
+            before
+        }
+    };
+    let host = authority.rsplit('@').next().unwrap_or_default();
+    let host = host.split(':').next().unwrap_or_default();
+    (!host.is_empty()).then(|| host.to_ascii_lowercase())
+}
+
+/// GitHub itself, a host `gh` is logged into, or a name that says GitHub
+/// (an SSH alias such as `github.com-work`, a GitHub Enterprise server).
+/// A wrong guess only costs one run of `gh`.
+fn is_github_host(host: &str, known: &[String]) -> bool {
+    host.contains("github") || known.iter().any(|k| k == host)
+}
+
+/// The hosts `gh` knows: `$GH_HOST` and those in its `hosts.yml`.
+fn known_hosts() -> Vec<String> {
+    let mut hosts: Vec<String> = std::env::var("GH_HOST").ok().into_iter().collect();
+    let env = |name: &str| std::env::var_os(name).filter(|v| !v.is_empty());
+    let config = env("GH_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| env("XDG_CONFIG_HOME").map(|d| PathBuf::from(d).join("gh")))
+        .or_else(|| env("HOME").map(|d| PathBuf::from(d).join(".config/gh")));
+    if let Some(text) = config.and_then(|d| std::fs::read_to_string(d.join("hosts.yml")).ok()) {
+        // Every host is a key at the top level of the YAML.
+        hosts.extend(
+            text.lines()
+                .filter(|l| !l.starts_with([' ', '\t', '#', '-']))
+                .filter_map(|l| l.trim_end().strip_suffix(':'))
+                .map(|h| h.trim_matches(['"', '\'']).to_ascii_lowercase()),
+        );
+    }
+    hosts
 }
 
 /// Turn what `gh` said on failure into an error the reviewer can act on.
@@ -113,6 +213,19 @@ fn classify(stderr: &str) -> ForgeError {
         || stderr.contains("Could not resolve to a PullRequest")
     {
         ForgeError::NotFound(stderr.to_string())
+    } else if [
+        "no git remotes found",
+        "point to a known GitHub host",
+        "not logged into any GitHub hosts",
+        "gh auth login",
+    ]
+    .iter()
+    .any(|m| stderr.contains(m))
+    {
+        ForgeError::Unavailable(format!(
+            "gh has no GitHub to ask: {}",
+            stderr.lines().next().unwrap_or_default()
+        ))
     } else if [
         "error connecting to",
         "dial tcp",
@@ -162,6 +275,9 @@ impl Forge for GitHub {
     fn pull_request(&self, number: u64) -> Result<PullRequest, ForgeError> {
         self.view(&number.to_string()).map_err(|e| match e {
             ForgeError::NotFound(_) => ForgeError::NotFound(format!("no pull request #{number}")),
+            ForgeError::Unavailable(m) => {
+                ForgeError::Unavailable(format!("cannot open pull request #{number}: {m}"))
+            }
             other => other,
         })
     }

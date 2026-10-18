@@ -3,6 +3,8 @@
 //! key, mouse and resize events to a [`Session`] and reads back the frame as text.
 #![allow(dead_code)]
 
+pub mod fake_gh;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
