@@ -37,6 +37,7 @@ fn big_paths() -> Vec<String> {
     paths
 }
 
+/// A branch adding [`big_paths`].
 fn big() -> Fixture {
     branch_with(&big_paths())
 }
@@ -50,16 +51,19 @@ fn sidebar(h: &mut Harness) -> Vec<String> {
         .collect()
 }
 
+/// The line of the sidebar rows with the cursor.
 fn cursor_row(rows: &[String]) -> usize {
     rows.iter()
         .position(|l| l.starts_with("│>"))
         .unwrap_or_else(|| panic!("no cursor:\n{}", rows.join("\n")))
 }
 
+/// Lines joined back into one text, for assertion messages.
 fn text(rows: &[String]) -> String {
     rows.join("\n")
 }
 
+/// The row above the diff that names the open file.
 fn file_bar(h: &mut Harness) -> String {
     h.screen()
         .lines()
@@ -198,6 +202,34 @@ fn a_narrow_panel_pins_rows_cut_to_its_width() {
     assert!(cursor_row(&side) > pinned.len(), "{all}");
 }
 
+#[test]
+fn the_wheel_never_hides_the_cursor_under_a_pinned_row() {
+    let fx = big();
+    let mut h = Harness::open(&fx, 160, 40);
+    h.keys("]f]f");
+    let (x, y) = h.frame().find("a_05.rs").expect("a file row");
+    h.wheel_down(x, y);
+    let side = sidebar(&mut h);
+    let all = text(&side);
+    assert!(side[cursor_row(&side)].contains("a_02.rs"), "{all}");
+}
+
+#[test]
+fn a_mechanical_tree_pins_its_label_above_its_directories() {
+    let mut paths = names("src", "s", 3);
+    for i in 0..40 {
+        paths.push(format!("web/gen{i:02}/package-lock.json"));
+    }
+    let fx = branch_with(&paths);
+    let mut h = Harness::open(&fx, 160, 40);
+    h.keys("<Tab><Tab>G");
+    let side = sidebar(&mut h);
+    let all = text(&side);
+    assert!(side[1].contains("mechanical"), "{all}");
+    assert!(side[2].contains("▾ web"), "{all}");
+    assert!(!all.contains("s_00.rs"), "{all}");
+}
+
 // ------------------------------------------------------------ Groups
 
 struct FakeAnalyst(Vec<Group>);
@@ -214,6 +246,7 @@ impl Analyst for FakeAnalyst {
     }
 }
 
+/// The big tree in two Groups: alpha, then beta.
 fn grouped(fx: &Fixture, width: u16, height: u16) -> Harness {
     let mut h = Harness::open(fx, width, height);
     h.session().set_analyst(Arc::new(FakeAnalyst(vec![

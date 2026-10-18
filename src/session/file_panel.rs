@@ -166,7 +166,7 @@ fn parent(rows: &[Row], cursor: usize) -> Option<usize> {
         .rposition(|r| r.folded().is_some() && r.tree() == tree && depth(r) < d)
 }
 
-/// What `z` and `c` do in the tree with the cursor on row `cursor`: `zM` and
+/// What `z` followed by `c` does in the tree with the cursor on row `cursor`: `zM` and
 /// `zR` fold and unfold everything, `za`, `zc` and `zo` toggle, fold and
 /// unfold the directory under the cursor (or, on a file, the one it is in).
 fn z_motion(rows: &[Row], cursor: usize, c: char) -> Option<Motion> {
@@ -189,7 +189,6 @@ fn motion(rows: &[Row], cursor: usize, code: KeyCode, n: usize, half: usize) -> 
         .collect();
     let here = stops.iter().position(|&s| s >= cursor).unwrap_or(0);
     let last = stops.len().checked_sub(1)?;
-    let parent = || parent(rows, cursor);
     Some(match (code, &rows[cursor]) {
         (KeyCode::Char('j') | KeyCode::Down, _) => Motion::Go(stops[(here + n).min(last)]),
         (KeyCode::Char('k') | KeyCode::Up, _) => Motion::Go(stops[here.saturating_sub(n)]),
@@ -200,8 +199,8 @@ fn motion(rows: &[Row], cursor: usize, code: KeyCode, n: usize, half: usize) -> 
         (KeyCode::Home, _) => Motion::Go(stops[0]),
         (KeyCode::Char('h') | KeyCode::Left, row) => match row.folded() {
             Some(false) => Motion::Fold(cursor, true),
-            Some(true) => Motion::Go(parent()?),
-            None => Motion::Fold(parent()?, true),
+            Some(true) => Motion::Go(parent(rows, cursor)?),
+            None => Motion::Fold(parent(rows, cursor)?, true),
         },
         (KeyCode::Char('l') | KeyCode::Right, row) => match (row.folded(), row.at()) {
             (Some(true), _) => Motion::Fold(cursor, false),
@@ -232,7 +231,8 @@ pub(super) fn offset_for(at: usize, capacity: usize) -> usize {
 }
 
 /// The rows above row `r` that it is under, outermost first: the header of
-/// its Group, then the directories of its tree.
+/// its Group, the label of the Mechanical tree it is in, then the directories
+/// of its tree.
 fn ancestors(rows: &[Row], r: usize) -> Vec<usize> {
     let (tree, mut depth) = match &rows[r] {
         Row::Tree { tree, line, .. } => (Some(*tree), line.depth()),
@@ -245,6 +245,10 @@ fn ancestors(rows: &[Row], r: usize) -> Vec<usize> {
             Row::Header(_) => {
                 out.push(i);
                 break;
+            }
+            Row::Mechanical(_) if tree.is_some_and(|t| t.mechanical) => {
+                out.push(i);
+                depth = 0;
             }
             Row::Tree {
                 tree: t,
@@ -282,6 +286,7 @@ impl Pin {
 /// What a line of a box of the tree shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Shown {
+    /// A row pinned at the top.
     Pinned(Pin),
     /// Row `n` of the tree in its place.
     Row(usize),
@@ -292,15 +297,23 @@ pub(super) enum Shown {
 /// scrolled out, and the rows go on below them. The next directory pushes
 /// the pinned one out rather than slide under it. At most a third of the box
 /// is pinned: the outer rows give way to a `…`.
+/// A pinned row never hides the cursor: when the wheel scrolled it there,
+/// nothing is pinned.
 pub(super) struct View {
-    pub(super) pins: Vec<Pin>,
+    /// The lines at the top, outermost first.
+    pins: Vec<Pin>,
+    /// The row the lines of the box start at, the pinned ones included.
     offset: usize,
+    /// The lines of the box.
     capacity: usize,
+    /// The rows of the whole tree.
     len: usize,
 }
 
 impl View {
-    pub(super) fn new(rows: &[Row], offset: usize, capacity: usize) -> View {
+    /// The box of `capacity` lines over `rows` from `offset`, with the cursor
+    /// on row `cursor`.
+    pub(super) fn new(rows: &[Row], offset: usize, capacity: usize, cursor: Option<usize>) -> View {
         let max = capacity / 3;
         let mut chain: Vec<usize> = Vec::new();
         loop {
@@ -317,7 +330,7 @@ impl View {
                 break;
             }
         }
-        let pins = if chain.len() <= max {
+        let pins: Vec<Pin> = if chain.len() <= max {
             chain.into_iter().map(Pin::Row).collect()
         } else if max == 1 {
             chain.last().map(|&n| Pin::Row(n)).into_iter().collect()
@@ -326,6 +339,12 @@ impl View {
             std::iter::once(Pin::More(chain[first]))
                 .chain(chain[first + 1..].iter().map(|&n| Pin::Row(n)))
                 .collect()
+        };
+        let under = |c: usize| (offset..offset + pins.len()).contains(&c);
+        let pins = if cursor.is_some_and(under) {
+            Vec::new()
+        } else {
+            pins
         };
         View {
             pins,
@@ -529,7 +548,7 @@ impl Session {
     }
 
     /// A click on a row pinned at the top of the picker: the cursor goes to
-    /// the directory, a Group header opens its first file.
+    /// the directory; a Group header is clicked as in its place.
     pub(super) fn click_picker_pin(&mut self, row: &Row) {
         match row.at() {
             Some(at) => self.file_picker = Some(at),
@@ -623,16 +642,19 @@ impl Session {
             }
             Motion::FoldAll(folded) => {
                 self.fold_all(folded);
-                let rows = self.sidebar_rows();
-                self.panel.dir = match cursor_row(&rows, &At::File(self.selected), self.selected)
-                    .and_then(|r| rows[r].at())
-                {
+                self.panel.dir = match self.open_file_stop(&self.sidebar_rows()) {
                     Some(At::Dir(dir)) => Some(dir),
                     _ => None,
                 };
             }
         }
         true
+    }
+
+    /// Where a cursor stands to show the open file in `rows`: on the file,
+    /// or on the nearest directory that holds it when that is folded.
+    fn open_file_stop(&self, rows: &[Row]) -> Option<At> {
+        cursor_row(rows, &At::File(self.selected), self.selected).and_then(|r| rows[r].at())
     }
 
     /// `zM` / `zR`: fold every directory of every tree, or unfold them all.
@@ -704,10 +726,7 @@ impl Session {
             }
             Some(Motion::FoldAll(folded)) => {
                 self.fold_all(folded);
-                let rows = self.picker_rows();
-                self.file_picker = cursor_row(&rows, &At::File(self.selected), self.selected)
-                    .and_then(|r| rows[r].at())
-                    .or(Some(at));
+                self.file_picker = self.open_file_stop(&self.picker_rows()).or(Some(at));
             }
             None => {}
         }
@@ -767,7 +786,7 @@ impl Session {
         // The mark of a file is looked up once, however many rows count it.
         let mut marks: Vec<Option<Mark>> = vec![None; self.files.len()];
         let mut mark = |i: usize| *marks[i].get_or_insert_with(|| self.mark_of(i));
-        let view = View::new(rows, offset, capacity);
+        let view = View::new(rows, offset, capacity, cursor);
         for line in 0..capacity {
             let y = y + line as u16;
             match view.line(line) {
@@ -793,85 +812,82 @@ impl Session {
         lit: bool,
         mark: &mut dyn FnMut(usize) -> Mark,
     ) {
-        {
-            let mut style = Style::new().fg(self.theme().fg);
-            if lit {
-                style = style
-                    .bg(self.theme().cursor_bg)
-                    .add_modifier(Modifier::BOLD);
+        let mut style = Style::new().fg(self.theme().fg);
+        if lit {
+            style = style
+                .bg(self.theme().cursor_bg)
+                .add_modifier(Modifier::BOLD);
+        }
+        let marker = if lit { '>' } else { ' ' };
+        match row {
+            Row::Header(g) => self.render_group_row(buf, x, y, width, *g),
+            Row::Mechanical(_) => {
+                let line = file_tree::fit_head(" ── mechanical ──", width);
+                buf.set_stringn(x, y, line, width, Style::new().fg(self.theme().dim));
             }
-            let marker = if lit { '>' } else { ' ' };
-            match row {
-                Row::Header(g) => self.render_group_row(buf, x, y, width, *g),
-                Row::Mechanical(_) => {
-                    let line = file_tree::fit_head(" ── mechanical ──", width);
-                    buf.set_stringn(x, y, line, width, Style::new().fg(self.theme().dim));
+            Row::Tree {
+                line:
+                    Line::File {
+                        indent,
+                        name,
+                        index,
+                        ..
+                    },
+                ..
+            } => {
+                let file = &self.files[*index];
+                if *index == self.selected {
+                    style = style.add_modifier(Modifier::BOLD);
                 }
-                Row::Tree {
-                    line:
-                        Line::File {
-                            indent,
-                            name,
-                            index,
-                            ..
-                        },
-                    ..
-                } => {
-                    let file = &self.files[*index];
-                    if *index == self.selected {
-                        style = style.add_modifier(Modifier::BOLD);
-                    }
-                    // An unreviewed file still has a mark in that column, so
-                    // that a file stands level with the directories beside it.
-                    let reviewed = match mark(*index) {
-                        Mark::Reviewed => '✓',
-                        Mark::Partial => '◐',
-                        Mark::Unreviewed => '·',
-                    };
-                    let pad_in = " ".repeat(*indent);
-                    let line =
-                        format!("{marker}{pad_in}{reviewed} {} {name}", file.status.letter());
-                    buf.set_stringn(x, y, file_tree::pad(&line, width), width, style);
-                    let mark_x = x + (1 + indent) as u16;
-                    if reviewed == '·' && (mark_x as usize) < x as usize + width {
-                        buf.set_style(Rect::new(mark_x, y, 1, 1), style.fg(self.theme().dim));
-                    }
-                    let color = match file.status {
-                        Status::Added => self.theme().status_added,
-                        Status::Deleted => self.theme().status_deleted,
-                        Status::Modified => self.theme().status_modified,
-                        Status::Renamed => self.theme().status_renamed,
-                    };
-                    let letter = x + (1 + indent + 2) as u16;
-                    if (letter as usize) < x as usize + width {
-                        buf.set_style(Rect::new(letter, y, 1, 1), style.fg(color));
-                    }
+                // An unreviewed file still has a mark in that column, so
+                // that a file stands level with the directories beside it.
+                let reviewed = match mark(*index) {
+                    Mark::Reviewed => '✓',
+                    Mark::Partial => '◐',
+                    Mark::Unreviewed => '·',
+                };
+                let pad_in = " ".repeat(*indent);
+                let line = format!("{marker}{pad_in}{reviewed} {} {name}", file.status.letter());
+                buf.set_stringn(x, y, file_tree::pad(&line, width), width, style);
+                let mark_x = x + (1 + indent) as u16;
+                if reviewed == '·' && (mark_x as usize) < x as usize + width {
+                    buf.set_style(Rect::new(mark_x, y, 1, 1), style.fg(self.theme().dim));
                 }
-                Row::Tree {
-                    line:
-                        Line::Dir {
-                            indent,
-                            label,
-                            files,
-                            progress,
-                            ..
-                        },
-                    folded,
-                    ..
-                } => {
-                    let fold = if *folded { '▸' } else { '▾' };
-                    let head = format!("{marker}{}{fold} {label}", " ".repeat(*indent));
-                    let line = if *progress {
-                        let done = files.iter().filter(|&&i| mark(i) == Mark::Reviewed).count();
-                        let progress = format!("{done}/{}", files.len());
-                        let room = width.saturating_sub(progress.len() + 2);
-                        let head = file_tree::pad(&file_tree::fit_head(&head, room), room);
-                        format!("{head} {progress} ")
-                    } else {
-                        file_tree::pad(&file_tree::fit_head(&head, width), width)
-                    };
-                    buf.set_stringn(x, y, &line, width, style.fg(self.theme().directory));
+                let color = match file.status {
+                    Status::Added => self.theme().status_added,
+                    Status::Deleted => self.theme().status_deleted,
+                    Status::Modified => self.theme().status_modified,
+                    Status::Renamed => self.theme().status_renamed,
+                };
+                let letter = x + (1 + indent + 2) as u16;
+                if (letter as usize) < x as usize + width {
+                    buf.set_style(Rect::new(letter, y, 1, 1), style.fg(color));
                 }
+            }
+            Row::Tree {
+                line:
+                    Line::Dir {
+                        indent,
+                        label,
+                        files,
+                        progress,
+                        ..
+                    },
+                folded,
+                ..
+            } => {
+                let fold = if *folded { '▸' } else { '▾' };
+                let head = format!("{marker}{}{fold} {label}", " ".repeat(*indent));
+                let line = if *progress {
+                    let done = files.iter().filter(|&&i| mark(i) == Mark::Reviewed).count();
+                    let progress = format!("{done}/{}", files.len());
+                    let room = width.saturating_sub(progress.len() + 2);
+                    let head = file_tree::pad(&file_tree::fit_head(&head, room), room);
+                    format!("{head} {progress} ")
+                } else {
+                    file_tree::pad(&file_tree::fit_head(&head, width), width)
+                };
+                buf.set_stringn(x, y, &line, width, style.fg(self.theme().directory));
             }
         }
     }

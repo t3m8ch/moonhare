@@ -64,7 +64,12 @@ impl Session {
                 let inside =
                     (area.x + 1..(area.x + area.width).saturating_sub(1)).contains(&mouse.column);
                 if let Some(line) = row.filter(|_| inside) {
-                    let view = file_panel::View::new(&rows, offset, self.picker_capacity());
+                    let view = file_panel::View::new(
+                        &rows,
+                        offset,
+                        self.picker_capacity(),
+                        self.picker_cursor(&rows, &at),
+                    );
                     match view.line(line) {
                         Some(file_panel::Shown::Row(n)) => self.click_picker_row(&rows[n]),
                         Some(file_panel::Shown::Pinned(pin)) => {

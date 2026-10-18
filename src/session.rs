@@ -1348,6 +1348,7 @@ impl Session {
                         &rows,
                         self.sidebar_offset(),
                         self.sidebar_capacity(),
+                        self.sidebar_cursor(&rows),
                     );
                     match view.line(line) {
                         Some(file_panel::Shown::Row(n)) => self.click_sidebar_row(&rows[n]),
