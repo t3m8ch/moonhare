@@ -311,8 +311,14 @@ impl Session {
             return;
         };
         let area = self.overlay_area();
-        clear_area(buf, area);
-        draw_box(buf, area, &overlay.title);
-        scroll::render_lines(buf, area, &self.explain_lines(), &overlay.scroll);
+        clear_area(self.theme(), buf, area);
+        draw_box(self.theme(), buf, area, &overlay.title);
+        scroll::render_lines(
+            self.theme(),
+            buf,
+            area,
+            &self.explain_lines(),
+            &overlay.scroll,
+        );
     }
 }

@@ -249,6 +249,7 @@ impl Session {
         if let Some(model) = &settings.model {
             text.push_str(&format!("  model:{model}"));
         }
+        text.push_str(&self.theme_status());
         text
     }
 
@@ -539,10 +540,10 @@ impl Session {
             return;
         }
         let area = self.overlay_area();
-        clear_area(buf, area);
+        clear_area(self.theme(), buf, area);
         let (title, lines) = self.summary_view();
-        draw_box(buf, area, &title);
-        scroll::render_lines(buf, area, &lines, &self.analysis.scroll);
+        draw_box(self.theme(), buf, area, &title);
+        scroll::render_lines(self.theme(), buf, area, &lines, &self.analysis.scroll);
     }
 }
 

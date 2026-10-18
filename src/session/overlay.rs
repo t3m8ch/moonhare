@@ -18,11 +18,23 @@ impl Session {
         let y = self.size.1 - 1;
         let width = self.size.0 as usize;
         if let Mode::Command(cmd) = &self.mode {
-            buf.set_stringn(0, y, format!(":{cmd}█"), width, Style::new().fg(FG));
+            buf.set_stringn(
+                0,
+                y,
+                format!(":{cmd}█"),
+                width,
+                Style::new().fg(self.theme().fg),
+            );
             return;
         }
         if let Mode::Search(query) = &self.mode {
-            buf.set_stringn(0, y, format!("/{query}█"), width, Style::new().fg(FG));
+            buf.set_stringn(
+                0,
+                y,
+                format!("/{query}█"),
+                width,
+                Style::new().fg(self.theme().fg),
+            );
             return;
         }
         let context = match (self.pending, self.window(), self.commit_anchor) {
@@ -42,7 +54,7 @@ impl Session {
                 line = format!(" {group}  Space i: описание целиком  │{line}");
             }
         }
-        buf.set_stringn(0, y, line, width, Style::new().fg(DIM));
+        buf.set_stringn(0, y, line, width, Style::new().fg(self.theme().dim));
     }
 
     /// The help wrapped to the width of its box.
@@ -76,13 +88,14 @@ impl Session {
 
     pub(super) fn render_help(&self, buf: &mut Buffer, scroll: &scroll::Scroll) {
         let area = self.full_overlay_area();
-        clear_area(buf, area);
+        clear_area(self.theme(), buf, area);
         draw_box(
+            self.theme(),
             buf,
             area,
             " Справка (j/k, Ctrl-d/u, gg/G, колесо; Esc закрыть) ",
         );
-        scroll::render_lines(buf, area, &self.help_lines(), scroll);
+        scroll::render_lines(self.theme(), buf, area, &self.help_lines(), scroll);
     }
 
     pub(super) fn render_which_key(&self, buf: &mut Buffer, prefix: char) {
@@ -106,8 +119,8 @@ impl Session {
             width,
             height,
         );
-        clear_area(buf, area);
-        draw_box(buf, area, &title);
+        clear_area(self.theme(), buf, area);
+        draw_box(self.theme(), buf, area, &title);
         for (i, line) in lines
             .iter()
             .take(height.saturating_sub(2) as usize)
@@ -118,7 +131,7 @@ impl Session {
                 area.y + 1 + i as u16,
                 line,
                 width.saturating_sub(2) as usize,
-                Style::new().fg(FG),
+                Style::new().fg(self.theme().fg),
             );
         }
     }

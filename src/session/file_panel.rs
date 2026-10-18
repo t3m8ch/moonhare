@@ -545,16 +545,18 @@ impl Session {
         for (n, row) in rows.iter().enumerate().skip(offset).take(capacity) {
             let y = y + (n - offset) as u16;
             let lit = cursor == Some(n);
-            let mut style = Style::new().fg(FG);
+            let mut style = Style::new().fg(self.theme().fg);
             if lit {
-                style = style.bg(Color::Indexed(238)).add_modifier(Modifier::BOLD);
+                style = style
+                    .bg(self.theme().cursor_bg)
+                    .add_modifier(Modifier::BOLD);
             }
             let marker = if lit { '>' } else { ' ' };
             match row {
                 Row::Header(g) => self.render_group_row(buf, x, y, width, *g),
                 Row::Mechanical(_) => {
                     let line = file_tree::fit_head(" ── mechanical ──", width);
-                    buf.set_stringn(x, y, line, width, Style::new().fg(DIM));
+                    buf.set_stringn(x, y, line, width, Style::new().fg(self.theme().dim));
                 }
                 Row::Tree {
                     line:
@@ -583,13 +585,13 @@ impl Session {
                     buf.set_stringn(x, y, file_tree::pad(&line, width), width, style);
                     let mark_x = x + (1 + indent) as u16;
                     if reviewed == '·' && (mark_x as usize) < x as usize + width {
-                        buf.set_style(Rect::new(mark_x, y, 1, 1), style.fg(DIM));
+                        buf.set_style(Rect::new(mark_x, y, 1, 1), style.fg(self.theme().dim));
                     }
                     let color = match file.status {
-                        Status::Added => Color::Indexed(114),
-                        Status::Deleted => Color::Indexed(174),
-                        Status::Modified => Color::Indexed(179),
-                        Status::Renamed => Color::Indexed(110),
+                        Status::Added => self.theme().status_added,
+                        Status::Deleted => self.theme().status_deleted,
+                        Status::Modified => self.theme().status_modified,
+                        Status::Renamed => self.theme().status_renamed,
                     };
                     let letter = x + (1 + indent + 2) as u16;
                     if (letter as usize) < x as usize + width {
@@ -619,7 +621,7 @@ impl Session {
                     } else {
                         file_tree::pad(&file_tree::fit_head(&head, width), width)
                     };
-                    buf.set_stringn(x, y, &line, width, style.fg(Color::Indexed(110)));
+                    buf.set_stringn(x, y, &line, width, style.fg(self.theme().directory));
                 }
             }
         }
@@ -717,9 +719,14 @@ impl Session {
             return;
         };
         let area = self.overlay_area();
-        clear_area(buf, area);
+        clear_area(self.theme(), buf, area);
         let (name, _, _) = self.group_text(*n);
-        draw_box(buf, area, &format!(" Group {} {name} (Esc close) ", n + 1));
-        scroll::render_lines(buf, area, &self.group_info_lines(), scroll);
+        draw_box(
+            self.theme(),
+            buf,
+            area,
+            &format!(" Group {} {name} (Esc close) ", n + 1),
+        );
+        scroll::render_lines(self.theme(), buf, area, &self.group_info_lines(), scroll);
     }
 }

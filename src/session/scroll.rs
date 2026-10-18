@@ -93,7 +93,13 @@ pub(super) fn text_cols(area: Rect) -> usize {
 /// Draw the part of `lines` that `scroll` shows inside the border of `area`,
 /// and the position (`last row shown/rows in all`) on the bottom border when
 /// there is more than a page.
-pub(super) fn render_lines(buf: &mut Buffer, area: Rect, lines: &[String], scroll: &Scroll) {
+pub(super) fn render_lines(
+    theme: &Theme,
+    buf: &mut Buffer,
+    area: Rect,
+    lines: &[String],
+    scroll: &Scroll,
+) {
     let rows = text_rows(area);
     let width = text_cols(area);
     let top = scroll.top(lines.len(), rows);
@@ -103,7 +109,7 @@ pub(super) fn render_lines(buf: &mut Buffer, area: Rect, lines: &[String], scrol
             area.y + 1 + i as u16,
             line,
             width,
-            Style::new().fg(FG),
+            Style::new().fg(theme.fg),
         );
     }
     if lines.len() > rows && area.height >= 2 {
@@ -116,7 +122,7 @@ pub(super) fn render_lines(buf: &mut Buffer, area: Rect, lines: &[String], scrol
                 area.y + area.height - 1,
                 &label,
                 len as usize,
-                Style::new().fg(DIM),
+                Style::new().fg(theme.dim),
             );
         }
     }

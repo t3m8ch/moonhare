@@ -367,7 +367,9 @@ impl Session {
             y,
             line,
             width,
-            Style::new().fg(ACCENT).add_modifier(Modifier::BOLD),
+            Style::new()
+                .fg(self.theme().accent)
+                .add_modifier(Modifier::BOLD),
         );
     }
 }

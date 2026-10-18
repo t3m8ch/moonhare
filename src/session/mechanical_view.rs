@@ -38,7 +38,7 @@ impl Session {
             top,
             &text,
             (area.width as usize).saturating_sub(1),
-            Style::new().fg(DIM),
+            Style::new().fg(self.theme().dim),
         );
     }
 }
