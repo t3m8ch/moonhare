@@ -473,6 +473,8 @@ impl Session {
                 && !key.modifiers.contains(KeyModifiers::CONTROL)
             {
                 self.open_summary_diagram();
+            } else if key.code == KeyCode::Char('o') {
+                self.open_summary_diagram_outside();
             } else {
                 self.summary_diagram_key(key);
             }

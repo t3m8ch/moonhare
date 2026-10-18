@@ -83,6 +83,8 @@ pub(super) struct Diagrams {
     from_cache: HashSet<Key>,
     sender: Sender<Answer>,
     receiver: Receiver<Answer>,
+    /// What went wrong with a viewer started by `o`, once it exited.
+    viewer: (Sender<String>, Receiver<String>),
     /// The overlay is open on this diagram.
     open: Option<Key>,
     /// The diagram of the Summary is shown on the whole terminal: its
@@ -111,6 +113,7 @@ impl Default for Diagrams {
             from_cache: HashSet::new(),
             sender,
             receiver,
+            viewer: channel(),
             open: None,
             summary_full: None,
             full: false,
@@ -131,14 +134,7 @@ impl Session {
     /// `f` in the Summary: its diagram (the one the Analyst attached, else
     /// the first in its text) on the whole terminal.
     pub(super) fn open_summary_diagram(&mut self) {
-        let mermaid = self.current_summary().and_then(|(summary, _)| {
-            (summary.diagram.clone()).or_else(|| {
-                crate::markdown::fenced_blocks(&summary.text, "mermaid")
-                    .into_iter()
-                    .next()
-            })
-        });
-        let Some(mermaid) = mermaid else {
+        let Some(mermaid) = self.summary_mermaid() else {
             self.message = Some("The Summary has no diagram to show full screen".into());
             return;
         };
@@ -146,6 +142,81 @@ impl Session {
         self.diagrams.full = true;
         self.diagrams.view = Pan::default();
         self.diagrams.density = Density::Fit;
+    }
+
+    /// `o` in the Summary: its diagram in the system viewer.
+    pub(super) fn open_summary_diagram_outside(&mut self) {
+        match self.summary_mermaid() {
+            Some(mermaid) => self.open_outside(&mermaid),
+            None => self.message = Some("The Summary has no diagram to open".into()),
+        }
+    }
+
+    /// The diagram of the Summary: the one the Analyst attached, else the
+    /// first in its text.
+    fn summary_mermaid(&self) -> Option<String> {
+        self.current_summary().and_then(|(summary, _)| {
+            (summary.diagram.clone()).or_else(|| {
+                crate::markdown::fenced_blocks(&summary.text, "mermaid")
+                    .into_iter()
+                    .next()
+            })
+        })
+    }
+
+    /// Draw `mermaid` as SVG into a temporary file and hand it to the system
+    /// viewer (`open` on macOS, `xdg-open` elsewhere), which shows it as a
+    /// picture, at any zoom.
+    fn open_outside(&mut self, mermaid: &str) {
+        let svg = match crate::diagram::svg(mermaid) {
+            Ok(svg) => svg,
+            Err(e) => {
+                self.message = Some(format!("Cannot draw the diagram as SVG: {e}"));
+                return;
+            }
+        };
+        let path = match write_svg(&svg) {
+            Ok(path) => path,
+            Err(e) => {
+                self.message = Some(format!("Cannot write the SVG of the diagram: {e}"));
+                return;
+            }
+        };
+        let viewer = if cfg!(target_os = "macos") {
+            "open"
+        } else {
+            "xdg-open"
+        };
+        let child = std::process::Command::new(viewer)
+            .arg(&path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+        let mut child = match child {
+            Ok(child) => child,
+            Err(e) => {
+                let why = match e.kind() {
+                    std::io::ErrorKind::NotFound => format!("{viewer} is not installed"),
+                    _ => format!("{viewer}: {e}"),
+                };
+                self.message = Some(format!(
+                    "Cannot open the diagram: {why}; the SVG is {}",
+                    path.display()
+                ));
+                return;
+            }
+        };
+        self.message = Some(format!("Opened in the viewer: {}", path.display()));
+        let sender = self.diagrams.viewer.0.clone();
+        std::thread::spawn(move || {
+            let failure = match child.wait() {
+                Ok(status) if status.success() => return,
+                Ok(status) => format!("{viewer} failed, {status}"),
+                Err(e) => format!("{viewer} failed: {e}"),
+            };
+            let _ = sender.send(format!("{failure}; the SVG is {}", path.display()));
+        });
     }
 
     /// The Mermaid text of the diagram the overlay shows, if it came.
@@ -304,6 +375,9 @@ impl Session {
     pub(super) fn diagram_tick(&mut self) {
         while let Ok(answer) = self.diagrams.receiver.try_recv() {
             self.take_diagram(answer);
+        }
+        while let Ok(failure) = self.diagrams.viewer.1.try_recv() {
+            self.message = Some(failure);
         }
     }
 
@@ -471,6 +545,10 @@ impl Session {
                     self.copy_to_clipboard(&source, "the Mermaid source");
                 }
             }
+            KeyCode::Char('o') => match source {
+                Some(source) => self.open_outside(&source),
+                None => self.message = Some("The diagram has not come yet".into()),
+            },
             KeyCode::Enter if self.diagrams.density == Density::Overview => {
                 self.diagrams.density = Density::Fit;
             }
@@ -745,6 +823,19 @@ impl Session {
             None => picture,
         }
     }
+}
+
+/// Write `svg` to a temporary file that outlives the session: the viewer
+/// reads it after `o` returns.
+fn write_svg(svg: &str) -> std::io::Result<std::path::PathBuf> {
+    use std::io::Write;
+    let mut file = tempfile::Builder::new()
+        .prefix("moonhare-diagram-")
+        .suffix(".svg")
+        .tempfile()?;
+    file.write_all(svg.as_bytes())?;
+    let (_, path) = file.keep().map_err(|e| e.error)?;
+    Ok(path)
 }
 
 /// The density a picture is drawn at: the overview is made of the fitted one.
