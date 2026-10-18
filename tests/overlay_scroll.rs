@@ -55,10 +55,21 @@ fn session(width: u16, height: u16) -> Harness {
     h
 }
 
-/// The `shown/total` on the bottom border of an overlay, if there is one.
+/// The `shown/total` on the bottom border of an overlay, if there is one;
+/// a diagram names its rows as `строки first–shown / total`.
 fn position(screen: &str) -> Option<(usize, usize)> {
     let mut found = None;
     for row in screen.lines().filter(|r| r.contains('└')) {
+        if let Some((_, rows)) = row.split_once("строки ") {
+            let numbers: Vec<usize> = rows
+                .split(|c: char| !c.is_ascii_digit())
+                .filter_map(|n| n.parse().ok())
+                .collect();
+            if let [_, shown, total, ..] = numbers[..] {
+                found = Some((shown, total));
+            }
+            continue;
+        }
         let after = &row[row.rfind('└')?..];
         for word in after.split(['─', ' ', '┘']) {
             if let Some((a, b)) = word.split_once('/') {

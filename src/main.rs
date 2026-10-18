@@ -270,7 +270,9 @@ fn run(
             (None, false) => poll,
         }
         .min(poll);
-        let wake = if session.diff_pending() {
+        // A diff, or a picture of a diagram drawn in the background, shows
+        // as soon as it is there.
+        let wake = if session.diff_pending() || session.drawing_busy() {
             wake.min(DIFF_POLL)
         } else {
             wake
@@ -292,9 +294,16 @@ fn run(
             None => session.elapse(wake.max(last.elapsed())),
         };
         last = Instant::now();
-        let busy = session.analyst_busy() || session.forge_busy() || session.diff_pending();
+        let busy = session.analyst_busy()
+            || session.forge_busy()
+            || session.diff_pending()
+            || session.drawing_busy();
         session.tick();
-        redraw |= busy || session.analyst_busy() || session.forge_busy() || session.diff_pending();
+        redraw |= busy
+            || session.analyst_busy()
+            || session.forge_busy()
+            || session.diff_pending()
+            || session.drawing_busy();
         // `:set nomouse` hands the mouse back to the terminal.
         if session.mouse_enabled() != captured {
             captured = session.mouse_enabled();

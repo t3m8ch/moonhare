@@ -143,20 +143,17 @@ fn a_wide_group_diagram_scrolls_sideways_with_h_and_l() {
     h.session().wait_for_analyst();
     assert!(h.screen().contains("Node0"), "{}", h.screen());
 
-    h.keys("llllllllll");
+    h.keys("LL");
     assert!(!h.screen().contains("Node0"), "{}", h.screen());
-    h.keys("hhhhhhhhhh");
+    h.keys("0");
     assert!(h.screen().contains("Node0"), "{}", h.screen());
 }
 
+/// Fourteen nodes side by side: wider than the overlay however it is laid out.
 fn wide() -> String {
-    let mut text = String::from("graph LR\n");
+    let mut text = String::from("graph TD\n");
     for i in 0..14 {
-        text.push_str(&format!(
-            "    N{i}[Node{i}] --> N{}[Node{}]\n",
-            i + 1,
-            i + 1
-        ));
+        text.push_str(&format!("    Root --> N{i}[Node{i}]\n"));
     }
     text
 }

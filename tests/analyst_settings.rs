@@ -162,6 +162,10 @@ fn request(fx: &Fixture, settings: AnalystSettings) -> SummaryRequest {
         language: "en".into(),
         pull_request: None,
         settings,
+        room: moonhare::diagram::Room {
+            width: 96,
+            height: 26,
+        },
     }
 }
 

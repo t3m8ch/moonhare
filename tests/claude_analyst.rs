@@ -7,6 +7,7 @@ use std::os::unix::fs::PermissionsExt;
 
 use moonhare::analyst::{Analyst, AnalystError, DiagramRequest, DiagramSubject, SummaryRequest};
 use moonhare::claude::ClaudeAnalyst;
+use moonhare::diagram::Room;
 use support::{feature_branch, Fixture};
 use tempfile::TempDir;
 
@@ -66,6 +67,10 @@ fn request(fx: &Fixture) -> SummaryRequest {
         language: "ru".into(),
         pull_request: None,
         settings: Default::default(),
+        room: Room {
+            width: 96,
+            height: 26,
+        },
     }
 }
 
@@ -386,7 +391,40 @@ fn diagram_request(fx: &Fixture) -> DiagramRequest {
             line: 2,
         },
         settings: Default::default(),
+        room: Room {
+            width: 80,
+            height: 24,
+        },
     }
+}
+
+#[test]
+fn the_diagram_prompt_names_the_room_and_asks_for_a_compact_top_down_diagram() {
+    let fx = feature_branch();
+    let reply = serde_json::json!({
+        "type": "result", "is_error": false, "result": "",
+        "structured_output": { "mermaid": "graph TD\n A --> B" }
+    })
+    .to_string();
+    let fake = FakeClaude::replying(&reply);
+    fake.analyst().diagram(&diagram_request(&fx)).unwrap();
+
+    let prompt = fake.recorded("stdin");
+    assert!(prompt.contains("80 columns"), "{prompt}");
+    assert!(prompt.contains("24 rows"), "{prompt}");
+    assert!(prompt.contains("at most 4"), "{prompt}");
+    assert!(prompt.contains("flowchart TD"), "{prompt}");
+    assert!(prompt.contains("short labels"), "{prompt}");
+}
+
+#[test]
+fn the_summary_prompt_names_the_room_of_its_diagram() {
+    let fx = feature_branch();
+    let fake = FakeClaude::replying(&success("s"));
+    fake.analyst().summarize(&request(&fx)).unwrap();
+    let prompt = fake.recorded("stdin");
+    assert!(prompt.contains("96 columns"), "{prompt}");
+    assert!(prompt.contains("flowchart TD"), "{prompt}");
 }
 
 #[test]

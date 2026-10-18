@@ -324,6 +324,10 @@ impl Session {
             language: key.1.clone(),
             settings: self.analysis.settings.clone(),
             pull_request: self.pull_request.clone(),
+            room: crate::diagram::Room {
+                width: scroll::text_cols(self.overlay_area()),
+                height: scroll::text_rows(self.overlay_area()),
+            },
         };
         let sender = self.analysis.sender.clone();
         std::thread::spawn(move || {
@@ -352,12 +356,6 @@ impl Session {
         self.analysis.errors.remove(&key);
         self.analysis.built.retain(|k| *k != key);
         self.analysis.built.push(key.clone());
-        if let Some(mermaid) = &summary.diagram {
-            self.remember_drawing(mermaid);
-        }
-        for mermaid in crate::markdown::fenced_blocks(&summary.text, "mermaid") {
-            self.remember_drawing(&mermaid);
-        }
         self.analysis.cache.insert(key, summary);
     }
 
@@ -468,15 +466,20 @@ impl Session {
             let area = self.overlay_area();
             let (total, rows) = (self.summary_view().1.len(), scroll::text_rows(area));
             let mut scroll = self.analysis.scroll;
+            let plain = !key.modifiers.contains(KeyModifiers::CONTROL);
             if scroll.key(key, total, rows) {
                 self.analysis.scroll = scroll;
             } else if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
                 self.analysis.overlay = false;
-            } else if key.code == KeyCode::Char('y') {
+            } else if key.code == KeyCode::Char('y') && plain {
                 let source = self.summary_source().unwrap_or_default();
                 self.copy_to_clipboard(&source, "the Summary");
+            } else if key.code == KeyCode::Char('f') && plain {
+                self.open_summary_diagram();
+            } else if key.code == KeyCode::Char('o') && plain {
+                self.open_summary_diagram_outside();
             } else {
-                self.summary_diagram_key(key.code);
+                self.summary_diagram_key(key);
             }
             return true;
         }
@@ -583,9 +586,8 @@ impl Session {
     /// The Summary drawn from its Markdown, Mermaid blocks as diagrams, and
     /// the diagram the Analyst attached under it.
     fn summary_lines(&self, summary: &Summary, width: usize) -> Vec<Line<'static>> {
-        let pictures = |language: &str, code: &str| {
-            (language == "mermaid" && self.has_drawing(code)).then(|| self.drawing_lines(code))
-        };
+        let pictures =
+            |language: &str, code: &str| (language == "mermaid").then(|| self.drawing_lines(code));
         let mut lines = crate::markdown::render_with(self.theme(), &summary.text, width, &pictures);
         if let Some(mermaid) = &summary.diagram {
             lines.push(Line::default());

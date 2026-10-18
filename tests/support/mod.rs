@@ -137,6 +137,9 @@ pub fn feature_branch() -> Fixture {
 }
 
 /// Drives a [`Session`] without a real terminal.
+/// The viewer `o` is given in tests: a program that is nowhere.
+pub const NO_VIEWER: &str = "/nonexistent/moonhare-test-viewer";
+
 pub struct Harness {
     session: Session,
 }
@@ -148,6 +151,9 @@ impl Harness {
 
     pub fn from_session(mut session: Session) -> Self {
         session.wait_for_diff();
+        // No test starts a real viewer: `o` finds none, unless a test hands
+        // it a fake.
+        session.set_viewer(NO_VIEWER);
         Harness { session }
     }
 
@@ -168,10 +174,27 @@ impl Harness {
     /// `<CR>`, `<Tab>`, `<Space>`, `<lt>`, `<C-d>` and the like.
     pub fn keys(&mut self, notation: &str) -> &mut Self {
         for ev in parse_keys(notation) {
+            // The real loop draws a frame before each key: the pictures of
+            // diagrams it asks for are there when the key comes.
+            if self.session.shows_diagrams() {
+                self.settled_frame();
+            }
             self.session.handle(ev);
             self.session.wait_for_diff();
+            self.session.wait_for_pictures();
         }
         self
+    }
+
+    /// A frame once every picture of a diagram it asked for is drawn.
+    fn settled_frame(&mut self) -> Frame {
+        loop {
+            self.session.wait_for_pictures();
+            let frame = self.session.frame();
+            if !self.session.pictures_busy() {
+                return frame;
+            }
+        }
     }
 
     /// Like [`keys`](Self::keys), but without waiting for the diff of the
@@ -248,20 +271,44 @@ impl Harness {
         self.mouse(MouseEventKind::ScrollDown, column, row)
     }
 
+    /// The wheel turned down with Shift held: sideways in most terminals.
+    pub fn shift_wheel_down(&mut self, column: u16, row: u16) -> &mut Self {
+        self.mouse_with(MouseEventKind::ScrollDown, KeyModifiers::SHIFT, column, row)
+    }
+
+    /// A sideways wheel (or a touchpad), turned to the right.
+    pub fn wheel_right(&mut self, column: u16, row: u16) -> &mut Self {
+        self.mouse(MouseEventKind::ScrollRight, column, row)
+    }
+
     fn mouse(&mut self, kind: MouseEventKind, column: u16, row: u16) -> &mut Self {
+        self.mouse_with(kind, KeyModifiers::NONE, column, row)
+    }
+
+    fn mouse_with(
+        &mut self,
+        kind: MouseEventKind,
+        modifiers: KeyModifiers,
+        column: u16,
+        row: u16,
+    ) -> &mut Self {
+        if self.session.shows_diagrams() {
+            self.settled_frame();
+        }
         self.session.handle(Event::Mouse(MouseEvent {
             kind,
             column,
             row,
-            modifiers: KeyModifiers::NONE,
+            modifiers,
         }));
         self.session.wait_for_diff();
+        self.session.wait_for_pictures();
         self
     }
 
     pub fn frame(&mut self) -> Frame {
         self.session.wait_for_diff();
-        self.session.frame()
+        self.settled_frame()
     }
 
     /// The frame as text, rows joined by newlines, trailing blanks trimmed.

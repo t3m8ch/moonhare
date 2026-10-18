@@ -14,8 +14,10 @@ use serde_json::{json, Value};
 use crate::analyst::{Diagram, Explanation, Group, Grouping, Summary};
 use crate::review::digest;
 
-/// Bump when a prompt or the shape of an answer changes: older entries stop
-/// matching and are evicted in time.
+/// Bump when the shape of an answer changes: older entries stop matching and
+/// are evicted in time. It is part of every key, so a bump makes every answer
+/// cost tokens again; when only one prompt changes, version that kind of
+/// answer in its own key instead (as the diagram's does).
 pub const FORMAT_VERSION: u32 = 1;
 
 const HEADER: &str = "moonhare-analyst-cache";
@@ -208,5 +210,46 @@ impl AnalystCache {
 
     pub fn store_diagram(&self, key: &str, diagram: &Diagram) {
         self.store(key, &json!({ "mermaid": diagram.mermaid }));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Write an entry as version 1 wrote it, by hand: what an earlier run
+    /// left on the disk.
+    fn written_by_version_1(cache: &AnalystCache, key: &str, answer: &str) {
+        std::fs::create_dir_all(&cache.dir).unwrap();
+        let text = format!("moonhare-analyst-cache 1\n{key}\n{answer}");
+        std::fs::write(cache.dir.join(digest(key)), text).unwrap();
+    }
+
+    #[test]
+    fn summaries_groups_and_explanations_of_version_1_still_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let cache = AnalystCache::new(dir.path());
+        written_by_version_1(
+            &cache,
+            "summary\u{1}v1\u{1}base\u{1}head\u{1}en",
+            r#"{"text":"Kept","diagram":null}"#,
+        );
+        written_by_version_1(
+            &cache,
+            "groups\u{1}v1\u{1}base\u{1}head\u{1}en",
+            r#"{"groups":[{"name":"G","description":"d","mechanical":false,"files":["a"]}]}"#,
+        );
+        written_by_version_1(
+            &cache,
+            "explain-file\u{1}v1\u{1}en\u{1}a",
+            r#"{"text":"Explained"}"#,
+        );
+
+        let summary = cache.load_summary(&AnalystCache::key("summary", &["base", "head", "en"]));
+        assert_eq!(summary.unwrap().text, "Kept");
+        let grouping = cache.load_grouping(&AnalystCache::key("groups", &["base", "head", "en"]));
+        assert_eq!(grouping.unwrap().groups[0].name, "G");
+        let explanation = cache.load_explanation(&AnalystCache::key("explain-file", &["en", "a"]));
+        assert_eq!(explanation.unwrap().text, "Explained");
     }
 }

@@ -258,6 +258,23 @@ fn a_diagram_is_cached() {
 }
 
 #[test]
+fn the_size_of_the_window_is_no_part_of_the_key_of_a_diagram() {
+    let fx = feature_branch();
+    let fake = FakeClaude::new();
+    let mut first = fake.session(&fx);
+    first.keys(":diagram<CR>");
+    first.session().wait_for_analyst();
+    let calls = fake.calls();
+
+    let mut second = fake.session(&fx);
+    second.resize(200, 60);
+    second.keys(":diagram<CR>");
+    second.session().wait_for_analyst();
+    assert_eq!(fake.calls(), calls);
+    assert!(second.screen().contains("cached"), "{}", second.screen());
+}
+
+#[test]
 fn an_explanation_of_a_file_is_asked_again_once_its_content_changed() {
     let fx = feature_branch();
     let fake = FakeClaude::new();

@@ -37,6 +37,8 @@ impl Session {
             area
         } else if self.prompt_view.is_some() || self.help.is_some() {
             full
+        } else if self.diagram_open() && !self.group_info_open() && !self.explain_open() {
+            return Some(self.diagram_place().text);
         } else if self.group_info_open()
             || self.explain_open()
             || self.diagram_open()
@@ -52,6 +54,17 @@ impl Session {
             area.width.saturating_sub(4),
             area.height.saturating_sub(2),
         ))
+    }
+
+    /// Whether the Summary is the overlay on top.
+    fn summary_on_top(&self) -> bool {
+        self.summary_open()
+            && self.editor_popup().is_none()
+            && self.prompt_view.is_none()
+            && self.help.is_none()
+            && !self.group_info_open()
+            && !self.explain_open()
+            && !self.diagram_open()
     }
 
     /// Whether an overlay covers the windows.
@@ -115,6 +128,34 @@ impl Session {
             )
         };
         let inside = rect.contains((mouse.column, mouse.row).into());
+        let shift = mouse.modifiers.contains(KeyModifiers::SHIFT);
+        let sideways = |kind: MouseEventKind| match kind {
+            MouseEventKind::ScrollDown if shift => Some(true),
+            MouseEventKind::ScrollUp if shift => Some(false),
+            MouseEventKind::ScrollRight => Some(true),
+            MouseEventKind::ScrollLeft => Some(false),
+            _ => None,
+        };
+        let wheel = match mouse.kind {
+            MouseEventKind::ScrollDown => Some(true),
+            MouseEventKind::ScrollUp => Some(false),
+            _ => None,
+        };
+        if self.diagram_open() && (wheel.is_some() || sideways(mouse.kind).is_some()) {
+            self.mouse.text = None;
+            match sideways(mouse.kind) {
+                Some(forward) => self.diagram_wheel(forward, true),
+                None => self.diagram_wheel(wheel == Some(true), false),
+            }
+            return true;
+        }
+        if let Some(forward) = sideways(mouse.kind) {
+            if self.summary_on_top() {
+                self.mouse.text = None;
+                self.summary_diagram_wheel(forward);
+            }
+            return true;
+        }
         match mouse.kind {
             MouseEventKind::ScrollDown => self.scroll_overlay(true),
             MouseEventKind::ScrollUp => self.scroll_overlay(false),
@@ -218,8 +259,6 @@ impl Session {
             self.group_info_lines().len()
         } else if self.explain_open() {
             self.explain_lines().len()
-        } else if self.diagram_open() {
-            self.open_lines().len()
         } else if self.summary_open() {
             self.summary_view().1.len()
         } else {
@@ -239,8 +278,6 @@ impl Session {
             self.group_info_scroll_mut()
         } else if self.explain_open() {
             self.explain_scroll_mut()
-        } else if self.diagram_open() {
-            self.diagram_scroll_mut()
         } else {
             self.summary_scroll_mut()
         }
