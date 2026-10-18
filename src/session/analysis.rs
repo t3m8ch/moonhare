@@ -324,6 +324,10 @@ impl Session {
             language: key.1.clone(),
             settings: self.analysis.settings.clone(),
             pull_request: self.pull_request.clone(),
+            room: crate::diagram::Room {
+                width: scroll::text_cols(self.overlay_area()),
+                height: scroll::text_rows(self.overlay_area()),
+            },
         };
         let sender = self.analysis.sender.clone();
         std::thread::spawn(move || {

@@ -282,6 +282,7 @@ impl Session {
             language: key.1.clone(),
             settings: self.analysis.settings.clone(),
             subject: key.2.clone(),
+            room: self.diagram_room_windowed(),
         };
         let cache = self.analyst_cache.clone();
         let cache_key = diagram_cache_key(&request);
@@ -630,6 +631,16 @@ impl Session {
         Size {
             cols: text.width as usize,
             rows: text.height as usize,
+        }
+    }
+
+    /// The room of the overlay in its window, whether or not it is full
+    /// screen now: what a diagram is asked for.
+    fn diagram_room_windowed(&self) -> Room {
+        let area = self.overlay_area();
+        Room {
+            width: scroll::text_cols(area),
+            height: scroll::text_rows(area),
         }
     }
 

@@ -14,6 +14,7 @@ use crate::analyst::{
     ExplainRequest, ExplainTarget, Explanation, Group, GroupRequest, Grouping, Summary,
     SummaryRequest,
 };
+use crate::diagram::Room;
 
 /// The shape the answer must have; `claude` validates it.
 const SCHEMA: &str = r#"{"type":"object","properties":{"summary":{"type":"string"},"diagram":{"type":"string","description":"Mermaid text, only when the interaction of components changed"}},"required":["summary"],"additionalProperties":false}"#;
@@ -256,14 +257,29 @@ fn prompt(request: &SummaryRequest, tree: &Path) -> String {
          below does and why, for a human who is about to review it. The files at the head of the change are in \
          {tree}; you may read and search them, nothing else.\n\n\
          If the change alters how components interact, also give `diagram`: a \
-         Mermaid sequence diagram or flowchart of that interaction, compact: at \
-         most 5-6 participants and short labels. Leave `diagram` out otherwise.\n\n\
+         Mermaid sequence diagram or flowchart of that interaction. {rules} \
+         Leave `diagram` out otherwise.\n\n\
          Language: {language}\n\n\
          {pull_request}\
          Commits:\n{commits}\n\
          Diff:\n{diff}",
         language = request.language,
         tree = tree.display(),
+        rules = diagram_rules(request.room),
+    )
+}
+
+/// What keeps a diagram readable in the terminal window it is drawn in:
+/// boxes side by side cost about 20 columns each.
+fn diagram_rules(room: Room) -> String {
+    let side_by_side = (room.width / 20).clamp(2, 6);
+    format!(
+        "It is drawn with box-drawing characters in a terminal window of {} columns \
+         and {} rows, so keep it that small: at most {side_by_side} participants or \
+         nodes side by side, short labels (a few words, under 20 characters), a \
+         flowchart top-down (`flowchart TD`) unless the point is a left-to-right \
+         pipeline.",
+        room.width, room.height
     )
 }
 
@@ -288,14 +304,14 @@ fn diagram_prompt(request: &DiagramRequest, tree: &Path) -> String {
     format!(
         "You are the Analyst of a code review tool. Draw {what} for a human who \
          is about to review it: a Mermaid sequence diagram if the point is an \
-         exchange between components over time, otherwise a flowchart. Be \
-         compact: at most 5-6 participants or nodes and short labels. Answer \
-         with Mermaid text only, in `mermaid`. The files at the head of the \
+         exchange between components over time, otherwise a flowchart. \
+         {rules} Answer with Mermaid text only, in `mermaid`. The files at the head of the \
          change are in {tree}; you may read and search them, nothing else.\n\n\
          Language: {language}\n\n\
          Diff:\n{diff}",
         language = request.language,
         tree = tree.display(),
+        rules = diagram_rules(request.room),
     )
 }
 

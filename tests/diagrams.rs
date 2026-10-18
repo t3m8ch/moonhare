@@ -76,6 +76,14 @@ fn diagram_command_draws_the_diagram_of_the_file_under_the_cursor() {
             path: "README.md".into()
         }
     );
+    // The room it will be shown in, inside the border of the overlay.
+    assert_eq!(
+        analyst.requests()[0].room,
+        moonhare::diagram::Room {
+            width: 92,
+            height: 24
+        }
+    );
 }
 
 #[test]

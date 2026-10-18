@@ -3,6 +3,7 @@
 //! Nothing here knows which agent does the work. A new Analyst is a new
 //! implementation of [`Analyst`]; the first one is [`crate::claude`].
 
+use crate::diagram::Room;
 use std::fmt;
 use std::path::PathBuf;
 
@@ -34,6 +35,9 @@ pub struct SummaryRequest {
     pub pull_request: Option<PullRequest>,
     /// Effort and model for this request.
     pub settings: AnalystSettings,
+    /// The cells a diagram of the Summary is shown in: a hint to keep it
+    /// small, not part of what the answer is cached under.
+    pub room: Room,
 }
 
 /// The Analyst's account of what a Range changes and why.
@@ -67,6 +71,10 @@ pub struct DiagramRequest {
     pub subject: DiagramSubject,
     /// Effort and model for this request.
     pub settings: AnalystSettings,
+    /// The cells the diagram is shown in: a hint to keep it small, not part
+    /// of what the answer is cached under (moonhare fits the picture to the
+    /// window itself, whatever its size).
+    pub room: Room,
 }
 
 /// A sequence or flowchart diagram as Mermaid text.
