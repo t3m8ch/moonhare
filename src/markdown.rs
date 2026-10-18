@@ -51,6 +51,14 @@ pub fn fenced_blocks(source: &str, language: &str) -> Vec<String> {
     found
 }
 
+/// `source` as one line of plain text, for a hint: the words without the
+/// marks.
+pub fn one_line(source: &str) -> String {
+    let mut words = Vec::new();
+    flatten(&parse(source), &mut words);
+    words.join(" ")
+}
+
 /// The text of the lines as the screen shows it.
 pub fn plain(lines: &[Line]) -> Vec<String> {
     lines
@@ -218,7 +226,9 @@ impl Builder {
                 let style = self.style().patch(code_style());
                 self.push_text(&text, style)
             }
-            Event::SoftBreak => self.push_text(" ", self.style()),
+            // The Analyst breaks lines where it means to, as in a comment on
+            // GitHub: a line break in a paragraph stays.
+            Event::SoftBreak => self.push_text("\n", self.style()),
             Event::HardBreak => self.push_text("\n", self.style()),
             Event::Rule => {
                 self.flush();
@@ -365,6 +375,34 @@ fn clean(text: &str) -> String {
             c => c,
         })
         .collect()
+}
+
+fn flatten(blocks: &[Block], out: &mut Vec<String>) {
+    let text = |inline: &Inline| -> String {
+        let joined: String = inline.iter().map(|(t, _)| t.as_str()).collect();
+        joined.split_whitespace().collect::<Vec<_>>().join(" ")
+    };
+    for block in blocks {
+        match block {
+            Block::Text(inline) | Block::Heading(inline) => out.push(text(inline)),
+            Block::List { items, .. } => {
+                for item in items {
+                    flatten(item, out);
+                }
+            }
+            Block::Quote(blocks) => flatten(blocks, out),
+            Block::Code { code, .. } => {
+                out.push(clean(code).split_whitespace().collect::<Vec<_>>().join(" "))
+            }
+            Block::Rule => {}
+            Block::Table { head, rows, .. } => {
+                for row in std::iter::once(head).chain(rows) {
+                    out.push(row.iter().map(text).collect::<Vec<_>>().join(" · "));
+                }
+            }
+        }
+    }
+    out.retain(|w| !w.is_empty());
 }
 
 fn collect_fenced(blocks: &[Block], language: &str, found: &mut Vec<String>) {
@@ -816,6 +854,11 @@ mod tests {
     }
 
     #[test]
+    fn a_line_break_in_a_paragraph_stays() {
+        assert_eq!(text("one\ntwo", 40), ["one", "two"]);
+    }
+
+    #[test]
     fn paragraphs_wrap_at_spaces() {
         assert_eq!(
             text("one two three four five", 9),
@@ -872,6 +915,14 @@ mod tests {
             .add_modifier
             .contains(Modifier::UNDERLINED));
         assert!(style_of(&lines, "https").fg.is_some());
+    }
+
+    #[test]
+    fn one_line_has_the_words_without_the_marks() {
+        assert_eq!(
+            one_line("## Риски\n\nЭто **важно**.\n\n- `a`\n- b\n\n| x | y |\n|---|---|\n| 1 | 2 |"),
+            "Риски Это важно. a b x · y 1 · 2"
+        );
     }
 
     #[test]
@@ -988,4 +1039,3 @@ mod tests {
         }
     }
 }
-

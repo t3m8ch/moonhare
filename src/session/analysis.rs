@@ -8,6 +8,8 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
+use ratatui::text::Line;
+
 use super::diagram::clear_area;
 use super::*;
 use crate::analyst::{
@@ -314,6 +316,9 @@ impl Session {
         if let Some(mermaid) = &summary.diagram {
             self.remember_drawing(mermaid);
         }
+        for mermaid in crate::markdown::fenced_blocks(&summary.text, "mermaid") {
+            self.remember_drawing(&mermaid);
+        }
         self.analysis.cache.insert(key, summary);
     }
 
@@ -428,6 +433,9 @@ impl Session {
                 self.analysis.scroll = scroll;
             } else if matches!(key.code, KeyCode::Esc | KeyCode::Char('q')) {
                 self.analysis.overlay = false;
+            } else if key.code == KeyCode::Char('y') {
+                let source = self.summary_source().unwrap_or_default();
+                self.copy_to_clipboard(&source, "the Summary");
             } else {
                 self.summary_diagram_key(key.code);
             }
@@ -485,8 +493,21 @@ impl Session {
         (self.analysis.head.clone(), self.analysis.language.clone())
     }
 
-    /// The title of the Summary overlay and its text, wrapped to the box.
-    pub(super) fn summary_view(&self) -> (String, Vec<String>) {
+    /// The Markdown of the Summary shown, with its diagram as a Mermaid block.
+    fn summary_source(&self) -> Option<String> {
+        let (summary, _) = self.current_summary()?;
+        Some(match &summary.diagram {
+            Some(mermaid) => format!(
+                "{}\n\n```mermaid\n{}\n```\n",
+                summary.text.trim_end(),
+                mermaid.trim_end()
+            ),
+            None => summary.text.clone(),
+        })
+    }
+
+    /// The title of the Summary overlay and its text, laid out for the box.
+    pub(super) fn summary_view(&self) -> (String, Vec<Line<'static>>) {
         let inner_w = scroll::text_cols(self.overlay_area());
         let language = &self.analysis.language;
         let shown = self.current_summary();
@@ -499,7 +520,9 @@ impl Session {
             _ => format!(" Summary [{language}] "),
         };
         let text = match shown {
-            Some((summary, _)) => summary.text.clone(),
+            Some((summary, _)) => {
+                return (title, self.summary_lines(summary, inner_w));
+            }
             None if self.analysis.analyst.is_none() => {
                 "No Analyst is configured: there is no Summary.".to_string()
             }
@@ -515,19 +538,21 @@ impl Session {
             }
             None => "There is no Summary yet. :analyze builds it.".to_string(),
         };
-        let mut lines = wrap(&text, inner_w);
-        if let Some((
-            Summary {
-                diagram: Some(mermaid),
-                ..
-            },
-            _,
-        )) = shown
-        {
-            lines.push(String::new());
-            lines.extend(self.drawing_lines(mermaid));
+        (title, plain_lines(&text, inner_w))
+    }
+
+    /// The Summary drawn from its Markdown, Mermaid blocks as diagrams, and
+    /// the diagram the Analyst attached under it.
+    fn summary_lines(&self, summary: &Summary, width: usize) -> Vec<Line<'static>> {
+        let pictures = |language: &str, code: &str| {
+            (language == "mermaid" && self.has_drawing(code)).then(|| self.drawing_lines(code))
+        };
+        let mut lines = crate::markdown::render_with(&summary.text, width, &pictures);
+        if let Some(mermaid) = &summary.diagram {
+            lines.push(Line::default());
+            lines.extend(self.drawing_lines(mermaid).into_iter().map(Line::from));
         }
-        (title, lines)
+        lines
     }
 
     pub(super) fn summary_scroll_mut(&mut self) -> Option<&mut scroll::Scroll> {
@@ -542,8 +567,13 @@ impl Session {
         clear_area(buf, area);
         let (title, lines) = self.summary_view();
         draw_box(buf, area, &title);
-        scroll::render_lines(buf, area, &lines, &self.analysis.scroll);
+        scroll::render_styled(buf, area, &lines, &self.analysis.scroll);
     }
+}
+
+/// A message that is not Markdown, wrapped to `width`.
+pub(super) fn plain_lines(text: &str, width: usize) -> Vec<Line<'static>> {
+    wrap(text, width).into_iter().map(Line::from).collect()
 }
 
 /// Break `text` into lines of at most `width` characters, at spaces; a word

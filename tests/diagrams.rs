@@ -139,7 +139,7 @@ fn the_summary_has_no_diagram_when_the_analyst_attached_none() {
 }
 
 #[test]
-fn the_summary_diagram_scrolls_with_h_and_l_and_copies_with_y() {
+fn the_summary_diagram_scrolls_with_h_and_l_and_y_copies_it_with_the_summary() {
     let fx = feature_branch();
     let analyst = with_summary_diagram(Some(WIDE));
     let mut h = review_with(&fx, &analyst);
@@ -150,8 +150,15 @@ fn the_summary_diagram_scrolls_with_h_and_l_and_copies_with_y() {
     h.keys("llllllll");
     assert!(h.screen().contains("Foxtrot"), "{}", h.screen());
 
+    // y copies the Markdown of the Summary, the diagram as a Mermaid block.
     h.keys("y");
-    assert_eq!(h.copied(), vec![WIDE.to_string()]);
+    let copied = h.copied();
+    assert_eq!(copied.len(), 1);
+    assert!(copied[0].starts_with("Summary text"), "{copied:?}");
+    assert!(
+        copied[0].ends_with(&format!("```mermaid\n{}\n```\n", WIDE.trim_end())),
+        "{copied:?}"
+    );
 
     h.keys("q<Space>s");
     assert!(h.screen().contains("Alpha"), "{}", h.screen());
