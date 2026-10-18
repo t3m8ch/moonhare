@@ -27,17 +27,28 @@ pub(super) struct Folds {
 }
 
 impl Session {
-    /// Fold the built layout again with the lines revealed in it.
+    /// Fold the built layout again with the lines revealed in it. The last
+    /// line of a Comment is never folded away, so the Comment stays in view.
     pub(super) fn refold(&mut self) {
         let set = self
             .diff_key(self.selected)
             .and_then(|k| self.folds.revealed.get(&k));
-        let revealed: Vec<bool> = match set {
-            Some(set) => (0..self.folds.changed.len())
-                .map(|e| !self.folds.changed[e] && set.contains(&self.entry_lines(e)))
-                .collect(),
-            None => vec![],
-        };
+        let commented: HashSet<(Side, usize)> = self
+            .comments
+            .all()
+            .iter()
+            .filter_map(|c| self.place_of(c))
+            .map(|(side, _, end)| (side, end))
+            .collect();
+        let revealed: Vec<bool> = (0..self.folds.changed.len())
+            .map(|e| {
+                let (old, new) = self.entry_lines(e);
+                !self.folds.changed[e]
+                    && (set.is_some_and(|s| s.contains(&(old, new)))
+                        || old.is_some_and(|l| commented.contains(&(Side::Old, l)))
+                        || new.is_some_and(|l| commented.contains(&(Side::New, l))))
+            })
+            .collect();
         self.view = fold(&self.folds.changed, &revealed);
     }
 
@@ -50,18 +61,15 @@ impl Session {
 
     /// Whether the diff cursor stands on a fold.
     pub(super) fn on_fold(&self) -> bool {
-        matches!(
-            self.view.items.get(self.vp.cursor),
-            Some(Item::Fold { .. })
-        )
+        matches!(self.view.items.get(self.vp.cursor), Some(Item::Fold { .. }))
     }
 
     /// `zo`, `zO`, `za`, `zc`, `zR` and `zM` in the diff pane.
     pub(super) fn diff_fold_command(&mut self, command: char) {
-        if self.view.items.is_empty() {
+        let Some(&item) = self.view.items.get(self.vp.cursor) else {
             return;
-        }
-        match (command, self.view.items[self.vp.cursor]) {
+        };
+        match (command, item) {
             ('o' | 'a', Item::Fold { from, len }) => self.open_fold(from, len, false),
             ('O', Item::Fold { from, len }) => self.open_fold(from, len, true),
             ('c' | 'a', Item::Line(e)) => self.close_fold(e),
@@ -130,7 +138,9 @@ impl Session {
             return;
         }
         let start = (0..e).rev().find(|&k| changed[k]).map_or(0, |k| k + 1);
-        let end = (e..changed.len()).find(|&k| changed[k]).unwrap_or(changed.len());
+        let end = (e..changed.len())
+            .find(|&k| changed[k])
+            .unwrap_or(changed.len());
         if !self.reveal(&(start..end).collect::<Vec<_>>(), false) {
             self.message = Some("No revealed lines here".into());
             return;

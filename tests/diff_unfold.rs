@@ -52,8 +52,7 @@ fn number_of(screen: &str, n: usize) -> Option<usize> {
     let gutter = &row[..row.rfind(&code)?];
     gutter
         .split([' ', '│'])
-        .filter(|t| !t.is_empty())
-        .next_back()?
+        .rfind(|t| !t.is_empty())?
         .parse()
         .ok()
 }
@@ -68,7 +67,10 @@ fn enter_on_a_small_fold_reveals_it_whole_with_numbers_and_highlighting() {
         h.keys("<CR>");
         let screen = h.screen();
         assert!(!screen.contains("26 unchanged"), "{layout}:\n{screen}");
-        assert!(screen.contains("⋯ 33 unchanged lines"), "{layout}: the other stays");
+        assert!(
+            screen.contains("⋯ 33 unchanged lines"),
+            "{layout}: the other stays"
+        );
         for n in [1, 13, 26] {
             assert_eq!(number_of(&screen, n), Some(n), "{layout}:\n{screen}");
         }
@@ -77,7 +79,11 @@ fn enter_on_a_small_fold_reveals_it_whole_with_numbers_and_highlighting() {
         let (x1, y1) = frame.find("let v001").unwrap();
         let (x27, y27) = frame.find("let v027").unwrap();
         assert_eq!(frame.fg_at(x1, y1), frame.fg_at(x27, y27), "{layout}");
-        assert_ne!(frame.fg_at(x1 + 4, y1), frame.fg_at(x1, y1), "{layout}: highlighted");
+        assert_ne!(
+            frame.fg_at(x1 + 4, y1),
+            frame.fg_at(x1, y1),
+            "{layout}: highlighted"
+        );
         assert!(cursor_row(&mut h).contains("let v001"), "{layout}");
     }
 }
@@ -103,7 +109,10 @@ fn zo_reveals_a_big_fold_a_chunk_at_a_time_from_the_side_the_cursor_came() {
     assert!(screen.contains("⋯ 63 unchanged lines"), "{screen}");
     assert!(shown(&screen, 14) && shown(&screen, 33), "{screen}");
     assert!(!shown(&screen, 34), "{screen}");
-    assert!(cursor_row(&mut h).contains("⋯ 63 unchanged lines"), "stays on the fold");
+    assert!(
+        cursor_row(&mut h).contains("⋯ 63 unchanged lines"),
+        "stays on the fold"
+    );
     // Enter does the same.
     h.keys("<CR>");
     assert!(h.screen().contains("⋯ 43 unchanged lines"));
@@ -146,7 +155,10 @@ fn zc_and_za_fold_revealed_lines_back() {
         assert!(cursor_row(&mut h).contains("let v006"), "{layout}");
         h.keys("zc");
         let screen = h.screen();
-        assert!(screen.contains("⋯ 26 unchanged lines"), "{layout}:\n{screen}");
+        assert!(
+            screen.contains("⋯ 26 unchanged lines"),
+            "{layout}:\n{screen}"
+        );
         assert!(!shown(&screen, 6), "{layout}");
         assert!(cursor_row(&mut h).contains("⋯ 26 unchanged"), "{layout}");
 
@@ -154,7 +166,10 @@ fn zc_and_za_fold_revealed_lines_back() {
         assert!(!h.screen().contains("26 unchanged"), "{layout}: za opens");
         h.keys("10j");
         h.keys("za");
-        assert!(h.screen().contains("⋯ 26 unchanged lines"), "{layout}: za folds");
+        assert!(
+            h.screen().contains("⋯ 26 unchanged lines"),
+            "{layout}: za folds"
+        );
 
         // Nothing revealed around a changed line.
         h.keys("]h");
@@ -179,9 +194,18 @@ fn capital_zr_reveals_every_fold_of_the_file_and_capital_zm_folds_them_back() {
         assert!(cursor_row(&mut h).contains("let v050"), "{layout}");
         h.keys("zM");
         let screen = h.screen();
-        assert!(screen.contains("⋯ 26 unchanged lines"), "{layout}:\n{screen}");
-        assert!(screen.contains("⋯ 33 unchanged lines"), "{layout}:\n{screen}");
-        assert!(cursor_row(&mut h).contains("⋯ 33 unchanged"), "{layout}: on the fold of 50");
+        assert!(
+            screen.contains("⋯ 26 unchanged lines"),
+            "{layout}:\n{screen}"
+        );
+        assert!(
+            screen.contains("⋯ 33 unchanged lines"),
+            "{layout}:\n{screen}"
+        );
+        assert!(
+            cursor_row(&mut h).contains("⋯ 33 unchanged"),
+            "{layout}: on the fold of 50"
+        );
     }
 }
 
@@ -198,4 +222,118 @@ fn a_click_on_a_fold_reveals_it() {
         assert!(screen.contains("⋯ 26 unchanged lines"), "{layout}");
         assert!(h.copied().is_empty(), "{layout}: a click copies nothing");
     }
+}
+
+/// `rows.rs` as in [`small_folds`], and a second changed file after it.
+fn two_files() -> Fixture {
+    let fx = small_folds();
+    fx.write("zz.txt", "new\n").commit("add zz");
+    fx
+}
+
+#[test]
+fn revealed_lines_survive_other_files_a_resize_and_a_layout_switch() {
+    let fx = two_files();
+    let mut h = Harness::open(&fx, 160, 50);
+    h.keys("<CR>]f");
+    assert!(h.screen().contains("zz.txt"));
+    h.keys("[f");
+    let screen = h.screen();
+    assert!(!screen.contains("26 unchanged"), "{screen}");
+    assert!(screen.contains("⋯ 33 unchanged lines"));
+
+    // Narrow enough for inline, then back.
+    h.resize(100, 40);
+    let screen = h.screen();
+    assert!(screen.contains("layout:inline"), "{screen}");
+    assert!(
+        !screen.contains("26 unchanged") && shown(&screen, 5),
+        "{screen}"
+    );
+    h.keys("s");
+    assert!(!h.screen().contains("26 unchanged"));
+    h.resize(160, 50);
+    assert!(!h.screen().contains("26 unchanged"));
+}
+
+#[test]
+fn another_scope_starts_folded_and_coming_back_finds_the_lines_revealed() {
+    let fx = two_files();
+    let mut h = Harness::open(&fx, 160, 50);
+    h.keys("<CR>");
+    // Commit 1 is the change of rows.rs alone: other versions, other folds.
+    h.keys(":scope 1<CR>");
+    let screen = h.screen();
+    assert!(screen.contains("⋯ 26 unchanged lines"), "{screen}");
+    h.keys("zRzM:scope 2<CR>:scope all<CR>");
+    assert!(!h.screen().contains("26 unchanged"));
+}
+
+#[test]
+fn hunk_jumps_skip_revealed_lines() {
+    let fx = small_folds();
+    for (width, layout) in [(160, "side-by-side"), (100, "inline")] {
+        let mut h = Harness::open(&fx, width, 50);
+        h.keys("zR");
+        h.keys("]h");
+        assert!(cursor_row(&mut h).contains("let v030"), "{layout}");
+        h.keys("]h");
+        assert!(cursor_row(&mut h).contains("let v070"), "{layout}");
+        h.keys("[h[h");
+        assert!(cursor_row(&mut h).contains("let v030"), "{layout}");
+        h.keys("[h");
+        assert!(h.screen().contains("No previous hunk"), "{layout}");
+    }
+}
+
+#[test]
+fn a_comment_on_a_revealed_line_hangs_under_it_and_keeps_it_out_of_folds() {
+    let fx = small_folds();
+    let mut h = Harness::open(&fx, 160, 50);
+    h.keys("<CR>12jcilook here<Esc><CR>");
+    let screen = h.screen();
+    let code = screen.lines().position(|l| l.contains("let v013")).unwrap();
+    let note = screen
+        .lines()
+        .position(|l| l.contains("look here"))
+        .unwrap();
+    assert!(note > code && note <= code + 3, "{screen}");
+
+    h.keys("zM");
+    let screen = h.screen();
+    assert!(shown(&screen, 13), "the commented line stays:\n{screen}");
+    assert!(screen.contains("look here"), "{screen}");
+    assert!(screen.contains("⋯ 12 unchanged lines"), "{screen}");
+    assert!(screen.contains("⋯ 13 unchanged lines"), "{screen}");
+}
+
+#[test]
+fn marking_a_file_reviewed_keeps_its_lines_revealed() {
+    let fx = two_files();
+    let mut h = Harness::open(&fx, 160, 50);
+    h.keys("<CR>m");
+    let screen = h.screen();
+    assert!(!screen.contains("26 unchanged"), "{screen}");
+    assert!(screen.contains("reviewed 1/2"), "{screen}");
+}
+
+#[test]
+fn z_in_the_diff_lists_the_fold_keys_of_the_diff() {
+    let fx = small_folds();
+    let mut h = Harness::open(&fx, 160, 50);
+    assert!(h.screen().contains("Enter/zo: раскрыть"), "hint line");
+    h.keys("z").wait(1000);
+    let screen = h.screen();
+    assert!(screen.contains("which-key: z"), "{screen}");
+    assert!(
+        screen.contains("дифф: раскрыть свёрнутые строки целиком"),
+        "{screen}"
+    );
+    assert!(
+        !screen.contains("каталог") && !screen.contains("раунд"),
+        "{screen}"
+    );
+    h.keys("<Esc>");
+    let help = moonhare::hints::help_lines().join("\n");
+    assert!(help.contains("zO ") && help.contains("Enter"), "{help}");
 }
