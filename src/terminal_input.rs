@@ -6,7 +6,7 @@
 //! replies and would hand them on as keys (`ESC ]` as Alt-`]`, and so on), so
 //! moonhare reads the terminal itself (ADR 0007): the [`Decoder`] takes the
 //! replies out of the stream as [`Reply`]s and gives every other byte to
-//! crossterm's own parser, vendored in [`keys`], for the very events crossterm
+//! crossterm's own parser, vendored in `keys`, for the very events crossterm
 //! would give.
 //!
 //! A reply is recognised by its start: `ESC ] 11 ;` or `ESC [ ?`, which keys
