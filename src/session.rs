@@ -17,7 +17,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
 use crate::diff::{FileDiff, FileKind, Side, Token};
-use crate::fold::{fold, Folded, Item};
+use crate::fold::{Folded, Item};
 use crate::forge::{Forge, PullRequest};
 use crate::git::{ChangedFile, Commit, GitError, Range, Repo, Status, Target};
 use crate::review::{self, FileChange, Mark, Review};
@@ -241,6 +241,7 @@ mod rounds;
 mod scroll;
 mod sidebar;
 mod themes;
+mod unfold;
 mod unreviewed;
 mod windows;
 
@@ -304,6 +305,8 @@ pub struct Session {
     count: Option<usize>,
     /// The folded display model of the loaded file, built for `view_layout`.
     view: Folded,
+    /// What the folds of the diff are cut from, and the lines revealed.
+    folds: unfold::Folds,
     view_layout: DiffLayout,
     /// Lines of the inline layout; empty in side-by-side.
     inline: Vec<InlineLine>,
@@ -521,6 +524,7 @@ impl Session {
             hscroll: 0,
             count: None,
             view: Folded::default(),
+            folds: unfold::Folds::default(),
             view_layout: DiffLayout::SideBySide,
             inline: Vec::new(),
             size: (width, height),
@@ -925,9 +929,7 @@ impl Session {
 
     /// The source lines an item stands for (the first one of a fold).
     fn item_lines(&self, item: Item) -> (Option<usize>, Option<usize>) {
-        match item {
-            Item::Line(e) | Item::Fold { from: e, .. } => self.entry_lines(e),
-        }
+        self.entry_lines(item.first())
     }
 
     /// Rebuild the folded display model when the file or the layout changed,
@@ -970,11 +972,12 @@ impl Session {
                 }
             }
         }
-        self.view = if self.collapsed() {
-            Folded::default()
+        self.folds.changed = changed;
+        if self.collapsed() {
+            self.view = Folded::default();
         } else {
-            fold(&changed)
-        };
+            self.refold();
+        }
         if let Some((old, new)) = anchor {
             let found = self.view.items.iter().position(|&item| {
                 let (o, n) = self.item_lines(item);
@@ -1008,6 +1011,7 @@ impl Session {
     pub fn handle(&mut self, event: Event) {
         let waiting = self.pending;
         let resized = matches!(event, Event::Resize(..));
+        let cursor = self.cursor_spot();
         match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => self.on_key(key),
             Event::Mouse(mouse) => self.on_mouse(mouse),
@@ -1023,6 +1027,7 @@ impl Session {
         if !self.overlay_open() {
             self.mouse.text = None;
         }
+        self.note_cursor_move(cursor);
         self.sync_view();
         if resized {
             // The same layout may now have more or fewer rows.
@@ -1169,6 +1174,7 @@ impl Session {
             KeyCode::Char(c @ ('c' | 'C' | 'v' | 'x' | 'o')) if !ctrl => self.comment_key(c),
             KeyCode::Esc if self.visual.is_some() => self.visual = None,
             KeyCode::Esc if self.clear_mouse_selection() => {}
+            KeyCode::Enter if !ctrl && self.on_fold() => self.diff_fold_command('o'),
             KeyCode::Enter if !ctrl => self.expand_mechanical(),
             KeyCode::Char(':') if !ctrl => self.mode = Mode::Command(String::new()),
             _ => {}

@@ -17,6 +17,9 @@ pub const SPACE_P: char = '\u{10}';
 /// key as the `z` of the commit list, with keys of its own.
 pub const Z_TREE: char = '\u{1a}';
 
+/// The internal name of `z` in the diff pane: folds of unchanged lines.
+pub const Z_DIFF: char = '\u{1c}';
+
 /// The `Space` keys that work while the file picker is open.
 pub const PICKER_SPACE: &[&str] = &["g", "i"];
 
@@ -105,6 +108,20 @@ pub const BINDINGS: &[Binding] = &[
     ),
     b(Some(Z_TREE), "c", "дерево файлов: свернуть каталог"),
     b(Some(Z_TREE), "o", "дерево файлов: развернуть каталог"),
+    b(
+        Some(Z_DIFF),
+        "o",
+        "дифф: раскрыть свёрнутые строки (и Enter, клик; большой участок — по 20)",
+    ),
+    b(Some(Z_DIFF), "O", "дифф: раскрыть свёрнутые строки целиком"),
+    b(
+        Some(Z_DIFF),
+        "a",
+        "дифф: раскрыть / свернуть строки под курсором",
+    ),
+    b(Some(Z_DIFF), "c", "дифф: свернуть раскрытые строки обратно"),
+    b(Some(Z_DIFF), "R", "дифф: раскрыть все участки файла"),
+    b(Some(Z_DIFF), "M", "дифф: свернуть все участки файла"),
     b(Some(CTRL_W), "h", "окно слева (коммиты)"),
     b(Some(CTRL_W), "j", "окно ниже (коммиты → файлы)"),
     b(Some(CTRL_W), "k", "окно выше (файлы → коммиты)"),
@@ -275,7 +292,7 @@ pub enum Context {
 pub fn hint_line(context: Context) -> String {
     match context {
         Context::Diff => {
-            "j/k: строки  ]h/[h: хунки  Space: команды  Ctrl-w + h/j/k/l: окна  ?: справка  \
+            "j/k: строки  ]h/[h: хунки  Enter/zo: раскрыть  zc: свернуть  Space: команды  Ctrl-w + h/j/k/l: окна  ?: справка  \
                           Ctrl-d/u: прокрутка  gg/G: начало/конец  ]f/[f: файлы  \
                           Ctrl-w </>/=: сайдбар"
                 .into()
@@ -334,7 +351,7 @@ pub fn prefix_name(prefix: char) -> String {
         ' ' => "Space".into(),
         CTRL_W => "Ctrl-w".into(),
         SPACE_P => "Space p".into(),
-        Z_TREE => "z".into(),
+        Z_TREE | Z_DIFF => "z".into(),
         c => c.to_string(),
     }
 }
