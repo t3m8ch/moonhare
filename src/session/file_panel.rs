@@ -707,6 +707,7 @@ impl Session {
             return Vec::new();
         };
         crate::markdown::render(
+            self.theme(),
             &self.group_text(n).1,
             scroll::text_cols(self.overlay_area()),
         )

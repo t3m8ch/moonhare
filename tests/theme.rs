@@ -70,6 +70,10 @@ fn pairs(t: &Theme) -> Vec<(String, Color, Color, f64)> {
     add("comment", t.comment, &list_bgs[..1], TEXT);
     add("draft", t.draft, &list_bgs[..1], TEXT);
     add("error", t.error, &list_bgs[..1], TEXT);
+    let md = &t.markdown;
+    add("markdown.heading", md.heading, &list_bgs[..1], TEXT);
+    add("markdown.code", md.code, &[("code", md.code_bg)], TEXT);
+    add("fg", t.fg, &[("code block", md.block_bg)], TEXT);
     out
 }
 

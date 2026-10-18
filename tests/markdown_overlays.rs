@@ -173,3 +173,32 @@ fn a_resize_lays_the_table_out_again() {
     assert!(!screen.contains("┼"), "{screen}");
     assert!(screen.contains("col3: val3"), "{screen}");
 }
+
+#[test]
+fn on_a_light_terminal_markdown_is_drawn_with_the_light_palette() {
+    use moonhare::theme::{Background, LIGHT};
+    let source = "## Риски\n\nСм. `load()` и [документ](https://example.com).\n\n> цитата\n\n```\nlet x = 1;\n```\n";
+    let mut h = session(source, 100, 30);
+    h.session().set_terminal_background(Some(Background::Light));
+    h.keys("<Space>s");
+    let frame = h.frame();
+    let at = |needle: &str| {
+        frame
+            .find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} not drawn:\n{}", frame.text()))
+    };
+    let (x, y) = at("Риски");
+    assert_eq!(frame.fg_at(x, y), LIGHT.markdown.heading);
+    let (x, y) = at("load()");
+    assert_eq!(frame.fg_at(x, y), LIGHT.markdown.code);
+    assert_eq!(frame.bg_at(x, y), LIGHT.markdown.code_bg);
+    let (x, y) = at("https");
+    assert_eq!(frame.fg_at(x, y), LIGHT.dim);
+    let (x, y) = at("цитата");
+    assert_eq!(frame.fg_at(x - 2, y), LIGHT.dim, "the bar of a quote");
+    let (x, y) = at("let x");
+    assert_eq!(frame.fg_at(x, y), LIGHT.fg);
+    assert_eq!(frame.bg_at(x, y), LIGHT.markdown.block_bg);
+    let (x, y) = at("См.");
+    assert_eq!(frame.fg_at(x, y), LIGHT.fg);
+}

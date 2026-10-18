@@ -87,6 +87,18 @@ pub struct Syntax {
     pub delimiter: Color,
 }
 
+/// Colours of Markdown drawn in the Summary, an Explanation and the
+/// description of a Group. Links and quote bars are `dim`, text is `fg`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Markdown {
+    pub heading: Color,
+    /// Inline code: text and background.
+    pub code: Color,
+    pub code_bg: Color,
+    /// The background of a code block, whose text is `fg`.
+    pub block_bg: Color,
+}
+
 /// The colour of every role on screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Theme {
@@ -131,6 +143,7 @@ pub struct Theme {
     /// Directories in the file tree.
     pub directory: Color,
     pub syntax: Syntax,
+    pub markdown: Markdown,
 }
 
 /// The long-standing look, made for a dark terminal.
@@ -166,6 +179,12 @@ pub static DARK: Theme = Theme {
         error: Color::Indexed(203),
         delimiter: Color::Indexed(247),
     },
+    markdown: Markdown {
+        heading: Color::Indexed(75),
+        code: Color::Indexed(180),
+        code_bg: Color::Indexed(236),
+        block_bg: Color::Indexed(235),
+    },
 };
 
 /// Made for a light terminal: dark text, pale line backgrounds.
@@ -200,6 +219,12 @@ pub static LIGHT: Theme = Theme {
         type_: Color::Indexed(19),
         error: Color::Indexed(88),
         delimiter: Color::Indexed(238),
+    },
+    markdown: Markdown {
+        heading: Color::Indexed(25),
+        code: Color::Indexed(94),
+        code_bg: Color::Indexed(255),
+        block_bg: Color::Indexed(255),
     },
 };
 

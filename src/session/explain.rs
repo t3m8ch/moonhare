@@ -304,7 +304,11 @@ impl Session {
                 self.work_seconds("Explanation")
             ),
             State::Done(text) => {
-                return crate::markdown::render(text, scroll::text_cols(self.overlay_area()))
+                return crate::markdown::render(
+                    self.theme(),
+                    text,
+                    scroll::text_cols(self.overlay_area()),
+                )
             }
             State::Failed(error) => format!("Analyst: {error}"),
         };
