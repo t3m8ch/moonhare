@@ -4,7 +4,9 @@
 //! colour of a role (`fg`, `dim`, `added_bg`, a syntax highlight, …). Two
 //! themes are built in: [`DARK`], the long-standing look for a dark terminal,
 //! and [`LIGHT`] for a light one. Which one is drawn is a [`Choice`]: `auto`
-//! follows the terminal [`Background`], as `$COLORFGBG` names it
+//! follows the terminal [`Background`], as the terminal tells it in its
+//! reply to OSC 11 or in a DEC 2031 report ([`background_from_osc11`],
+//! [`crate::terminal_input`]) or, until it does, as `$COLORFGBG` names it
 //! ([`background_from_colorfgbg`]); dark when nothing does.
 //!
 //! Colours are 256-palette entries so that [`crate::color::to_truecolor`]
@@ -296,5 +298,35 @@ pub fn background_from_colorfgbg(value: &str) -> Option<Background> {
         7 | 9..=15 => Background::Light,
         n if luminance(indexed_to_rgb(n)) > MIDPOINT => Background::Light,
         _ => Background::Dark,
+    })
+}
+
+/// The background a terminal reports in its reply to OSC 11
+/// (`rgb:RRRR/GGGG/BBBB`, each 1 to 4 hex digits, or `rgba:` with alpha).
+/// `None` when the reply is in another form.
+pub fn background_from_osc11(body: &str) -> Option<Background> {
+    let (scheme, value) = body.split_once(':')?;
+    let channels: Vec<&str> = value.split('/').collect();
+    match (scheme, channels.len()) {
+        ("rgb", 3) | ("rgba", 4) => {}
+        _ => return None,
+    }
+    let channel = |hex: &str| -> Option<u8> {
+        if hex.is_empty() || hex.len() > 4 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return None;
+        }
+        let v = u32::from_str_radix(hex, 16).ok()?;
+        let max = (1u32 << (4 * hex.len())) - 1;
+        Some((v * 255 / max) as u8)
+    };
+    let rgb = (
+        channel(channels[0])?,
+        channel(channels[1])?,
+        channel(channels[2])?,
+    );
+    Some(if luminance(rgb) > MIDPOINT {
+        Background::Light
+    } else {
+        Background::Dark
     })
 }
